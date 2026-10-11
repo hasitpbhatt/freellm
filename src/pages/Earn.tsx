@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { api, ApiError } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { Button, Card, CardHeader, Credits } from '../components/ui'
-import ReactionGame from '../components/ReactionGame'
+import ArcadePanel from '../components/ArcadePanel'
 
 type EarnState = {
   verified: boolean
@@ -258,8 +258,8 @@ export default function Earn() {
         </Card>
       )}
 
-      {/* Daily sprint — skill game with bounded payouts */}
-      {user && <ReactionGame />}
+      {/* Daily arcade — skill games with bounded payouts */}
+      {user && <ArcadePanel />}
 
       {/* Play & earn — SkillArcade embedded so players never leave */}
       <Card>

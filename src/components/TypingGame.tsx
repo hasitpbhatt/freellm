@@ -1,0 +1,123 @@
+import { useEffect, useRef, useState } from 'react'
+import { api, ApiError } from '../lib/api'
+import { Button, Card, CardHeader } from '../components/ui'
+
+type Phase = { name: 'idle' } | { name: 'typing'; roundId: string } | { name: 'done'; text: string; kind: 'ok' | 'err' }
+
+// Typing sprint: the server deals a phrase — retype it exactly, fast.
+// The claim only pays on an exact server-side match, so pasting foreign
+// text or gibberish scores nothing. 3 paid plays a day.
+export default function TypingGame() {
+  const [playsLeft, setPlaysLeft] = useState<number | null>(null)
+  const [phrase, setPhrase] = useState<string | null>(null)
+  const [roundId, setRoundId] = useState<string | null>(null)
+  const [typed, setTyped] = useState('')
+  const [phase, setPhase] = useState<Phase>({ name: 'idle' })
+  const claimed = useRef(false)
+
+  const load = async () => {
+    try {
+      const s = await api.get<{ games: Record<string, { plays_left: number }> }>('/games/status')
+      setPlaysLeft(s.games.typing.plays_left)
+    } catch {
+      // leave unknown
+    }
+  }
+
+  useEffect(() => {
+    void load()
+  }, [])
+
+  async function start() {
+    setTyped('')
+    claimed.current = false
+    try {
+      const data = await api.post<{ round_id: string; phrase: string }>('/games/typing/start')
+      setRoundId(data.round_id)
+      setPhrase(data.phrase)
+      setPhase({ name: 'typing', roundId: data.round_id })
+    } catch (err) {
+      setPhase({ name: 'done', kind: 'err', text: err instanceof ApiError ? err.message : 'Could not start a round.' })
+    }
+  }
+
+  async function claim(id: string, text: string) {
+    if (claimed.current) return
+    claimed.current = true
+    try {
+      const data = await api.post<{ reward: number; balance: number }>('/games/typing/claim', {
+        round_id: id,
+        typed: text,
+      })
+      setPhase({ name: 'done', kind: 'ok', text: `Perfect — +${data.reward} cr. Balance ${data.balance.toLocaleString('en-US')} cr.` })
+    } catch (err) {
+      setPhase({ name: 'done', kind: 'err', text: err instanceof ApiError ? err.message : 'Claim failed.' })
+    } finally {
+      setPhrase(null)
+      setRoundId(null)
+      await load()
+    }
+  }
+
+  const onType = (value: string) => {
+    setTyped(value)
+    if (phrase !== null && roundId !== null && value === phrase) {
+      void claim(roundId, value)
+    }
+  }
+
+  const wrongAt = phrase !== null && typed !== '' && !phrase.startsWith(typed) ? typed.length : -1
+
+  return (
+    <Card>
+      <CardHeader
+        title="Typing sprint"
+        action={
+          <span className="num text-[12px] text-muted" role="status">
+            {playsLeft === null ? '…' : `${playsLeft}/3 paid plays left today`}
+          </span>
+        }
+      />
+      <div className="flex flex-col gap-3 p-4">
+        <p className="text-[13px] text-muted">
+          Retype the dealt phrase exactly — 80+ wpm pays 100 cr, 50+ pays 50 cr, a finish pays 25 cr.
+        </p>
+        {phase.name === 'idle' && (
+          <Button onClick={() => void start()} className="self-start">
+            Deal a phrase
+          </Button>
+        )}
+        {phase.name === 'typing' && phrase !== null && (
+          <>
+            <p className="rounded-lg border border-line bg-surface-2 p-3 font-mono text-[13px]" aria-label="Phrase to type">
+              {phrase}
+            </p>
+            <label className="sr-only" htmlFor="typing-input">Retype the phrase exactly</label>
+            <textarea
+              id="typing-input"
+              autoFocus
+              className="input min-h-[80px] font-mono"
+              value={typed}
+              onChange={(e) => onType(e.target.value)}
+              placeholder="Type it here…"
+            />
+            <p className="num text-[12px] text-muted" role="status">
+              {typed.length}/{phrase.length} chars
+              {wrongAt >= 0 ? ` — first mistake at char ${wrongAt + 1}, fix it to finish` : typed ? ' — matching so far' : ''}
+            </p>
+          </>
+        )}
+        {phase.name === 'done' && (
+          <div className="flex flex-col items-start gap-2">
+            <p role="status" className={`text-[13px] ${phase.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
+              {phase.text}
+            </p>
+            <Button variant="secondary" onClick={() => void start()}>
+              Play again
+            </Button>
+          </div>
+        )}
+      </div>
+    </Card>
+  )
+}

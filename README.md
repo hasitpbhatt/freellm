@@ -140,6 +140,10 @@ economy, the **M5 arena**, and the **M6 BYOK vault**.
   wait for green, tap fast. One button, three labeled states, fouls forgiven with zero
   penalty. Tokenomics bounded both ways: server-issued rounds, 120ms–5s human window,
   one claim per round, 5 paid plays/user/day, 250,000cr global daily pot (50/25/10cr tiers)
+- **Arcade**: reaction + typing sprint (server-dealt phrase, exact-match pay) + 5s tap
+  frenzy, a +150cr daily-clear bonus for finishing all three, and levels (1 XP per 10
+  arcade credits; one-time 50×level bonus to level 6, 1,000cr lifetime max) — the
+  retention loop that keeps players on the portal
 - **BYOK vault** (`/keys`): Door 1 of the Two Doors model. Users store their own
   OpenAI-compatible endpoints (base URL + upstream model + bearer, AES-256-GCM at
   rest, validated on add). Chatting through your key is free and unmetered
