@@ -22,11 +22,11 @@ function CodeBlock({ code, lang, label }: { code: string; lang?: string; label?:
   return (
     <div className="relative">
       {label && <p className="mb-1 text-[12px] font-medium text-muted">{label}</p>}
-      <pre className="num overflow-x-auto rounded-lg border border-line bg-surface-2 p-3 text-[12px] leading-relaxed">
-        <code>{code}</code>
+      <pre className="num overflow-x-auto rounded-lg border border-line bg-surface-2 p-3 pr-20 text-[12px] leading-relaxed">
+        <code className="break-words">{code}</code>
       </pre>
       <button
-        className="absolute right-2 top-2 rounded-md border border-line bg-bg px-2 py-1 text-[11px] text-muted transition-colors hover:text-content"
+        className="absolute right-2 top-2 min-h-[40px] min-w-[44px] rounded-md border border-line bg-bg px-2 py-1 text-[11px] text-muted transition-colors hover:text-content"
         aria-label={label ? `Copy ${label}` : 'Copy code'}
         onClick={async () => {
           try {
@@ -258,8 +258,22 @@ for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.
           <div className="flex flex-col divide-y divide-line">
             {models.map((m) => (
               <div key={m.slug} className="flex flex-wrap items-center gap-2 py-2">
-                <code className="num text-[12px] text-accent">{m.slug}</code>
-                <span className="text-[13px] text-muted">{m.label}</span>
+                <code className="num min-w-0 break-all text-[12px] text-accent">{m.slug}</code>
+                <button
+                  className="btn-secondary btn-sm"
+                  aria-label={`Copy slug ${m.slug}`}
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(m.slug)
+                      setBanner({ kind: 'ok', text: `Copied ${m.slug} — paste it as the model field.` })
+                    } catch {
+                      setBanner({ kind: 'err', text: 'Copy blocked — long-press the slug to select it manually.' })
+                    }
+                  }}
+                >
+                  Copy
+                </button>
+                <span className="min-w-0 flex-1 truncate text-[13px] text-muted" title={m.label}>{m.label}</span>
                 {m.access_tier !== 'free' && (
                   <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent">
                     🔒 {m.access_tier}
@@ -316,11 +330,11 @@ for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.
           origin root (e.g. <code className="num">{typeof window !== 'undefined' ? window.location.origin : ''}/api/…</code>).
         </p>
         <div className="flex flex-col divide-y divide-line">
-          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2.5">
+          <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2.5">
             <code className="num text-[12px] text-accent">GET /v1/models</code>
             <span className="text-[13px]">Model list, OpenAI shape. No auth.</span>
           </div>
-          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2.5">
+          <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2.5">
             <code className="num text-[12px] text-accent">POST /v1/chat/completions</code>
             <span className="text-[13px]">
               OpenAI request/response. Accepts <code className="num">model</code>, <code className="num">messages</code>,{' '}
@@ -330,13 +344,13 @@ for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.
               cookie.
             </span>
           </div>
-          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2.5">
+          <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2.5">
             <code className="num text-[12px] text-accent">GET /api/models</code>
             <span className="text-[13px]">
               Richer catalog: status per model, flat rate, context window. No auth.
             </span>
           </div>
-          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2.5">
+          <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2.5">
             <code className="num text-[12px] text-accent">POST /api/chat</code>
             <span className="text-[13px]">
               Native metering endpoint (session cookie only): explicit <code className="num">request_id</code>{' '}
@@ -358,19 +372,19 @@ for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.
           upstream call costs nothing.
         </p>
         <div className="flex flex-col divide-y divide-line">
-          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2">
+          <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2">
             <code className="num text-[12px] text-accent">402 insufficient_credits</code>
             <span className="text-[13px]">Top up on <Link to="/earn" className="text-accent hover:underline">/earn</Link>.</span>
           </div>
-          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2">
+          <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2">
             <code className="num text-[12px] text-accent">403 upgrade_required</code>
             <span className="text-[13px]">Locked tier — no charge. Ask an admin for access.</span>
           </div>
-          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2">
+          <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2">
             <code className="num text-[12px] text-accent">502 upstream_failed</code>
             <span className="text-[13px]">Provider error — no charge. Retry shortly.</span>
           </div>
-          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2">
+          <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2">
             <code className="num text-[12px] text-accent">404 model_not_found</code>
             <span className="text-[13px]">Unknown slug — pick one from the list in step 2.</span>
           </div>

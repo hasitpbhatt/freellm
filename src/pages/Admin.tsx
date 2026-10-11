@@ -4,21 +4,23 @@ import AdminModels from '../components/AdminModels'
 import AdminPromos from '../components/AdminPromos'
 import AdminVault from '../components/AdminVault'
 import AdminUsers from '../components/AdminUsers'
+import AdminEmailBlocks from '../components/AdminEmailBlocks'
 
-type Tab = 'models' | 'promos' | 'vault' | 'users'
+type Tab = 'models' | 'promos' | 'vault' | 'users' | 'blocks'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'models', label: 'Model catalog' },
   { id: 'promos', label: 'Promo codes' },
   { id: 'vault', label: 'Vault (BYOK)' },
   { id: 'users', label: 'Users' },
+  { id: 'blocks', label: 'Email blocks' },
 ]
 
 export default function Admin() {
   const { user, loading: authLoading } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
   const rawTab = searchParams.get('tab')
-  const tab: Tab = rawTab === 'promos' || rawTab === 'vault' || rawTab === 'users' ? rawTab : 'models'
+  const tab: Tab = rawTab === 'promos' || rawTab === 'vault' || rawTab === 'users' || rawTab === 'blocks' ? rawTab : 'models'
 
   if (authLoading) return <p className="py-12 text-center text-[13px] text-muted" role="status">Checking admin access…</p>
   if (!user) {
@@ -35,7 +37,8 @@ export default function Admin() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center gap-1 border-b border-line" role="tablist" aria-label="Admin sections">
+      <div className="-mx-4 overflow-x-auto px-4" role="tablist" aria-label="Admin sections">
+        <div className="flex min-w-max items-center gap-1 border-b border-line">
         {TABS.map((t) => (
           <TabButton
             key={t.id}
@@ -47,9 +50,10 @@ export default function Admin() {
             {t.label}
           </TabButton>
         ))}
+        </div>
       </div>
       <div role="tabpanel">
-        {tab === 'models' ? <AdminModels /> : tab === 'promos' ? <AdminPromos /> : tab === 'vault' ? <AdminVault /> : <AdminUsers />}
+        {tab === 'models' ? <AdminModels /> : tab === 'promos' ? <AdminPromos /> : tab === 'vault' ? <AdminVault /> : tab === 'users' ? <AdminUsers /> : <AdminEmailBlocks />}
       </div>
     </div>
   )
@@ -69,7 +73,7 @@ function TabButton({
       role="tab"
       aria-selected={active}
       onClick={onClick}
-      className={`-mb-px border-b-2 px-3 py-2 text-[13px] font-medium transition-colors ${
+      className={`-mb-px min-h-[44px] whitespace-nowrap border-b-2 px-3 py-2.5 text-[13px] font-medium transition-colors ${
         active ? 'border-accent text-content' : 'border-transparent text-muted hover:text-content'
       }`}
     >

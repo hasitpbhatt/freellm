@@ -77,8 +77,8 @@ export default function Models() {
         {models.map((model) => (
           <Card key={model.slug} className="flex flex-col gap-2 p-4">
             <div className="flex items-center gap-2">
-              <span className={`h-2 w-2 rounded-full ${statusDot[model.status]}`} aria-hidden="true" />
-              <h2 className="text-[15px] font-semibold">{model.label}</h2>
+              <span className={`h-2 w-2 shrink-0 rounded-full ${statusDot[model.status]}`} aria-hidden="true" />
+              <h2 className="min-w-0 flex-1 truncate text-[15px] font-semibold" title={model.label}>{model.label}</h2>
               {model.access_tier !== 'free' && (
                 <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent" title={`Requires ${model.access_tier} tier`}>
                   <span aria-hidden="true">🔒</span> {model.access_tier}
@@ -100,32 +100,50 @@ export default function Models() {
                 </span>
               ))}
             </div>
-            <dl className="num mt-1 grid grid-cols-2 gap-y-1 text-[12px] text-muted">
+            <dl className="num mt-1 grid grid-cols-1 gap-y-1 text-[12px] text-muted min-[380px]:grid-cols-2">
               <dt>Flat rate (credits per request when usage unreported)</dt>
-              <dd className="text-right text-content">
+              <dd className="text-left text-content min-[380px]:text-right">
                 <Credits value={model.flat_rate_credits} /> cr
               </dd>
               <dt>Provider configs</dt>
-              <dd className="text-right text-content">{model.provider_count}</dd>
+              <dd className="text-left text-content min-[380px]:text-right">{model.provider_count}</dd>
               <dt>Routing</dt>
-              <dd className="text-right text-content" title="How requests spread across provider configs">{model.routing.replaceAll('_', ' ')}</dd>
+              <dd className="text-left text-content min-[380px]:text-right" title="How requests spread across provider configs">{model.routing.replaceAll('_', ' ')}</dd>
               {model.context_window && (
                 <>
                   <dt>Context window (tokens)</dt>
-                  <dd className="text-right text-content">{model.context_window.toLocaleString('en-US')}</dd>
+                  <dd className="text-left text-content min-[380px]:text-right">{model.context_window.toLocaleString('en-US')}</dd>
                 </>
               )}
               <dt>Max output (tokens)</dt>
-              <dd className="text-right text-content">{model.max_output_tokens.toLocaleString('en-US')}</dd>
+              <dd className="text-left text-content min-[380px]:text-right">{model.max_output_tokens.toLocaleString('en-US')}</dd>
             </dl>
+            <p className="num min-w-0 truncate text-[12px] text-muted" title={`Slug: ${model.slug}`}>
+              slug: <span className="text-accent">{model.slug}</span>
+            </p>
             {isLocked(model) ? (
               <p className="mt-2 text-[12px] text-muted">
                 Requires {model.access_tier} tier — ask an admin to upgrade.
               </p>
             ) : (
-              <Link to={`/chat?model=${model.slug}`} className="btn-primary mt-2 self-start">
-                Chat now
-              </Link>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Link to={`/chat?model=${model.slug}`} className="btn-primary self-start">
+                  Chat now
+                </Link>
+                <button
+                  className="btn-secondary btn-sm"
+                  aria-label={`Copy slug ${model.slug}`}
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(model.slug)
+                    } catch {
+                      // long-press fallback: slug is selectable text above
+                    }
+                  }}
+                >
+                  Copy slug
+                </button>
+              </div>
             )}
           </Card>
         ))}

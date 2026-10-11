@@ -89,13 +89,13 @@ export default function TapsGame() {
           Five seconds on the clock — 40+ taps pays 50 cr, 25+ pays 25 cr, 5+ pays 10 cr.
         </p>
         {phase.name === 'idle' && (
-          <Button onClick={() => void start()} className="self-start">
+          <Button onClick={() => void start()} className="w-full sm:w-auto sm:self-start">
             Start 5 seconds
           </Button>
         )}
         {phase.name === 'tapping' && (
           <>
-            <p className="num text-[12px] text-muted" role="status" aria-live="polite">
+            <p className="num text-[15px] font-semibold" role="status" aria-live="off">
               {phase.left}s left · {taps} taps
             </p>
             <button
@@ -103,8 +103,8 @@ export default function TapsGame() {
                 tapsRef.current += 1
                 setTaps(tapsRef.current)
               }}
-              className="min-h-[120px] rounded-lg border border-accent/40 bg-accent/10 p-6 text-center text-2xl font-bold"
-              aria-label={`Tap! ${taps} taps so far`}
+              className="min-h-[152px] touch-manipulation select-none rounded-lg border border-accent/40 bg-accent/10 p-6 text-center text-2xl font-bold"
+              aria-label="Tap target"
             >
               TAP · {taps}
             </button>

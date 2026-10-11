@@ -410,8 +410,8 @@ export default function Chat() {
             : ''
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[220px_1fr]">
-      <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[220px_1fr]">
+      <div className="order-2 flex flex-col gap-3 lg:order-1">
         <Card className="p-3">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2">Mode</p>
           <div className="flex gap-2" role="radiogroup" aria-label="Chat mode">
@@ -457,6 +457,8 @@ export default function Chat() {
           {mode === 'pool' ? 'The Pool' : 'Your Keys'}
         </h2>
 
+        {/* Mobile: horizontal chip strip so the composer stays visible without
+            scrolling past the whole catalog. Desktop keeps the card list. */}
         {mode === 'pool' ? (
           <>
             {models.length === 0 && (
@@ -465,6 +467,7 @@ export default function Chat() {
                 <Link to="/admin" className="text-accent hover:underline">/admin</Link>.
               </p>
             )}
+            <div className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible lg:pb-0">
             {models.map((m) => (
               <button
                 key={m.slug}
@@ -477,13 +480,13 @@ export default function Chat() {
                       ? `${m.label} — down right now`
                       : m.label
                 }
-                className={`card flex flex-col gap-1 p-3 text-left transition-colors ${
+                className={`card flex min-h-[44px] shrink-0 flex-col gap-1 p-3 text-left transition-colors lg:shrink ${
                   selected === m.slug ? 'border-accent' : 'hover:border-muted'
                 }`}
               >
                 <span className="flex items-center gap-2">
                   <span className={`h-2 w-2 rounded-full ${statusDot[m.status]}`} aria-hidden="true" />
-                  <span className="text-[13px] font-medium">{m.label}</span>
+                  <span className="whitespace-nowrap text-[13px] font-medium lg:whitespace-normal">{m.label}</span>
                   <span className="sr-only">{m.status}</span>
                   {m.access_tier !== 'free' && (
                     <span className="rounded bg-accent/10 px-1 py-0.5 text-[10px] font-medium text-accent">
@@ -491,11 +494,11 @@ export default function Chat() {
                     </span>
                   )}
                 </span>
-                <span className="num text-[11px] text-muted">
+                <span className="num hidden text-[11px] text-muted lg:block">
                   flat {m.flat_rate_credits.toLocaleString('en-US')} cr · {m.provider_count} config{m.provider_count === 1 ? '' : 's'}
                 </span>
                 {m.capabilities.length > 0 && (
-                  <span className="flex flex-wrap gap-1">
+                  <span className="hidden flex-wrap gap-1 lg:flex">
                     {m.capabilities.slice(0, 3).map((tag) => (
                       <span key={tag} className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">{tag}</span>
                     ))}
@@ -503,6 +506,7 @@ export default function Chat() {
                 )}
               </button>
             ))}
+            </div>
           </>
         ) : (
           <>
@@ -514,30 +518,34 @@ export default function Chat() {
                 <Button variant="primary" size="sm" onClick={() => navigate('/keys')}>Add a key</Button>
               </div>
             ) : (
-              byokKeys.map((k) => (
+              <div className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible lg:pb-0">
+              {byokKeys.map((k) => (
                 <button
                   key={k.id}
                   onClick={() => setSelectedKeyId(k.id)}
-                  className={`card flex flex-col gap-1 p-3 text-left transition-colors ${
+                  aria-pressed={selectedKeyId === k.id}
+                  className={`card flex min-h-[44px] shrink-0 flex-col gap-1 p-3 text-left transition-colors lg:shrink ${
                     selectedKeyId === k.id ? 'border-accent' : 'hover:border-muted'
                   }`}
                 >
                   <span className="flex items-center gap-2">
-                    <span className={`h-2 w-2 rounded-full ${statusDot[k.status]}`} />
-                    <span className="text-[13px] font-medium">{k.label}</span>
+                    <span className={`h-2 w-2 rounded-full ${statusDot[k.status]}`} aria-hidden="true" />
+                    <span className="whitespace-nowrap text-[13px] font-medium lg:whitespace-normal">{k.label}</span>
+                    <span className="sr-only">{k.status}</span>
                   </span>
-                  <span className="num text-[11px] text-muted">
+                  <span className="num hidden text-[11px] text-muted lg:block">
                     {formatLatency(k.avg_latency_ms)} · {k.upstream_model}
                   </span>
-                  <span className="num font-mono text-[11px] text-muted">{k.key_masked}</span>
+                  <span className="num hidden font-mono text-[11px] text-muted lg:block">{k.key_masked}</span>
                 </button>
-              ))
+              ))}
+              </div>
             )}
           </>
         )}
       </div>
 
-      <div className="flex min-h-[70vh] flex-col gap-3">
+      <div className="order-1 flex min-h-[70vh] flex-col gap-3 lg:order-2">
         {mode === 'pool' && model && (
           <Card className="flex flex-wrap items-center gap-3 px-4 py-2.5">
             <span className={`h-2 w-2 rounded-full ${statusDot[model.status]}`} />
@@ -566,7 +574,7 @@ export default function Chat() {
           </Card>
         )}
 
-        <div ref={scrollRef} onScroll={handleScroll} role="log" aria-label="Chat messages" tabIndex={0} className="card relative flex-1 overflow-y-auto p-4">
+        <div ref={scrollRef} onScroll={handleScroll} role="log" aria-label="Chat messages" aria-busy={busy} tabIndex={0} className="card relative flex-1 overflow-y-auto p-4">
           {messages.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
               <p className="text-[13px] text-muted">
@@ -628,7 +636,7 @@ export default function Chat() {
                 const el = scrollRef.current
                 if (el) el.scrollTop = el.scrollHeight
               }}
-              className="btn-secondary self-center"
+              className="btn-secondary sticky bottom-2 z-[5] self-center shadow-lg"
             >
               Jump to latest ↓
             </button>
@@ -646,7 +654,7 @@ export default function Chat() {
                 Retry
               </button>
             )}
-            <button onClick={() => setBanner(null)} className="text-muted hover:text-content" aria-label="Dismiss message">
+            <button onClick={() => setBanner(null)} className="min-h-[44px] px-2 text-muted hover:text-content" aria-label="Dismiss message">
               Dismiss
             </button>
           </p>
@@ -666,7 +674,7 @@ export default function Chat() {
           <label className="sr-only" htmlFor="chat-input">Message</label>
           <textarea
             id="chat-input"
-            className="input min-h-[42px] flex-1 resize-none"
+            className="input min-h-[48px] flex-1 resize-none text-[16px] sm:text-[13px]"
             rows={1}
             value={input}
             onChange={(e) => setInput(e.target.value)}

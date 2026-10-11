@@ -49,14 +49,24 @@
 
   .input {
     @apply rounded-lg border border-line bg-surface-2 px-3 py-2 text-[13px] text-content placeholder:text-muted focus:border-accent focus:outline-none;
+    min-height: 44px;
+  }
+  /* 16px on touch screens kills iOS Safari auto-zoom on focus. */
+  @media (max-width: 640px) {
+    .input {
+      font-size: 16px;
+    }
   }
 
   .btn {
     @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-[13px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+    min-height: 44px;
   }
 
   .btn-sm {
     @apply px-3 py-1.5 text-[12px];
+    min-height: 40px;
+    min-width: 44px;
   }
 
   .btn-lg {

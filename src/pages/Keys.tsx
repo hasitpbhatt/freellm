@@ -259,7 +259,7 @@ export default function Keys() {
         <Card className={`border-${banner.kind === 'ok' ? 'gain' : banner.kind === 'err' ? 'loss' : 'warn'}`}>
           <div className="flex items-start gap-2 p-4">
             <p role={banner.kind === 'err' ? 'alert' : 'status'} className="flex-1 text-[13px]">{banner.text}</p>
-            <button onClick={() => setBanner(null)} className="text-[12px] text-muted hover:text-content" aria-label="Dismiss message">
+            <button onClick={() => setBanner(null)} className="min-h-[44px] px-2 text-[12px] text-muted hover:text-content" aria-label="Dismiss message">
               Dismiss
             </button>
           </div>
@@ -300,7 +300,7 @@ export default function Keys() {
                         <span className="text-muted">▾</span>
                       </button>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                       <Button variant="secondary" size="sm" onClick={() => handleTest(k.id)} disabled={testingId === k.id || adding}>
                         {testingId === k.id ? 'Testing…' : 'Test'}
                       </Button>
@@ -311,14 +311,14 @@ export default function Keys() {
                   {isExpanded(k.id) && (
                     <div className="mt-3 pt-3 border-t border-line space-y-1 text-[12px] text-muted">
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
-                        <div><span className="font-medium">Base URL:</span> {k.base_url}</div>
-                        <div><span className="font-medium">Upstream model:</span> <code className="font-mono">{k.upstream_model}</code></div>
+                        <div className="min-w-0 break-all"><span className="font-medium">Base URL:</span> {k.base_url}</div>
+                        <div className="min-w-0 break-all"><span className="font-medium">Upstream model:</span> <code className="font-mono">{k.upstream_model}</code></div>
                         <div><span className="font-medium">Latency:</span> {formatLatency(k.avg_latency_ms)}</div>
                         <div><span className="font-medium">Messages served:</span> {k.messages_served}</div>
                         <div><span className="font-medium">Added:</span> {formatTime(k.created_at)}</div>
                         <div><span className="font-medium">Last checked:</span> {formatTime(k.last_checked_at)}</div>
                         {k.last_error && (
-                          <div className="sm:col-span-2 text-loss"><span className="font-medium">Last error:</span> {k.last_error}</div>
+                          <div className="min-w-0 break-all sm:col-span-2 text-loss"><span className="font-medium">Last error:</span> {k.last_error}</div>
                         )}
                       </div>
                     </div>

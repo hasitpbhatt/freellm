@@ -113,14 +113,14 @@ export default function ReactionGame() {
           anything human pays 10 cr — 5 paid plays a day, one shared daily pot.
         </p>
         {phase.name === 'idle' && (
-          <Button onClick={() => void start()} className="self-start">
+          <Button onClick={() => void start()} className="w-full sm:w-auto sm:self-start">
             Start round
           </Button>
         )}
         {phase.name === 'arming' && (
           <button
             onClick={() => void tap()}
-            className="min-h-[120px] rounded-lg border border-loss/40 bg-loss/10 p-6 text-center text-[15px] font-semibold text-loss"
+            className="min-h-[152px] touch-manipulation select-none rounded-lg border border-loss/40 bg-loss/10 p-6 text-center text-[15px] font-semibold text-loss"
             aria-label="Wait for green — tapping now is a foul"
           >
             Wait for green…
@@ -129,8 +129,7 @@ export default function ReactionGame() {
         {phase.name === 'ready' && (
           <button
             onClick={() => void tap()}
-            autoFocus
-            className="min-h-[120px] rounded-lg border border-gain/40 bg-gain/10 p-6 text-center text-[15px] font-semibold text-gain"
+            className="min-h-[152px] touch-manipulation select-none rounded-lg border border-gain/40 bg-gain/10 p-6 text-center text-[15px] font-semibold text-gain"
             aria-label="Tap now"
           >
             TAP NOW

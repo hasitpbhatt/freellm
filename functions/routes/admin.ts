@@ -11,6 +11,10 @@
 import { Hono } from 'hono'
 import { requireAdmin, requireAuth } from '../lib/middleware'
 import { decryptSecret, encryptSecret, maskSecret, newId } from '../lib/crypto'
+import {
+  EMAIL_BLOCK_MAX_RULES,
+  validateEmailBlockPattern,
+} from '../lib/email-blocks'
 import { pingProvider } from '../lib/ping'
 import { EWMA_ALPHA, EWMA_BETA } from '../lib/providers'
 import {
@@ -561,6 +565,55 @@ app.patch('/api/admin/users/:id', async (c) => {
     .bind(id)
     .first()
   return c.json({ user })
+})
+
+// ---------------------------------------------------------- email blocks
+// Admin-managed sign-up blocklist: regexes tested against the normalized
+// email at Google-OAuth time. A match rejects the sign-in outright.
+
+app.get('/api/admin/email-blocks', async (c) => {
+  const rows = await c.env.DB.prepare(
+    'SELECT id, pattern, created_by, created_at FROM freellm_email_blocks ORDER BY created_at DESC',
+  ).all<{ id: string; pattern: string; created_by: string | null; created_at: number }>()
+  return c.json({ blocks: rows.results })
+})
+
+app.post('/api/admin/email-blocks', async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null)
+  const pattern = typeof body?.pattern === 'string' ? body.pattern.trim() : ''
+  const invalid = validateEmailBlockPattern(pattern)
+  if (invalid) return c.json({ error: 'invalid_input', message: invalid }, 400)
+
+  const count = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM freellm_email_blocks')
+    .first<{ n: number }>()
+  if ((count?.n ?? 0) >= EMAIL_BLOCK_MAX_RULES) {
+    return c.json({ error: 'limit_reached', message: `At most ${EMAIL_BLOCK_MAX_RULES} block rules — delete one first.` }, 409)
+  }
+
+  const me = c.get('user')
+  const id = newId()
+  const timestamp = now()
+  try {
+    await c.env.DB.prepare(
+      'INSERT INTO freellm_email_blocks (id, pattern, created_by, created_at) VALUES (?, ?, ?, ?)',
+    )
+      .bind(id, pattern, me?.id ?? null, timestamp)
+      .run()
+  } catch {
+    return c.json({ error: 'duplicate', message: 'That pattern is already blocked.' }, 409)
+  }
+  return c.json({ block: { id, pattern, created_by: me?.id ?? null, created_at: timestamp } }, 201)
+})
+
+app.delete('/api/admin/email-blocks/:id', async (c) => {
+  const id = c.req.param('id')
+  const result = (await c.env.DB.prepare('DELETE FROM freellm_email_blocks WHERE id = ?')
+    .bind(id)
+    .run() as unknown as { meta?: { changes?: number } })
+  if (result?.meta?.changes === 0) {
+    return c.json({ error: 'not_found', message: 'Block rule not found.' }, 404)
+  }
+  return c.json({ ok: true })
 })
 
 export default app

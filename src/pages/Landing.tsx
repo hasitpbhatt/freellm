@@ -65,7 +65,7 @@ export default function Landing() {
     <div className="flex flex-col gap-16 py-10">
       {/* Hero — the Two Doors model, taught in three lines */}
       <section className="flex flex-col items-center gap-6 text-center">
-        <h1 className="max-w-2xl text-4xl font-bold tracking-tight md:text-5xl">
+        <h1 className="max-w-2xl text-3xl font-bold tracking-tight sm:text-4xl md:text-5xl">
           The community-owned arena for{' '}
           <span className="text-accent">indie AI models</span>
         </h1>
@@ -73,7 +73,7 @@ export default function Landing() {
           Two ways in. Bring your own key and chat free forever — or spend credits on The Pool,
           the models our contributors keep alive. No upfront tokens. Earn what you spend.
         </p>
-        <div className="flex min-h-[52px] items-center gap-3">
+        <div className="flex min-h-[52px] flex-col items-stretch gap-3 sm:flex-row sm:items-center">
           {loading ? (
             <span className="text-[13px] text-muted" role="status">Checking sign-in…</span>
           ) : user ? (
@@ -170,12 +170,12 @@ export default function Landing() {
         ) : (
           <Card className="divide-y divide-line">
             {pool.map((m) => (
-              <div key={m.slug} className="flex items-center gap-3 px-4 py-3">
-                <span className={`h-2 w-2 rounded-full ${statusDot[m.status]}`} aria-hidden="true" />
-                <span className="text-[13px] font-medium">{m.label}</span>
-                <span className="text-[13px] capitalize text-muted">{m.status}</span>
+              <div key={m.slug} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3">
+                <span className={`h-2 w-2 shrink-0 rounded-full ${statusDot[m.status]}`} aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{m.label}</span>
+                <span className="shrink-0 text-[13px] capitalize text-muted">{m.status}</span>
                 {m.access_tier !== 'free' && (
-                  <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent">
+                  <span className="shrink-0 rounded bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent">
                     🔒 {m.access_tier}
                   </span>
                 )}

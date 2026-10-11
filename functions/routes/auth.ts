@@ -3,6 +3,7 @@
 
 import { Hono } from 'hono'
 import { newId } from '../lib/crypto'
+import { isEmailBlocked } from '../lib/email-blocks'
 import { createSession, destroySession, getSession, clearedSessionCookie } from '../lib/session'
 import { sendVerificationEmail } from '../lib/email'
 import { generateReferralCode, normalizeEmail } from '../lib/validate'
@@ -305,6 +306,15 @@ app.get('/api/auth/google/callback', async (c) => {
 
     const email = normalizeEmail(googleUser.email)
     const now = Date.now()
+
+    // Admin email blocklist: regexes on the normalized email. A match
+    // rejects the sign-in before any account is created or session issued.
+    // Applies to returning users too — a blocked address cannot sign in.
+    const blockedBy = await isEmailBlocked(c.env.DB, email)
+    if (blockedBy) {
+      console.warn('[oauth] blocked sign-in attempt for pattern match')
+      return c.redirect(`${redirectOrigin}/login?error=${encodeURIComponent('That email domain is not allowed.')}`)
+    }
 
     // Find existing user by email
     let user = await c.env.DB.prepare('SELECT * FROM freellm_users WHERE email = ?').bind(email).first<UserLike>()

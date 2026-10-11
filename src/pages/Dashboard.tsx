@@ -156,7 +156,7 @@ export default function Dashboard() {
                 <span className="text-[12px] text-muted">{item.detail}</span>
               </div>
               {!item.done && (
-                <Link to={item.to} className="ml-auto btn-secondary btn-sm" aria-label={`${item.label} — open Earn page`}>
+                <Link to={item.to} className="ml-auto btn-secondary btn-sm min-w-[64px]" aria-label={`${item.label} — open Earn page`}>
                   Go
                 </Link>
               )}
@@ -172,15 +172,15 @@ export default function Dashboard() {
         {ledger?.length === 0 && <p className="p-4 text-[13px] text-muted">Nothing yet — check in to get started.</p>}
         <div className="flex flex-col divide-y divide-line">
           {ledger?.slice(0, 8).map((entry, index) => (
-            <div key={index} className="flex items-center gap-3 px-4 py-2.5">
-              <span className={`num w-24 text-right text-[13px] ${entry.delta > 0 ? 'text-gain' : entry.delta < 0 ? 'text-loss' : 'text-content'}`} aria-label={entry.delta > 0 ? `+${entry.delta} earned` : `${entry.delta} spent`}>
+            <div key={index} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5">
+              <span className={`num w-24 shrink-0 text-right text-[13px] ${entry.delta > 0 ? 'text-gain' : entry.delta < 0 ? 'text-loss' : 'text-content'}`} aria-label={entry.delta > 0 ? `+${entry.delta} earned` : `${entry.delta} spent`}>
                 {formatDelta(entry.delta)}
               </span>
-              <span className="text-[13px]">{REASON_LABELS[entry.reason] ?? 'Other activity'}</span>
+              <span className="min-w-0 truncate text-[13px]">{REASON_LABELS[entry.reason] ?? 'Other activity'}</span>
               {typeof entry.meta?.model === 'string' && (
-                <span className="text-[12px] text-muted">{entry.meta.model}</span>
+                <span className="min-w-0 max-w-full truncate text-[12px] text-muted">{entry.meta.model}</span>
               )}
-              <span className="num ml-auto text-[12px] text-muted" title={new Date(entry.created_at).toLocaleString()}>{relativeTime(entry.created_at)}</span>
+              <span className="num ml-auto shrink-0 text-[12px] text-muted" title={new Date(entry.created_at).toLocaleString()}>{relativeTime(entry.created_at)}</span>
             </div>
           ))}
         </div>

@@ -83,23 +83,26 @@ export default function TypingGame() {
           Retype the dealt phrase exactly — 80+ wpm pays 100 cr, 50+ pays 50 cr, a finish pays 25 cr.
         </p>
         {phase.name === 'idle' && (
-          <Button onClick={() => void start()} className="self-start">
+          <Button onClick={() => void start()} className="w-full sm:w-auto sm:self-start">
             Deal a phrase
           </Button>
         )}
         {phase.name === 'typing' && phrase !== null && (
           <>
-            <p className="rounded-lg border border-line bg-surface-2 p-3 font-mono text-[13px]" aria-label="Phrase to type">
+            <p className="break-words rounded-lg border border-line bg-surface-2 p-3 font-mono text-[13px]" aria-label="Phrase to type">
               {phrase}
             </p>
             <label className="sr-only" htmlFor="typing-input">Retype the phrase exactly</label>
             <textarea
               id="typing-input"
-              autoFocus
-              className="input min-h-[80px] font-mono"
+              className="input min-h-[80px] font-mono text-[16px] sm:text-[13px]"
               value={typed}
               onChange={(e) => onType(e.target.value)}
               placeholder="Type it here…"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
             />
             <p className="num text-[12px] text-muted" role="status">
               {typed.length}/{phrase.length} chars

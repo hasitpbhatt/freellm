@@ -55,6 +55,12 @@ export default function AdminUsers() {
 
   async function setTier(user: BoardUser, tier: BoardUser['tier']) {
     if (tier === user.tier) return
+    // Upgrades unlock paid aliases — confirm so a fat-finger slip on a
+    // touch select can't silently grant pro/enterprise.
+    const rank = { free: 0, pro: 1, enterprise: 2 } as const
+    if (rank[tier] > rank[user.tier]) {
+      if (!confirm(`Grant ${tier} tier to ${user.email} (@${user.username})? This unlocks locked models for them.`)) return
+    }
     setSavingId(user.id)
     setRowError('')
     try {
@@ -109,6 +115,7 @@ export default function AdminUsers() {
         </p>
       </div>
 
+      <div className="sticky top-[48px] z-[5] -mx-1 bg-bg/95 px-1 py-2 backdrop-blur">
       <div className="flex flex-wrap items-center gap-3">
         <label className="sr-only" htmlFor="user-search">Search users</label>
         <input
@@ -118,7 +125,7 @@ export default function AdminUsers() {
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search email or username…"
         />
-        <label className="flex items-center gap-2 text-[13px] text-muted">
+        <label className="flex min-h-[44px] items-center gap-2 text-[13px] text-muted">
           Rank by
           <select className="input" value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
             {SORTS.map((s) => (
@@ -126,6 +133,10 @@ export default function AdminUsers() {
             ))}
           </select>
         </label>
+        <span className="num ml-auto text-[12px] text-muted" role="status">
+          Showing {visible.length} of {users.length}
+        </span>
+      </div>
       </div>
 
       {rowError && <p role="alert" className="text-[13px] text-loss">{rowError}</p>}
@@ -150,7 +161,7 @@ export default function AdminUsers() {
                 <span className="num text-[13px] text-muted">{index + 1}</span>
                 <div className="flex min-w-0 flex-col">
                   <span className="truncate text-[13px] font-medium">
-                    {u.username}
+                    {u.email}
                     {u.role === 'admin' && (
                       <span className="ml-1.5 rounded bg-accent/10 px-1 py-0.5 text-[10px] font-medium text-accent">admin</span>
                     )}
@@ -159,25 +170,29 @@ export default function AdminUsers() {
                     )}
                   </span>
                   <span className="num truncate text-[12px] text-muted">
-                    {u.email} · joined {new Date(u.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
+                    @{u.username} · joined {new Date(u.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
                   </span>
                 </div>
-                <span className="num text-right text-[13px]" title="Spendable global balance">{u.balance_credits.toLocaleString('en-US')}</span>
-                <span className="num text-right text-[12px] text-gain" title="Lifetime credits granted">+{u.earned.toLocaleString('en-US')}</span>
-                <span className="num text-right text-[12px] text-muted" title="Lifetime pool spend incl. scoped grants">{u.spent.toLocaleString('en-US')}</span>
-                <label className="flex items-center gap-2">
-                  <span className="sr-only">Tier for {u.username}</span>
+                <span className="num text-left text-[13px] sm:text-right" title="Spendable global balance">{u.balance_credits.toLocaleString('en-US')}</span>
+                <span className="num text-left text-[12px] text-gain sm:text-right" title="Lifetime credits granted">+{u.earned.toLocaleString('en-US')}</span>
+                <span className="num text-left text-[12px] text-muted sm:text-right" title="Lifetime pool spend incl. scoped grants">{u.spent.toLocaleString('en-US')}</span>
+                <label className="flex min-h-[44px] items-center gap-2">
+                  <span className="sr-only">Tier for {u.email}</span>
                   <select
                     className="input"
                     value={u.tier}
                     disabled={savingId === u.id}
                     onChange={(e) => void setTier(u, e.target.value as BoardUser['tier'])}
-                    title={savingId === u.id ? 'Saving…' : `Grant tier to ${u.username}`}
+                    title={savingId === u.id ? 'Saving…' : `Grant tier to ${u.email}`}
+                    aria-busy={savingId === u.id}
                   >
                     <option value="free">free</option>
                     <option value="pro">pro</option>
                     <option value="enterprise">enterprise</option>
                   </select>
+                  {savingId === u.id && (
+                    <span className="num text-[12px] text-muted" role="status">Saving…</span>
+                  )}
                 </label>
               </div>
             ))}

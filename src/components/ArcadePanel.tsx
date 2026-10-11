@@ -87,16 +87,16 @@ export default function ArcadePanel() {
           {level === null ? (
             <p className="text-[13px] text-muted" role="status">Checking level…</p>
           ) : level.pending ? (
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
               <p className="text-[13px] text-gain">Level {level.pending.level} earned — claim it.</p>
-              <Button size="sm" disabled={claimingLevel} onClick={() => void claimLevel(level.pending!.level)}>
+              <Button disabled={claimingLevel} onClick={() => void claimLevel(level.pending!.level)} className="w-full sm:w-auto">
                 {claimingLevel ? 'Claiming…' : `Claim +${level.pending.reward} cr`}
               </Button>
             </div>
           ) : level.next_xp !== null ? (
             <>
               <div
-                className="h-1.5 w-full overflow-hidden rounded-full bg-surface-2"
+                className="h-2.5 w-full overflow-hidden rounded-full bg-surface-2"
                 role="progressbar"
                 aria-valuenow={levelPct}
                 aria-valuemin={0}
@@ -106,7 +106,7 @@ export default function ArcadePanel() {
                 <div className="h-full bg-accent" style={{ width: `${levelPct}%` }} />
               </div>
               <p className="num text-[12px] text-muted" role="status">
-                {level.xp}/{level.next_xp} XP to level {level.level + 1} — earn 1 XP per 10 arcade credits
+                {levelPct}% · {level.xp}/{level.next_xp} XP to level {level.level + 1} — earn 1 XP per 10 arcade credits
               </p>
             </>
           ) : (
@@ -125,9 +125,9 @@ export default function ArcadePanel() {
           ) : clear.done ? (
             <p className="text-[13px] text-gain" role="status">Cleared today — all three games finished. Come back tomorrow.</p>
           ) : clear.ready ? (
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
               <p className="text-[13px] text-gain">All three games finished today — claim it.</p>
-              <Button size="sm" disabled={claiming} onClick={() => void claimClear()}>
+              <Button disabled={claiming} onClick={() => void claimClear()} className="w-full sm:w-auto">
                 {claiming ? 'Claiming…' : 'Claim +150 cr'}
               </Button>
             </div>
@@ -143,7 +143,7 @@ export default function ArcadePanel() {
           )}
         </div>
       </Card>
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <ReactionGame />
         <TypingGame />
         <TapsGame />

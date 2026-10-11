@@ -50,7 +50,6 @@ export default function Earn() {
   const [code, setCode] = useState('')
   const [redeemStatus, setRedeemStatus] = useState<{ kind: 'ok' | 'err'; message: string } | null>(null)
   const [busyAction, setBusyAction] = useState<string | null>(null)
-  const [arcadeLoaded, setArcadeLoaded] = useState(false)
   const [banner, setBanner] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [verifyLink, setVerifyLink] = useState<string | null>(null)
   const [openedTask, setOpenedTask] = useState<string | null>(null)
@@ -140,7 +139,7 @@ export default function Earn() {
       {banner && (
         <p role={banner.kind === 'err' ? 'alert' : 'status'} className={`flex flex-wrap items-center gap-2 text-[13px] ${banner.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
           <span className="flex-1">{banner.kind === 'ok' ? '✓ ' : '⚠ '}{banner.text}</span>
-          <button onClick={() => setBanner(null)} className="text-muted hover:text-content" aria-label="Dismiss message">
+          <button onClick={() => setBanner(null)} className="min-h-[44px] px-2 text-muted hover:text-content" aria-label="Dismiss message">
             Dismiss
           </button>
         </p>
@@ -214,6 +213,7 @@ export default function Earn() {
                 <span className="text-[13px] text-muted"><span aria-hidden="true">✓</span> Checked in today — come back tomorrow</span>
               ) : (
                 <Button
+                  className="w-full sm:w-auto"
                   disabled={busyAction !== null || !state.verified}
                   onClick={() => void run('checkin', () => api.post('/checkin'), `Checked in — +${state.checkin.today_reward.toLocaleString('en-US')} cr`)}
                 >
@@ -233,11 +233,11 @@ export default function Earn() {
                     key={day}
                     role="listitem"
                     aria-label={label}
-                    className={`flex h-9 flex-1 items-center justify-center rounded-md border text-[11px] ${
+                    className={`flex min-h-[44px] flex-1 items-center justify-center rounded-md border px-1 text-[11px] ${
                       done
-                        ? 'border-gain/40 bg-gain/10 text-gain'
+                        ? 'border-gain/40 bg-gain/10 font-semibold text-gain'
                         : isToday
-                          ? 'border-accent text-accent'
+                          ? 'border-accent font-semibold text-accent'
                           : 'border-line text-muted'
                     }`}
                     title={label}
@@ -260,41 +260,6 @@ export default function Earn() {
 
       {/* Daily arcade — skill games with bounded payouts */}
       {user && <ArcadePanel />}
-
-      {/* Play & earn — SkillArcade embedded so players never leave */}
-      <Card>
-        <CardHeader
-          title="Play & earn"
-          action={<a href="https://games.hasit.in" target="_blank" rel="noopener" className="text-[12px] text-accent hover:underline">Full screen ↗</a>}
-        />
-        <div className="flex flex-col gap-3 p-4">
-          <p className="text-[13px] text-muted">
-            Skill games from SkillArcade, playable right here. Scores earn arcade points; redeem{' '}
-            <code className="num">SKILLARCADE-1000</code> below for +1,000 free Pool credits (once per user).
-          </p>
-          {arcadeLoaded ? (
-            <iframe
-              src="https://games.hasit.in"
-              title="SkillArcade games"
-              loading="lazy"
-              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-              className="h-[78vh] min-h-[560px] w-full rounded-lg border border-line bg-bg"
-            />
-          ) : (
-            <button
-              onClick={() => setArcadeLoaded(true)}
-              className="flex min-h-[280px] flex-col items-center justify-center gap-2 rounded-lg border border-line bg-surface-2 p-8 text-center transition-colors hover:border-muted"
-            >
-              <span className="text-3xl" aria-hidden="true">🕹️</span>
-              <span className="text-[15px] font-semibold">Load the arcade</span>
-              <span className="max-w-md text-[13px] text-muted">
-                Play as a guest — no extra account. If games don't remember you (strict tracking
-                protection), use Full screen ↗ instead.
-              </span>
-            </button>
-          )}
-        </div>
-      </Card>
 
       {/* Referrals */}
       {state && (
@@ -464,11 +429,11 @@ export default function Earn() {
         ) : (
           <div className="flex flex-col divide-y divide-line">
             {redemptions.map((r, index) => (
-              <div key={`${r.code}-${index}`} className="flex items-center gap-3 px-4 py-2.5">
-                <code className="num text-[12px] text-muted">{r.code}</code>
-                <span className="num ml-auto text-[13px] text-gain">+{r.credits.toLocaleString('en-US')}</span>
-                {r.model_label && <span className="text-[12px] text-muted">{r.model_label} only</span>}
-                <span className="num text-[12px] text-muted" title={new Date(r.created_at).toLocaleString()}>
+              <div key={`${r.code}-${index}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5">
+                <code className="num min-w-0 break-all text-[12px] text-muted">{r.code}</code>
+                <span className="num ml-auto shrink-0 text-[13px] text-gain">+{r.credits.toLocaleString('en-US')}</span>
+                {r.model_label && <span className="min-w-0 truncate text-[12px] text-muted">{r.model_label} only</span>}
+                <span className="num shrink-0 text-[12px] text-muted" title={new Date(r.created_at).toLocaleString()}>
                   {new Date(r.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
                 </span>
               </div>
