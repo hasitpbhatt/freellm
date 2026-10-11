@@ -48,7 +48,7 @@ export default function Earn() {
   const [state, setState] = useState<EarnState | null>(null)
   const [code, setCode] = useState('')
   const [redeemStatus, setRedeemStatus] = useState<{ kind: 'ok' | 'err'; message: string } | null>(null)
-  const [busy, setBusy] = useState(false)
+  const [busyAction, setBusyAction] = useState<string | null>(null)
   const [banner, setBanner] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [verifyLink, setVerifyLink] = useState<string | null>(null)
   const [openedTask, setOpenedTask] = useState<string | null>(null)
@@ -71,8 +71,8 @@ export default function Earn() {
     if (user) void load()
   }, [user, load])
 
-  async function run(fn: () => Promise<unknown>, success: string) {
-    setBusy(true)
+  async function run(action: string, fn: () => Promise<unknown>, success: string) {
+    setBusyAction(action)
     setBanner(null)
     try {
       await fn()
@@ -81,13 +81,13 @@ export default function Earn() {
     } catch (err) {
       setBanner({ kind: 'err', text: err instanceof ApiError ? err.message : 'Something failed.' })
     } finally {
-      setBusy(false)
+      setBusyAction(null)
     }
   }
 
   async function redeem(event: FormEvent) {
     event.preventDefault()
-    setBusy(true)
+    setBusyAction('redeem')
     setRedeemStatus(null)
     try {
       const data = await api.post<{ redeemed: { code: string; credits: number; model: { label: string } | null } }>(
@@ -105,7 +105,7 @@ export default function Earn() {
     } catch (err) {
       setRedeemStatus({ kind: 'err', message: err instanceof ApiError ? err.message : 'Redemption failed.' })
     } finally {
-      setBusy(false)
+      setBusyAction(null)
     }
   }
 
@@ -120,8 +120,7 @@ export default function Earn() {
           redeem promo codes.
         </p>
         <div className="mt-4 flex justify-center gap-3">
-          <Link to="/register"><Button>Create account</Button></Link>
-          <Link to="/login"><Button variant="secondary">Sign in</Button></Link>
+          <Link to="/login"><Button>Sign in with Google</Button></Link>
         </div>
       </Card>
     )
@@ -136,26 +135,33 @@ export default function Earn() {
         </p>
       </div>
 
-      {banner && <p className={`text-[13px] ${banner.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>{banner.text}</p>}
+      {banner && (
+        <p role={banner.kind === 'err' ? 'alert' : 'status'} className={`flex flex-wrap items-center gap-2 text-[13px] ${banner.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
+          <span className="flex-1">{banner.kind === 'ok' ? '✓ ' : '⚠ '}{banner.text}</span>
+          <button onClick={() => setBanner(null)} className="text-muted hover:text-content" aria-label="Dismiss message">
+            Dismiss
+          </button>
+        </p>
+      )}
 
       {/* Verification gate */}
       {state && !state.verified && (
         <Card className="border-warn/40 p-4">
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-[13px] text-warn">
-              Verify your email to unlock earning — check-ins, tasks, and referral payouts are gated.
+              Verify {user.email} to unlock earning — check-ins, tasks, and referral payouts are gated.
             </span>
             <Button
               variant="secondary"
-              disabled={busy}
+              disabled={busyAction !== null}
               onClick={() =>
-                void run(async () => {
+                void run('resend', async () => {
                   const data = await api.post<{ dev_link?: string }>('/auth/resend-verification')
                   if (data.dev_link) setVerifyLink(data.dev_link)
-                }, 'Verification link sent — check your inbox.')
+                }, `Verification link sent to ${user.email} — check your inbox.`)
               }
             >
-              Resend link
+              {busyAction === 'resend' ? 'Sending…' : 'Resend link'}
             </Button>
           </div>
           {verifyLink && (
@@ -193,7 +199,8 @@ export default function Earn() {
               <span className="text-[13px]">
                 {state.checkin.checked_in_today ? (
                   <>
-                    🔥 <span className="num">{state.checkin.streak}</span>-day streak
+                    <span aria-hidden="true">🔥</span> <span className="num">{state.checkin.streak}</span>-day streak
+                    <span className="sr-only"> days in a row</span>
                   </>
                 ) : (
                   <>
@@ -202,25 +209,28 @@ export default function Earn() {
                 )}
               </span>
               {state.checkin.checked_in_today ? (
-                <span className="text-[13px] text-muted">✓ Checked in today — come back tomorrow</span>
+                <span className="text-[13px] text-muted"><span aria-hidden="true">✓</span> Checked in today — come back tomorrow</span>
               ) : (
                 <Button
-                  disabled={busy || !state.verified}
-                  onClick={() => void run(() => api.post('/checkin'), `Checked in — +${state.checkin.today_reward.toLocaleString('en-US')} cr`)}
+                  disabled={busyAction !== null || !state.verified}
+                  onClick={() => void run('checkin', () => api.post('/checkin'), `Checked in — +${state.checkin.today_reward.toLocaleString('en-US')} cr`)}
                 >
-                  Check in · +{state.checkin.today_reward.toLocaleString('en-US')}
+                  {busyAction === 'checkin' ? 'Checking in…' : `Check in · +${state.checkin.today_reward.toLocaleString('en-US')}`}
                 </Button>
               )}
             </div>
 
             {/* 7-day calendar */}
-            <div className="flex gap-1.5">
+            <div className="flex gap-1.5" role="list" aria-label="Check-ins, last 7 days (UTC dates)">
               {last7Days().map((day) => {
                 const done = state.checkin.calendar.includes(day)
                 const isToday = day === todayUtc()
+                const label = `${day}: ${done ? 'checked in' : isToday ? 'today, not yet checked in' : 'missed'}`
                 return (
                   <div
                     key={day}
+                    role="listitem"
+                    aria-label={label}
                     className={`flex h-9 flex-1 items-center justify-center rounded-md border text-[11px] ${
                       done
                         ? 'border-gain/40 bg-gain/10 text-gain'
@@ -228,9 +238,9 @@ export default function Earn() {
                           ? 'border-accent text-accent'
                           : 'border-line text-muted'
                     }`}
-                    title={day}
+                    title={label}
                   >
-                    {day.slice(8)}
+                    <span aria-hidden="true">{day.slice(8)}</span>
                   </div>
                 )
               })}
@@ -251,18 +261,26 @@ export default function Earn() {
         <Card>
           <CardHeader
             title="Invite friends"
-            action={<span className="num text-[12px] text-muted">+{(state.referral.reward / 1000).toLocaleString('en-US')}K each</span>}
+            action={<span className="num text-[12px] text-muted">+{state.referral.reward.toLocaleString('en-US')} cr each</span>}
           />
           <div className="flex flex-col gap-4 p-4">
+            <p className="text-[12px] text-muted">
+              Share this link anywhere — post it, message it, put it in your bio:
+            </p>
             <div className="flex flex-wrap items-center gap-2">
-              <code className="num flex-1 rounded-lg border border-line bg-surface-2 px-3 py-2 text-[12px]">
+              <label className="sr-only" htmlFor="invite-link">Your invite link</label>
+              <code id="invite-link" className="num min-w-0 flex-1 break-all rounded-lg border border-line bg-surface-2 px-3 py-2 text-[12px]">
                 {state.referral.link}
               </code>
               <Button
                 variant="secondary"
                 onClick={async () => {
-                  await navigator.clipboard.writeText(state.referral.link)
-                  setBanner({ kind: 'ok', text: 'Link copied — share it anywhere.' })
+                  try {
+                    await navigator.clipboard.writeText(state.referral.link)
+                    setBanner({ kind: 'ok', text: 'Link copied — share it anywhere.' })
+                  } catch {
+                    setBanner({ kind: 'err', text: 'Copy blocked by the browser — select the link above manually.' })
+                  }
                 }}
               >
                 Copy link
@@ -270,6 +288,7 @@ export default function Earn() {
               {'share' in navigator && (
                 <Button
                   variant="ghost"
+                  title="Share via your device's share sheet (mobile)"
                   onClick={() => void navigator.share({ url: state.referral.link, title: 'freellm' })}
                 >
                   Share
@@ -277,8 +296,8 @@ export default function Earn() {
               )}
             </div>
             <p className="text-[12px] text-muted">
-              Paid when a friend stays active for {state.referral.rows[0]?.milestone.tenure_days ?? 7} days or uses{' '}
-              {((state.referral.rows[0]?.milestone.tokens ?? 200_000) / 1000).toLocaleString('en-US')}K tokens.
+              Paid when a friend stays active for {state.referral.rows[0]?.milestone.tenure_days ?? 7} days <strong>or</strong> uses{' '}
+              {((state.referral.rows[0]?.milestone.tokens ?? 200_000) / 1000).toLocaleString('en-US')}K pool tokens — whichever comes first.
             </p>
 
             {state.referral.rows.length > 0 && (
@@ -287,14 +306,21 @@ export default function Earn() {
                   <div key={`${row.username}-${index}`} className="flex flex-wrap items-center gap-3 py-2.5">
                     <span className="text-[13px]">{row.username}</span>
                     {row.status === 'paid' ? (
-                      <span className="num text-[12px] text-gain">✓ +{row.reward?.toLocaleString('en-US')} paid</span>
+                      <span className="num text-[12px] text-gain"><span aria-hidden="true">✓</span> +{row.reward?.toLocaleString('en-US')} paid</span>
                     ) : (
                       <>
-                        <div className="h-1.5 w-24 overflow-hidden rounded-full bg-surface-2">
+                        <div
+                          className="h-1.5 w-24 overflow-hidden rounded-full bg-surface-2"
+                          role="progressbar"
+                          aria-valuenow={row.progress_pct}
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-label={`Progress for ${row.username}: ${row.progress_pct} percent`}
+                        >
                           <div className="h-full bg-accent" style={{ width: `${row.progress_pct}%` }} />
                         </div>
                         <span className="num text-[12px] text-muted">
-                          {row.tenure_days}d · {(row.tokens_used / 1000).toFixed(0)}K tokens · {row.progress_pct}%
+                          {row.tenure_days}d active · {(row.tokens_used / 1000).toFixed(0)}K tokens · {row.progress_pct}% to payout
                         </span>
                       </>
                     )}
@@ -303,7 +329,7 @@ export default function Earn() {
               </div>
             )}
             {state.referral.rows.length === 0 && (
-              <p className="text-[13px] text-muted">No referrals yet. Your link works anywhere.</p>
+              <p className="text-[13px] text-muted">No referrals yet. Share your link above — your friend signs in with Google and you both get paid once they're active a week or use 200K tokens.</p>
             )}
           </div>
         </Card>
@@ -318,22 +344,32 @@ export default function Earn() {
               <div key={task.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
                 {task.completed ? (
                   <>
-                    <span className="text-gain">✅</span>
+                    <span className="text-gain" aria-hidden="true">✅</span>
+                    <span className="sr-only">Done: </span>
                     <span className="text-[13px]">{task.title}</span>
                     <span className="num ml-auto text-[12px] text-gain">+{task.reward.toLocaleString('en-US')}</span>
                   </>
                 ) : (
                   <>
-                    <span className="text-muted">○</span>
-                    <span className="text-[13px]">{task.title}</span>
+                    <span className="text-muted" aria-hidden="true">○</span>
+                    <span className="sr-only">Not started: </span>
+                    <div className="flex min-w-[200px] flex-1 flex-col">
+                      <span className="text-[13px]">{task.title}</span>
+                      {task.description && (
+                        <span className="text-[12px] text-muted">{task.description}</span>
+                      )}
+                      {task.url && openedTask !== task.id && (
+                        <span className="text-[12px] text-muted">Opens {task.url} in a new tab — finish it there, then press Confirm.</span>
+                      )}
+                    </div>
                     <span className="num text-[12px] text-muted">+{task.reward.toLocaleString('en-US')}</span>
                     <span className="ml-auto flex gap-2">
                       {openedTask === task.id ? (
                         <Button
-                          disabled={busy || !state.verified}
-                          onClick={() => void run(() => api.post(`/tasks/${task.slug}/complete`), `Claimed +${task.reward.toLocaleString('en-US')} cr`)}
+                          disabled={busyAction !== null || !state.verified}
+                          onClick={() => void run(`task:${task.id}`, () => api.post(`/tasks/${task.slug}/complete`), `Claimed +${task.reward.toLocaleString('en-US')} cr`)}
                         >
-                          Confirm
+                          {busyAction === `task:${task.id}` ? 'Claiming…' : 'Confirm'}
                         </Button>
                       ) : (
                         <Button
@@ -360,42 +396,46 @@ export default function Earn() {
         <CardHeader title="Redeem a promo code" />
         <form className="flex flex-col gap-3 p-4 sm:flex-row sm:items-end" onSubmit={redeem}>
           <label className="flex flex-1 flex-col gap-1.5">
-            <span className="text-[12px] font-medium uppercase tracking-wide text-muted">Code</span>
+            <span className="text-[12px] font-medium uppercase tracking-wide text-muted">Code — from an admin or friend, letters and dashes</span>
             <input
               className="input num"
               value={code}
               onChange={(e) => setCode(e.target.value.toUpperCase())}
-              placeholder="LAUNCH-2026"
+              placeholder="e.g. WELCOME-500K"
               required
             />
           </label>
-          <Button type="submit" disabled={busy || code.trim() === ''}>
-            {busy ? 'Redeeming…' : 'Redeem'}
+          <Button type="submit" disabled={busyAction !== null || code.trim() === ''}>
+            {busyAction === 'redeem' ? 'Redeeming…' : 'Redeem'}
           </Button>
         </form>
         {redeemStatus && (
-          <p className={`px-4 pb-4 text-[13px] ${redeemStatus.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
+          <p role={redeemStatus.kind === 'err' ? 'alert' : 'status'} className={`px-4 pb-4 text-[13px] ${redeemStatus.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
             {redeemStatus.message}
           </p>
         )}
       </Card>
 
       {/* My redemptions */}
-      {redemptions.length > 0 && (
-        <Card>
-          <CardHeader title="Your redemptions" />
+      <Card>
+        <CardHeader title="Your redemptions" />
+        {redemptions.length === 0 ? (
+          <p className="p-4 text-[13px] text-muted">None yet — redeemed promo codes will show here with their date.</p>
+        ) : (
           <div className="flex flex-col divide-y divide-line">
             {redemptions.map((r, index) => (
               <div key={`${r.code}-${index}`} className="flex items-center gap-3 px-4 py-2.5">
                 <code className="num text-[12px] text-muted">{r.code}</code>
                 <span className="num ml-auto text-[13px] text-gain">+{r.credits.toLocaleString('en-US')}</span>
-                {r.model_label && <span className="text-[12px] text-muted">{r.model_label}</span>}
-                <span className="num text-[12px] text-muted">{new Date(r.created_at).toLocaleDateString()}</span>
+                {r.model_label && <span className="text-[12px] text-muted">{r.model_label} only</span>}
+                <span className="num text-[12px] text-muted" title={new Date(r.created_at).toLocaleString()}>
+                  {new Date(r.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
+                </span>
               </div>
             ))}
           </div>
-        </Card>
-      )}
+        )}
+      </Card>
     </div>
   )
 }

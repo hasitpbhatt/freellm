@@ -1,3 +1,5 @@
+import { useState } from 'react'
+
 // "Continue with Google" — a plain link to the server-side OAuth entry point
 // (/api/auth/google), which stores the state + desired destination in KV and
 // 302s to Google. The callback lands back with the session cookie set.
@@ -13,6 +15,7 @@ export function GoogleButton({
   /** Referral code to attribute if this sign-in creates the account. */
   ref?: string | null
 }) {
+  const [navigating, setNavigating] = useState(false)
   const safeNext = next && /^\/[^/\\]/.test(next) ? next : null
   const safeRef = ref && /^[a-z0-9]{2,32}$/i.test(ref) ? ref.toLowerCase() : null
   const params = new URLSearchParams()
@@ -22,8 +25,11 @@ export function GoogleButton({
   const href = query ? `/api/auth/google?${query}` : '/api/auth/google'
   return (
     <a
-      href={href}
-      className="btn-secondary flex w-full items-center justify-center gap-2.5"
+      href={navigating ? undefined : href}
+      aria-disabled={navigating}
+      onClick={() => setNavigating(true)}
+      title="Leaves freellm for Google sign-in, then returns here"
+      className={`btn-secondary flex w-full items-center justify-center gap-2.5 ${navigating ? 'opacity-60' : ''}`}
     >
       <svg aria-hidden="true" viewBox="0 0 48 48" className="h-4 w-4">
         <path
@@ -43,7 +49,7 @@ export function GoogleButton({
           d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.46-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
         />
       </svg>
-      {label}
+      {navigating ? 'Opening Google…' : label}
     </a>
   )
 }

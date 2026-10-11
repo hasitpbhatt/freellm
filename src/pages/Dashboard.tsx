@@ -29,7 +29,8 @@ export default function Dashboard() {
   const { user, loading, refresh } = useAuth()
   const [ledger, setLedger] = useState<LedgerEntry[] | null>(null)
   const [earn, setEarn] = useState<EarnState | null>(null)
-  const [busy, setBusy] = useState(false)
+  const [loadError, setLoadError] = useState(false)
+  const [checkingIn, setCheckingIn] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -39,8 +40,10 @@ export default function Dashboard() {
       ])
       setLedger(ledgerData.entries)
       setEarn(earnData)
+      setLoadError(false)
     } catch {
       // if the session died mid-load the shell redirects to sign-in
+      setLoadError(true)
     }
   }, [])
 
@@ -49,7 +52,28 @@ export default function Dashboard() {
   }, [user, load])
 
   if (loading) return <p className="py-12 text-center text-[13px] text-muted">Loading…</p>
-  if (!user) return null
+  if (!user) {
+    return (
+      <Card className="mx-auto max-w-md p-8 text-center">
+        <h1 className="text-lg font-semibold">Dashboard</h1>
+        <p className="mt-2 text-[13px] text-muted">Sign in to see your balance and activity.</p>
+        <div className="mt-4 flex justify-center gap-3">
+          <Link to="/login"><Button>Sign in with Google</Button></Link>
+        </div>
+      </Card>
+    )
+  }
+  if (loadError && ledger === null) {
+    return (
+      <Card className="mx-auto max-w-md p-8 text-center">
+        <h1 className="text-lg font-semibold">Dashboard</h1>
+        <p className="mt-2 text-[13px] text-muted">Could not load your activity. Check your connection and try again.</p>
+        <div className="mt-4 flex justify-center gap-3">
+          <Button onClick={() => void load()}>Retry</Button>
+        </div>
+      </Card>
+    )
+  }
 
   const hasCheckedIn = earn?.checkin.checked_in_today ?? false
   const hasBalance = user.balance_credits > 0
@@ -62,12 +86,12 @@ export default function Dashboard() {
   const completed = checklist.filter((item) => item.done).length
 
   async function checkIn() {
-    setBusy(true)
+    setCheckingIn(true)
     try {
       await api.post('/checkin')
       await Promise.all([load(), refresh()])
     } finally {
-      setBusy(false)
+      setCheckingIn(false)
     }
   }
 
@@ -78,21 +102,31 @@ export default function Dashboard() {
         <Card className="p-4">
           <p className="text-[12px] uppercase tracking-wide text-muted">Balance</p>
           <p className="num mt-1 text-2xl font-semibold">{user.balance_credits.toLocaleString('en-US')}</p>
-          <p className="text-[12px] text-muted">credits · any model</p>
+          <p className="text-[12px] text-muted">credits · 1 credit = 1 token on any model</p>
           <Link to="/usage" className="mt-2 inline-block text-[13px] text-accent hover:underline">Usage →</Link>
         </Card>
 
         {/* Streak */}
         <Card className="p-4">
           <p className="text-[12px] uppercase tracking-wide text-muted">Streak</p>
-          <p className="num mt-1 text-2xl font-semibold">🔥 {earn?.checkin.streak ?? 0}</p>
+          <p className="num mt-1 text-2xl font-semibold">
+            <span aria-hidden="true">🔥</span> {earn ? earn.checkin.streak : '—'}
+            <span className="sr-only"> day streak{earn && earn.checkin.streak !== 1 ? 's' : ''}</span>
+          </p>
           <p className="text-[12px] text-muted">days checked in</p>
           {hasCheckedIn ? (
-            <p className="mt-2 text-[13px] text-muted">✓ Checked in today</p>
+            <p className="mt-2 text-[13px] text-muted">Checked in today <span aria-hidden="true">✓</span></p>
           ) : (
-            <Button className="mt-2" variant="secondary" disabled={busy || !earn?.verified} onClick={() => void checkIn()}>
-              Check in
-            </Button>
+            <>
+              <Button className="mt-2" variant="secondary" disabled={checkingIn || !earn?.verified} onClick={() => void checkIn()}>
+                {checkingIn ? 'Checking in…' : 'Check in'}
+              </Button>
+              {earn && !earn.verified && (
+                <p className="mt-1 text-[12px] text-muted">
+                  Verify your email on the <Link to="/earn" className="text-accent hover:underline">Earn page</Link> first.
+                </p>
+              )}
+            </>
           )}
         </Card>
 
@@ -114,14 +148,15 @@ export default function Dashboard() {
         <div className="flex flex-col divide-y divide-line">
           {checklist.map((item) => (
             <div key={item.label} className="flex items-center gap-3 px-4 py-3">
-              <span className={item.done ? 'text-gain' : 'text-muted'}>{item.done ? '✅' : '○'}</span>
+              <span className={item.done ? 'text-gain' : 'text-muted'} aria-hidden="true">{item.done ? '✅' : '○'}</span>
+              <span className="sr-only">{item.done ? 'Done' : 'Not started'}: </span>
               <div className="flex flex-col">
                 <span className="text-[13px] font-medium">{item.label}</span>
                 <span className="text-[12px] text-muted">{item.detail}</span>
               </div>
               {!item.done && (
-                <Link to={item.to} className="ml-auto">
-                  <Button variant="secondary">Go</Button>
+                <Link to={item.to} className="ml-auto btn-secondary btn-sm" aria-label={`${item.label} — open Earn page`}>
+                  Go
                 </Link>
               )}
             </div>
@@ -137,14 +172,14 @@ export default function Dashboard() {
         <div className="flex flex-col divide-y divide-line">
           {ledger?.slice(0, 8).map((entry, index) => (
             <div key={index} className="flex items-center gap-3 px-4 py-2.5">
-              <span className={`num w-24 text-right text-[13px] ${entry.delta > 0 ? 'text-gain' : 'text-content'}`}>
+              <span className={`num w-24 text-right text-[13px] ${entry.delta > 0 ? 'text-gain' : entry.delta < 0 ? 'text-loss' : 'text-content'}`} aria-label={entry.delta > 0 ? `+${entry.delta} earned` : `${entry.delta} spent`}>
                 {formatDelta(entry.delta)}
               </span>
-              <span className="text-[13px]">{REASON_LABELS[entry.reason] ?? entry.reason}</span>
+              <span className="text-[13px]">{REASON_LABELS[entry.reason] ?? 'Other activity'}</span>
               {typeof entry.meta?.model === 'string' && (
                 <span className="text-[12px] text-muted">{entry.meta.model}</span>
               )}
-              <span className="num ml-auto text-[12px] text-muted">{relativeTime(entry.created_at)}</span>
+              <span className="num ml-auto text-[12px] text-muted" title={new Date(entry.created_at).toLocaleString()}>{relativeTime(entry.created_at)}</span>
             </div>
           ))}
         </div>

@@ -49,12 +49,21 @@ export default function Usage() {
     return (
       <Card className="mx-auto max-w-md p-8 text-center">
         <h1 className="text-lg font-semibold">Usage</h1>
-        <p className="mt-2 text-[13px] text-muted">Sign in to see your token spend.</p>
+        <p className="mt-2 text-[13px] text-muted">Sign in to see your credit spend.</p>
         <Link to="/login" className="btn-primary mt-4 inline-block">Sign in</Link>
       </Card>
     )
   }
-  if (error) return <p className="py-12 text-center text-[13px] text-loss">{error}</p>
+  if (error) {
+    return (
+      <div className="mx-auto max-w-md py-12 text-center">
+        <p className="text-[13px] text-loss" role="alert">{error}</p>
+        <button onClick={() => { setError(''); setUsage(null); api.get<Usage>('/usage').then(setUsage).catch(() => setError('Could not load usage.')) }} className="btn-secondary mt-4">
+          Retry
+        </button>
+      </div>
+    )
+  }
   if (!usage) return <p className="py-12 text-center text-[13px] text-muted">Loading…</p>
 
   const maxDaily = Math.max(1, ...usage.daily.map((d) => d.credits))
@@ -64,7 +73,9 @@ export default function Usage() {
       <div>
         <h1 className="text-xl font-semibold">Usage</h1>
         <p className="mt-1 text-[13px] text-muted">
-          Every request metered from provider-reported token counts. Failed requests are never charged.
+          Every request metered from provider-reported token counts — or the model's flat rate when
+          usage is unreported. Failed requests are never charged; stopped streams bill the flat rate.
+          Balance: <Credits value={usage.balance.total} /> cr.
         </p>
       </div>
 
@@ -96,7 +107,9 @@ export default function Usage() {
             <span className="text-[13px] text-muted">/day</span>
           </p>
           <p className="text-[12px] text-muted">
-            {usage.burn.days_remaining != null ? `~${usage.burn.days_remaining} days of balance left` : 'last 7 days'}
+            {usage.burn.days_remaining != null
+              ? `~${usage.burn.days_remaining} days of balance left (last ${usage.burn.window_days} days)`
+              : `last ${usage.burn.window_days} days`}
           </p>
         </Card>
       </div>
@@ -105,11 +118,11 @@ export default function Usage() {
       {usage.daily.length > 0 && (
         <Card>
           <CardHeader title="Last 14 days" />
-          <div className="flex items-end gap-1 p-4">
+          <div className="flex items-end gap-1 p-4" role="img" aria-label={`Daily credit spend, max ${maxDaily.toLocaleString('en-US')} credits in a day`}>
             {usage.daily.map((day) => (
               <div key={day.day} className="flex flex-1 flex-col items-center gap-1">
                 <div
-                  className="w-full rounded-t bg-accent/70"
+                  className={`w-full rounded-t ${day.credits === 0 ? 'bg-line' : 'bg-accent/70'}`}
                   style={{ height: `${Math.max(2, (day.credits / maxDaily) * 80)}px` }}
                   title={`${day.day}: ${day.credits.toLocaleString('en-US')} cr · ${day.messages} msgs`}
                 />
@@ -129,13 +142,18 @@ export default function Usage() {
               <div key={row.model} className="flex flex-wrap items-center gap-3 px-4 py-3">
                 <span className="text-[13px] font-medium">{row.model}</span>
                 <span className="num text-[12px] text-muted">{row.messages} msgs</span>
-                {row.tokens != null && (
+                {row.tokens != null ? (
                   <span className="num text-[12px] text-muted">
-                    {row.input_tokens?.toLocaleString('en-US')} in · {row.output_tokens?.toLocaleString('en-US')} out
+                    <span className="sr-only">input </span>{row.input_tokens?.toLocaleString('en-US') ?? '—'}
+                    <span aria-hidden="true"> in · </span><span className="sr-only">output </span>{row.output_tokens?.toLocaleString('en-US') ?? '—'} out
                   </span>
+                ) : (
+                  <span className="num text-[12px] text-muted">tokens unreported</span>
                 )}
                 {row.flat_rate_messages > 0 && (
-                  <span className="text-[12px] text-warn">{row.flat_rate_messages} flat-rate</span>
+                  <span className="text-[12px] text-muted" title="Requests billed at the model's flat rate because the provider reported no token usage">
+                    {row.flat_rate_messages} flat-rate ({row.flat_rate_messages === row.messages ? 'all' : 'some'})
+                  </span>
                 )}
                 <span className="num ml-auto text-[13px]">
                   <Credits value={row.credits} /> cr
@@ -167,14 +185,19 @@ export default function Usage() {
               </span>
               {event.total_tokens != null ? (
                 <span className="num text-[12px] text-muted">
-                  {event.input_tokens?.toLocaleString('en-US')}→{event.output_tokens?.toLocaleString('en-US')} tok
+                  <span className="sr-only">input </span>{event.input_tokens?.toLocaleString('en-US') ?? '—'}
+                  <span aria-hidden="true">→</span><span className="sr-only"> output </span>{event.output_tokens?.toLocaleString('en-US') ?? '—'} tokens
                 </span>
               ) : (
-                <span className="text-[12px] text-muted">flat rate</span>
+                <span className="text-[12px] text-muted">flat rate (usage unreported)</span>
               )}
-              {event.latency_ms != null && <span className="num text-[12px] text-muted">{event.latency_ms}ms</span>}
-              <span className="num ml-auto text-[13px]">
-                {event.credits_charged > 0 ? `${event.credits_charged.toLocaleString('en-US')} cr` : 'free'}
+              {event.latency_ms != null && <span className="num text-[12px] text-muted" title="Request latency">{event.latency_ms}ms</span>}
+              <span className="num ml-auto text-[13px]" title={event.status}>
+                {event.credits_charged > 0
+                  ? `${event.credits_charged.toLocaleString('en-US')} cr`
+                  : event.status === 'failed'
+                    ? 'no charge (failed)'
+                    : 'free'}
               </span>
             </div>
           ))}

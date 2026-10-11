@@ -2,8 +2,8 @@ import { useEffect, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 /**
- * /r/:code — referral landing. Stashes the code so registration can attribute
- * it, then sends the visitor into the signup flow.
+ * /r/:code — referral landing. Stashes the code so signup can attribute
+ * it, then sends the visitor into the sign-in flow.
  */
 export default function ReferralLanding() {
   const { code } = useParams<{ code: string }>()
@@ -20,8 +20,12 @@ export default function ReferralLanding() {
         // private mode — attribution just won't persist
       }
     }
-    navigate('/register', { replace: true })
+    navigate('/login', { replace: true })
   }, [code, navigate])
 
-  return null
+  return (
+    <p className="py-12 text-center text-[13px] text-muted" role="status">
+      Applying invite… taking you to sign-in.
+    </p>
+  )
 }

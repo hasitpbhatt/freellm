@@ -1,9 +1,8 @@
-import { BrowserRouter, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import AppShell from './components/AppShell'
 import Landing from './pages/Landing'
 import Placeholder from './pages/Placeholder'
 import Login from './pages/Login'
-import Register from './pages/Register'
 import Admin from './pages/Admin'
 import Earn from './pages/Earn'
 import Chat from './pages/Chat'
@@ -33,7 +32,7 @@ export default function App() {
           <Route path="/admin" element={<Admin />} />
           <Route path="/verify-email" element={<VerifyEmail />} />
           <Route path="/r/:code" element={<ReferralLanding />} />
-          <Route path="/register" element={<Register />} />
+          <Route path="/register" element={<Navigate to="/login" replace />} />
           <Route path="/login" element={<Login />} />
           <Route path="*" element={<Placeholder title="Not found" milestone="—" />} />
         </Route>

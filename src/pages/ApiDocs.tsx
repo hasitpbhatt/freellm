@@ -16,22 +16,30 @@ type ApiToken = {
 }
 
 /** Copyable code block — the whole point of this page is that people paste this. */
-function CodeBlock({ code, lang }: { code: string; lang?: string }) {
+function CodeBlock({ code, lang, label }: { code: string; lang?: string; label?: string }) {
   const [copied, setCopied] = useState(false)
+  const [copyFailed, setCopyFailed] = useState(false)
   return (
     <div className="relative">
+      {label && <p className="mb-1 text-[12px] font-medium text-muted">{label}</p>}
       <pre className="num overflow-x-auto rounded-lg border border-line bg-surface-2 p-3 text-[12px] leading-relaxed">
         <code>{code}</code>
       </pre>
       <button
         className="absolute right-2 top-2 rounded-md border border-line bg-bg px-2 py-1 text-[11px] text-muted transition-colors hover:text-content"
+        aria-label={label ? `Copy ${label}` : 'Copy code'}
         onClick={async () => {
-          await navigator.clipboard.writeText(code)
-          setCopied(true)
-          window.setTimeout(() => setCopied(false), 1500)
+          try {
+            await navigator.clipboard.writeText(code)
+            setCopied(true)
+            setCopyFailed(false)
+            window.setTimeout(() => setCopied(false), 1500)
+          } catch {
+            setCopyFailed(true)
+          }
         }}
       >
-        {copied ? 'copied' : `copy${lang ? ` ${lang}` : ''}`}
+        <span aria-live="polite">{copied ? 'copied' : copyFailed ? 'copy failed — select manually' : `copy${lang ? ` ${lang}` : ''}`}</span>
       </button>
     </div>
   )
@@ -53,7 +61,7 @@ export default function ApiDocs() {
   const [newToken, setNewToken] = useState<string | null>(null)
   const [label, setLabel] = useState('')
   const [banner, setBanner] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
-  const [busy, setBusy] = useState(false)
+  const [busyAction, setBusyAction] = useState<string | null>(null)
 
   const loadTokens = useCallback(async () => {
     try {
@@ -80,7 +88,7 @@ export default function ApiDocs() {
   async function createToken(event: React.FormEvent) {
     event.preventDefault()
     if (!label.trim()) return
-    setBusy(true)
+    setBusyAction('create')
     setBanner(null)
     setNewToken(null)
     try {
@@ -94,30 +102,35 @@ export default function ApiDocs() {
         kind: 'err',
         text:
           err instanceof ApiError && err.code === 'verification_required'
-            ? 'Verify your email before creating API tokens.'
+            ? 'Verify your email on the Earn page before creating API tokens.'
             : err instanceof ApiError
               ? err.message
               : 'Could not create a token.',
       })
     } finally {
-      setBusy(false)
+      setBusyAction(null)
     }
   }
 
-  async function revoke(id: string) {
-    setBusy(true)
+  async function revoke(id: string, tokenLabel: string) {
+    if (!confirm(`Revoke key "${tokenLabel}"? Scripts using it will break immediately. This cannot be undone.`)) return
+    setBusyAction(`revoke:${id}`)
     setBanner(null)
     try {
       await api.del<{ ok: boolean }>(`/tokens/${id}`)
       setTokens((prev) => prev.filter((t) => t.id !== id))
+      setBanner({ kind: 'ok', text: `Key "${tokenLabel}" revoked.` })
     } catch {
       setBanner({ kind: 'err', text: 'Could not revoke that token.' })
     } finally {
-      setBusy(false)
+      setBusyAction(null)
     }
   }
 
   if (authLoading) return <p className="py-12 text-center text-[13px] text-muted">Loading…</p>
+
+  // Examples below use the first live model; replace with any slug from the list.
+  const exampleSlug = models[0]?.slug ?? 'stepfun-5'
 
   return (
     <div className="flex flex-col gap-6">
@@ -130,7 +143,11 @@ export default function ApiDocs() {
         </p>
       </div>
 
-      {banner && <p className={`break-all text-[13px] ${banner.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>{banner.text}</p>}
+      {banner && (
+        <p role={banner.kind === 'err' ? 'alert' : 'status'} className={`break-all text-[13px] ${banner.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
+          {banner.kind === 'ok' ? '✓ ' : '⚠ '}{banner.text}
+        </p>
+      )}
 
       {/* Step 1 — a key */}
       {user ? (
@@ -139,11 +156,15 @@ export default function ApiDocs() {
           <div className="flex flex-col gap-4 p-4">
             <p className="text-[13px] text-muted">
               A key spends from your credit balance. It is shown once and stored hashed — losing it means
-              creating a new one. Your email must be verified first.
+              creating a new one. {user.email_verified !== 1 ? (
+                <>Your email is <strong>not verified yet</strong> — <Link to="/earn" className="text-accent hover:underline">verify it on the Earn page</Link> before creating keys.</>
+              ) : (
+                <>Your email is verified — you can create keys.</>
+              )}
             </p>
             <form className="flex flex-col gap-3 sm:flex-row sm:items-end" onSubmit={createToken}>
               <label className="flex flex-1 flex-col gap-1.5">
-                <span className="text-[12px] font-medium uppercase tracking-wide text-muted">Label</span>
+                <span className="text-[12px] font-medium uppercase tracking-wide text-muted">Label — shown in the list below so you know which script uses it</span>
                 <Input
                   value={label}
                   onChange={(e) => setLabel(e.target.value)}
@@ -152,16 +173,16 @@ export default function ApiDocs() {
                   required
                 />
               </label>
-              <Button type="submit" disabled={busy || label.trim() === ''}>
-                {busy ? 'Creating…' : 'Create key'}
+              <Button type="submit" disabled={busyAction === 'create' || label.trim() === ''}>
+                {busyAction === 'create' ? 'Creating…' : 'Create key'}
               </Button>
             </form>
             {newToken && (
               <div className="flex flex-col gap-2 rounded-lg border border-gain/40 bg-gain/5 p-3">
                 <span className="text-[12px] text-gain">
-                  Copy this key now — it is stored hashed and never shown again.
+                  Copy this key now — it is stored hashed and never shown again. Don't navigate away first.
                 </span>
-                <CodeBlock code={newToken} />
+                <CodeBlock code={newToken} label="Your new API key" />
               </div>
             )}
             {tokens.length > 0 && (
@@ -169,12 +190,18 @@ export default function ApiDocs() {
                 {tokens.map((token) => (
                   <div key={token.id} className="flex flex-wrap items-center gap-3 py-2.5">
                     <span className="text-[13px]">{token.label}</span>
-                    <code className="num text-[12px] text-muted">{token.token_prefix}</code>
+                    <code className="num text-[12px] text-muted" title="Key prefix (identifies the key — not usable as a key)">prefix {token.token_prefix}</code>
                     <span className="num text-[12px] text-muted">
                       last used {token.last_used_at ? new Date(token.last_used_at).toLocaleString() : 'never'}
                     </span>
-                    <Button variant="ghost" size="sm" className="ml-auto" disabled={busy} onClick={() => void revoke(token.id)}>
-                      Revoke
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="ml-auto"
+                      disabled={busyAction !== null}
+                      onClick={() => void revoke(token.id, token.label)}
+                    >
+                      {busyAction === `revoke:${token.id}` ? 'Revoking…' : 'Revoke'}
                     </Button>
                   </div>
                 ))}
@@ -198,7 +225,9 @@ export default function ApiDocs() {
         </p>
         <CodeBlock
           lang="js"
-          code={`import OpenAI from 'openai'
+          label="Install then run (Node 18+)"
+          code={`npm install openai
+import OpenAI from 'openai'
 
 const client = new OpenAI({
   baseURL: '${BASE_URL}',
@@ -206,14 +235,14 @@ const client = new OpenAI({
 })
 
 const res = await client.chat.completions.create({
-  model: '${models[0]?.slug ?? 'stepfun-5'}',                          // any slug below
-  messages: [{ role: 'user', content: 'Hello from curl-safe code' }],
+  model: '${exampleSlug}',                          // any slug below
+  messages: [{ role: 'user', content: 'Explain large language models in one sentence.' }],
 })
 console.log(res.choices[0].message.content)
 
 // streamed:
 const stream = await client.chat.completions.create({
-  model: '${models[0]?.slug ?? 'stepfun-5'}',
+  model: '${exampleSlug}',
   messages: [{ role: 'user', content: 'stream it' }],
   stream: true,
   stream_options: { include_usage: true },     // get the token counts
@@ -246,29 +275,32 @@ for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.
         </p>
       </Section>
 
-      <Section title="2 · call it — curl">
+      <Section title="3 · call it — curl">
         <CodeBlock
           lang="bash"
-          code={`# what's in the pool (public)
-curl -s ${BASE_URL}/models
-
-# one completion — model is a slug from the list above,
-# key goes in the Authorization header as a Bearer token
-curl -s ${BASE_URL}/chat/completions \\
+          label="List models"
+          code={`curl -s ${BASE_URL}/models`}
+        />
+        <CodeBlock
+          lang="bash"
+          label="One completion (model = slug above, key = Bearer token)"
+          code={`curl -s ${BASE_URL}/chat/completions \\
   -H "Authorization: Bearer fl_…" \\
   -H 'Content-Type: application/json' \\
   -d '{
-    "model": "${models[0]?.slug ?? 'stepfun-5'}",
+    "model": "${exampleSlug}",
     "messages": [{"role": "user", "content": "Explain your metering model."}],
     "temperature": 0.2
-  }'
-
-# streamed
-curl -N ${BASE_URL}/chat/completions \\
+  }'`}
+        />
+        <CodeBlock
+          lang="bash"
+          label="Streamed"
+          code={`curl -N ${BASE_URL}/chat/completions \\
   -H "Authorization: Bearer fl_…" \\
   -H 'Content-Type: application/json' \\
   -d '{
-    "model": "${models[0]?.slug ?? 'stepfun-5'}",
+    "model": "${exampleSlug}",
     "messages": [{"role": "user", "content": "hi"}],
     "stream": true,
     "stream_options": {"include_usage": true}
@@ -277,7 +309,12 @@ curl -N ${BASE_URL}/chat/completions \\
       </Section>
 
       {/* Reference */}
-      <Section title="3 · endpoints">
+      <Section title="4 · endpoints">
+        <p className="text-muted">
+          Gateway base URL is <code className="num">{BASE_URL}</code> for the <code className="num">/v1/*</code>{' '}
+          OpenAI-compatible surface. The <code className="num">/api/*</code> native surface lives at the same
+          origin root (e.g. <code className="num">{typeof window !== 'undefined' ? window.location.origin : ''}/api/…</code>).
+        </p>
         <div className="flex flex-col divide-y divide-line">
           <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2.5">
             <code className="num text-[12px] text-accent">GET /v1/models</code>
@@ -286,9 +323,10 @@ curl -N ${BASE_URL}/chat/completions \\
           <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2.5">
             <code className="num text-[12px] text-accent">POST /v1/chat/completions</code>
             <span className="text-[13px]">
-              OpenAi request/response. Accepts <code className="num">model</code>, <code className="num">messages</code>,{' '}
+              OpenAI request/response. Accepts <code className="num">model</code>, <code className="num">messages</code>,{' '}
               <code className="num">max_tokens</code>, <code className="num">temperature</code>,{' '}
-              <code className="num">top_p</code>, <code className="num">stream</code>. Auth: Bearer key or session
+              <code className="num">top_p</code>, <code className="num">stream</code>,{' '}
+              <code className="num">stream_options.include_usage</code>. Auth: Bearer key or session
               cookie.
             </span>
           </div>
@@ -311,16 +349,34 @@ curl -N ${BASE_URL}/chat/completions \\
       </Section>
 
       {/* Billing + errors */}
-      <Section title="4 · billing and errors">
+      <Section title="5 · billing and errors">
         <p className="text-muted">
           Every pool completion is charged in credits equal to the tokens the provider reported. When a
           provider reports no usage, the model's flat rate applies (shown per model in{' '}
           <Link to="/models" className="text-accent hover:underline">/models</Link> and in the{' '}
-          <code className="num">freellm.credits_charged</code> field). A failed upstream call costs nothing.
-          Insufficient balance → <code className="num">402</code>; locked tier →{' '}
-          <code className="num">403 upgrade_required</code> (no charge); failed upstream →{' '}
-          <code className="num">502</code>; unknown model → <code className="num">404</code>. Errors follow
-          OpenAI's <code className="num">{'{ error: { message, type, code } }'}</code> envelope.
+          <code className="num">freellm.credits_charged</code> field of the completion response). A failed
+          upstream call costs nothing.
+        </p>
+        <div className="flex flex-col divide-y divide-line">
+          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2">
+            <code className="num text-[12px] text-accent">402 insufficient_credits</code>
+            <span className="text-[13px]">Top up on <Link to="/earn" className="text-accent hover:underline">/earn</Link>.</span>
+          </div>
+          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2">
+            <code className="num text-[12px] text-accent">403 upgrade_required</code>
+            <span className="text-[13px]">Locked tier — no charge. Ask an admin for access.</span>
+          </div>
+          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2">
+            <code className="num text-[12px] text-accent">502 upstream_failed</code>
+            <span className="text-[13px]">Provider error — no charge. Retry shortly.</span>
+          </div>
+          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2">
+            <code className="num text-[12px] text-accent">404 model_not_found</code>
+            <span className="text-[13px]">Unknown slug — pick one from the list in step 2.</span>
+          </div>
+        </div>
+        <p className="text-muted">
+          Errors follow OpenAI's <code className="num">{'{ error: { message, type, code } }'}</code> envelope.
         </p>
       </Section>
 

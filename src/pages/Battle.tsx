@@ -56,6 +56,16 @@ export default function Battle() {
   const [leaderboard, setLeaderboard] = useState<LeaderRow[]>([])
   const [recent, setRecent] = useState<RecentBattle[]>([])
 
+  const runBlockReason = !user
+    ? 'Sign in to run battles.'
+    : selected.length < 2
+      ? 'Pick at least 2 models to compare.'
+      : !prompt.trim()
+        ? 'Write a prompt first.'
+        : running
+          ? 'Battle in progress…'
+          : ''
+
   const loadArena = useCallback(async () => {
     try {
       const [arena, catalog] = await Promise.all([
@@ -198,26 +208,39 @@ export default function Battle() {
         </p>
       </div>
 
-      {error && <p className="text-[13px] text-loss">{error}</p>}
+      {error && (
+        <p role="alert" className="flex flex-wrap items-center gap-2 text-[13px] text-loss">
+          <span className="flex-1">{error}</span>
+          <button onClick={() => void loadArena()} className="text-accent hover:underline">
+            Retry
+          </button>
+        </p>
+      )}
 
       {/* Setup */}
       <Card>
-        <CardHeader title="Start a battle" action={<span className="num text-[12px] text-muted">{selected.length}/4 picked</span>} />
+        <CardHeader title="Start a battle" action={<span className="num text-[12px] text-muted">{selected.length}/4 picked · pick 2–4</span>} />
         <div className="flex flex-col gap-4 p-4">
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2" role="group" aria-label="Models to battle">
             {models.map((model) => {
               const active = selected.includes(model.slug)
               return (
                 <button
                   key={model.slug}
                   onClick={() => toggleModel(model.slug)}
+                  aria-pressed={active}
+                  title={model.status === 'down' ? `${model.label} is down — battles with it will fail free` : model.label}
                   className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-[13px] transition-colors ${
                     active ? 'border-accent bg-accent/10' : 'border-line bg-surface-2 hover:border-muted'
                   }`}
                 >
-                  <span className={`h-2 w-2 rounded-full ${statusDot[model.status]}`} />
+                  <span className={`h-2 w-2 rounded-full ${statusDot[model.status]}`} aria-hidden="true" />
                   {model.label}
-                  {model.games > 0 && <span className="num text-[11px] text-muted">{model.elo}</span>}
+                  {model.games > 0 ? (
+                    <span className="num text-[11px] text-muted">{model.elo}</span>
+                  ) : (
+                    <span className="num text-[11px] text-muted">unranked</span>
+                  )}
                 </button>
               )
             })}
@@ -225,15 +248,20 @@ export default function Battle() {
           </div>
 
           <form className="flex flex-col gap-3" onSubmit={run}>
+            <label className="text-[12px] font-medium uppercase tracking-wide text-muted" htmlFor="battle-prompt">
+              Prompt for all models
+            </label>
             <textarea
+              id="battle-prompt"
               className="input min-h-[80px] resize-y"
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder="Write a Python function that reverses a linked list, with tests."
               maxLength={4000}
             />
-            <div className="flex items-center gap-3">
-              <Button type="submit" disabled={selected.length < 2 || !prompt.trim() || running || !user}>
+            <p className="num text-[12px] text-muted">{prompt.length}/4000</p>
+            <div className="flex flex-wrap items-center gap-3">
+              <Button type="submit" disabled={selected.length < 2 || !prompt.trim() || running || !user} title={runBlockReason}>
                 {running ? 'Battling…' : 'Run battle'}
               </Button>
               {!user && (
@@ -241,8 +269,13 @@ export default function Battle() {
                   <Link to="/login" className="text-accent hover:underline">Sign in</Link> to run battles.
                 </span>
               )}
+              {user && (selected.length < 2 || !prompt.trim()) && !running && (
+                <span className="text-[13px] text-muted">
+                  {selected.length < 2 ? 'Pick at least 2 models above.' : 'Write a prompt to compare.'}
+                </span>
+              )}
               {columns.length > 0 && !running && (
-                <Button variant="ghost" onClick={reset}>Clear</Button>
+                <Button variant="ghost" onClick={reset}>Clear results</Button>
               )}
             </div>
           </form>
@@ -251,7 +284,7 @@ export default function Battle() {
 
       {/* Blind columns */}
       {columns.length > 0 && (
-        <div className={`grid gap-4 ${columns.length > 2 ? 'lg:grid-cols-3' : 'md:grid-cols-2'}`}>
+        <div className={`grid gap-4 ${columns.length > 2 ? 'md:grid-cols-2 xl:grid-cols-4' : 'md:grid-cols-2'}`}>
           {columns.map((column) => (
             <Card key={column.label} className="flex flex-col">
               <div className="flex items-center gap-2 border-b border-line px-4 py-2.5">
@@ -285,7 +318,14 @@ export default function Battle() {
                   <p className="text-[12px] text-muted">no charge</p>
                 )}
                 {!voted && !column.streaming && column.content && !column.error && (
-                  <Button variant="secondary" className="mt-2 w-full" onClick={() => void vote(column.label)}>
+                  <Button
+                    variant="secondary"
+                    className="mt-2 w-full"
+                    onClick={() => {
+                      if (!confirm(`Vote for answer ${column.label} as the best? Votes are final and reveal all model identities.`)) return
+                      void vote(column.label)
+                    }}
+                  >
                     Vote {column.label} best
                   </Button>
                 )}
@@ -302,6 +342,9 @@ export default function Battle() {
       {/* Leaderboard */}
       <Card>
         <CardHeader title="Leaderboard" action={<span className="num text-[12px] text-muted">Elo · {leaderboard.filter((m) => m.games > 0).length} ranked</span>} />
+        <p className="px-4 pt-2 text-[12px] text-muted">
+          Elo rates blind-vote wins. New models start at 1500 unranked; votes move ratings up or down.
+        </p>
         <div className="flex flex-col divide-y divide-line">
           {leaderboard.map((row, index) => (
             <div key={row.slug} className="flex flex-wrap items-center gap-3 px-4 py-2.5">
@@ -336,10 +379,23 @@ export default function Battle() {
                   </span>
                 ))}
               </div>
+              <p className="num text-[11px] text-muted" title={new Date(battle.created_at).toLocaleString()}>
+                {battle.votes} {battle.votes === 1 ? 'vote' : 'votes'} · {relativeTime(battle.created_at)}
+              </p>
             </div>
           ))}
         </div>
       </Card>
     </div>
   )
+}
+
+function relativeTime(timestamp: number): string {
+  const seconds = Math.floor((Date.now() - timestamp) / 1000)
+  if (seconds < 60) return 'just now'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.floor(hours / 24)}d ago`
 }

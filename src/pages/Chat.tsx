@@ -69,20 +69,23 @@ export default function Chat() {
   const { user, loading: authLoading, refresh } = useAuth()
   const [searchParams] = useSearchParams()
   const [models, setModels] = useState<Model[]>([])
-  const [selected, setSelected] = useState<string>('')
+  const [selected, setSelected] = useState<string>(() => loadChatPersisted().selectedModel ?? '')
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
-  const [banner, setBanner] = useState<{ kind: 'warn' | 'err'; text: string } | null>(null)
+  const [banner, setBanner] = useState<{ kind: 'warn' | 'err'; text: string; action?: { label: string; to: string } } | null>(null)
   const [mode, setMode] = useState<'pool' | 'byok'>(() => loadChatPersisted().mode ?? 'pool')
   const [byokKeys, setByokKeys] = useState<ByokKey[]>([])
   const [byokLoading, setByokLoading] = useState(false)
   const [selectedKeyId, setSelectedKeyId] = useState<string>(() => loadChatPersisted().selectedKeyId ?? '')
   const abortRef = useRef<AbortController | null>(null)
+  const lastInputRef = useRef('')
+  const [retryAvailable, setRetryAvailable] = useState(false)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const pendingRef = useRef('')
   const rafRef = useRef<number | null>(null)
   const stickRef = useRef(true)
+  const [pinned, setPinned] = useState(true)
   const navigate = useNavigate()
 
   const loadModels = useCallback(async () => {
@@ -91,7 +94,9 @@ export default function Chat() {
       const catalog = Array.isArray(data?.models) ? data.models.map(normalizeCatalogModel) : []
       setModels(catalog)
       const wanted = searchParams.get('model')
+      const saved = loadChatPersisted().selectedModel
       if (wanted && catalog.some((m) => m.slug === wanted)) setSelected(wanted)
+      else if (saved && catalog.some((m) => m.slug === saved)) setSelected(saved)
       else if (catalog.length > 0) setSelected((prev) => prev || catalog[0].slug)
     } catch {
       setBanner({ kind: 'err', text: 'Could not load the model catalog.' })
@@ -138,6 +143,7 @@ export default function Chat() {
     // New bubbles stick to the bottom instantly. Per-token scrolling is
     // handled directly (without smooth animation) in the stream flush path.
     stickRef.current = true
+    setPinned(true)
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
   }, [messageCount])
@@ -184,12 +190,14 @@ export default function Chat() {
   function handleScroll() {
     const el = scrollRef.current
     if (!el) return
-    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    const pinnedNow = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    stickRef.current = pinnedNow
+    setPinned(pinnedNow)
   }
 
-  async function send(event: FormEvent) {
-    event.preventDefault()
-    const content = input.trim()
+  async function send(event?: FormEvent, overrideContent?: string) {
+    event?.preventDefault()
+    const content = (overrideContent ?? input).trim()
     if (!content || busy) return
     if (mode === 'pool' && !model) return
     if (mode === 'byok' && !selectedKey) return
@@ -197,6 +205,12 @@ export default function Chat() {
       setBanner({ kind: 'warn', text: `${model?.label ?? 'This model'} requires ${model?.access_tier} tier — contact an admin to upgrade.` })
       return
     }
+    if (mode === 'pool' && model?.status === 'down') {
+      setBanner({ kind: 'warn', text: `${model?.label ?? 'This model'} is down right now — pick another model. Failed requests are never charged.` })
+      return
+    }
+    lastInputRef.current = content
+    setRetryAvailable(false)
 
     // Never overlap streams sharing pendingRef/rafRef — abort stale first.
     abortRef.current?.abort()
@@ -314,14 +328,28 @@ export default function Chat() {
     await refresh()
 
     if (!result.completed && result.error && result.error !== 'aborted') {
+      const failedAssistantId = assistantId
       setMessages((prev) =>
         prev.map((m) =>
-          m.id === assistantId && m.content === ''
+          m.id === failedAssistantId && m.content === ''
             ? { ...m, streaming: false, error: result.error }
             : { ...m, streaming: false },
         ),
       )
-      setBanner({ kind: 'err', text: result.error ?? 'Chat failed.' })
+      if (result.status === 402) {
+        setBanner({
+          kind: 'err',
+          text: result.shortfall != null
+            ? `Not enough credits — short by about ${result.shortfall.toLocaleString('en-US')} cr.`
+            : result.error ?? 'Chat failed.',
+          action: { label: 'Earn more', to: '/earn' },
+        })
+      } else if (result.status === 403) {
+        setBanner({ kind: 'err', text: result.error ?? 'Chat failed.' })
+      } else {
+        setBanner({ kind: 'err', text: `${result.error ?? 'Chat failed.'} Nothing was charged.` })
+        setRetryAvailable(true)
+      }
     } else if (!result.completed && result.error === 'aborted') {
       setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)))
       if (mode === 'byok') {
@@ -356,8 +384,7 @@ export default function Chat() {
           <Link to="/earn" className="text-accent hover:underline">earn page</Link>, or bring your own key (free).
         </p>
         <div className="mt-4 flex justify-center gap-3">
-          <Link to="/register"><Button>Create account</Button></Link>
-          <Link to="/login"><Button variant="secondary">Sign in</Button></Link>
+          <Link to="/login"><Button>Sign in with Google</Button></Link>
         </div>
       </Card>
     )
@@ -368,7 +395,19 @@ export default function Chat() {
   const modelTierRank = (tier: string | undefined) => TIER_RANK[tier ?? 'free'] ?? 0
   const modelLocked = !!model && model.access_tier !== 'free' && user.role !== 'admin' && userTierRank < modelTierRank(model.access_tier)
 
-  const canSend = mode === 'pool' ? !!model && !modelLocked && !!input.trim() : mode === 'byok' ? !!selectedKey && !!input.trim() : false
+  const canSend = mode === 'pool' ? !!model && !modelLocked && model?.status !== 'down' && !!input.trim() : mode === 'byok' ? !!selectedKey && !!input.trim() : false
+  const sendBlockReason =
+    mode === 'byok'
+      ? !selectedKey
+        ? 'Pick one of your keys on the left to send.'
+        : ''
+      : !model
+        ? 'Waiting for the model catalog to load.'
+        : modelLocked
+          ? `${model.label} needs ${model.access_tier} tier — ask an admin to upgrade, or pick a free model.`
+          : model.status === 'down'
+            ? `${model.label} is down right now — pick another model; failed requests are never charged.`
+            : ''
 
   return (
     <div className="grid gap-4 lg:grid-cols-[220px_1fr]">
@@ -430,13 +469,22 @@ export default function Chat() {
               <button
                 key={m.slug}
                 onClick={() => setSelected(m.slug)}
+                aria-pressed={selected === m.slug}
+                title={
+                  m.access_tier !== 'free'
+                    ? `${m.label} — needs ${m.access_tier} tier`
+                    : m.status === 'down'
+                      ? `${m.label} — down right now`
+                      : m.label
+                }
                 className={`card flex flex-col gap-1 p-3 text-left transition-colors ${
                   selected === m.slug ? 'border-accent' : 'hover:border-muted'
                 }`}
               >
                 <span className="flex items-center gap-2">
-                  <span className={`h-2 w-2 rounded-full ${statusDot[m.status]}`} />
+                  <span className={`h-2 w-2 rounded-full ${statusDot[m.status]}`} aria-hidden="true" />
                   <span className="text-[13px] font-medium">{m.label}</span>
+                  <span className="sr-only">{m.status}</span>
                   {m.access_tier !== 'free' && (
                     <span className="rounded bg-accent/10 px-1 py-0.5 text-[10px] font-medium text-accent">
                       🔒 {m.access_tier}
@@ -518,7 +566,7 @@ export default function Chat() {
           </Card>
         )}
 
-        <div ref={scrollRef} onScroll={handleScroll} className="card flex-1 overflow-y-auto p-4">
+        <div ref={scrollRef} onScroll={handleScroll} role="log" aria-label="Chat messages" tabIndex={0} className="card relative flex-1 overflow-y-auto p-4">
           {messages.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
               <p className="text-[13px] text-muted">
@@ -547,7 +595,7 @@ export default function Chat() {
                       m.role === 'user' ? 'bg-accent/15' : 'bg-surface-2'
                     }`}
                   >
-                    {m.content || (m.streaming ? <span className="text-muted">thinking…</span> : null)}
+                    {m.content || (m.streaming ? <span role="status" className="text-muted">thinking…</span> : null)}
                     {m.error && <span className="text-loss">{m.error}</span>}
                   </div>
                   {m.cost && (
@@ -572,21 +620,52 @@ export default function Chat() {
               ))}
             </div>
           )}
+          {!pinned && messages.length > 0 && (
+            <button
+              onClick={() => {
+                stickRef.current = true
+                setPinned(true)
+                const el = scrollRef.current
+                if (el) el.scrollTop = el.scrollHeight
+              }}
+              className="btn-secondary self-center"
+            >
+              Jump to latest ↓
+            </button>
+          )}
         </div>
 
         {banner && (
-          <p className={`text-[13px] ${banner.kind === 'err' ? 'text-loss' : 'text-warn'}`}>{banner.text}</p>
+          <p role="alert" className={`flex flex-wrap items-center gap-2 text-[13px] ${banner.kind === 'err' ? 'text-loss' : 'text-warn'}`}>
+            <span className="flex-1">{banner.text}</span>
+            {banner.action && (
+              <Link to={banner.action.to} className="text-accent hover:underline">{banner.action.label}</Link>
+            )}
+            {!busy && retryAvailable && (
+              <button onClick={() => void send(undefined, lastInputRef.current)} className="text-accent hover:underline">
+                Retry
+              </button>
+            )}
+            <button onClick={() => setBanner(null)} className="text-muted hover:text-content" aria-label="Dismiss message">
+              Dismiss
+            </button>
+          </p>
         )}
 
         {mode === 'pool' && user.balance_credits < 100_000 && (
           <p className="flex flex-wrap items-center gap-2 text-[13px] text-warn">
-            Running low — your streak check-in gives +50,000 cr.
+            <span>Low balance: <Credits value={user.balance_credits} /> cr — your streak check-in gives +50,000 cr.</span>
             <Link to="/earn" className="text-accent hover:underline">Earn more</Link>
           </p>
         )}
 
+        {!busy && !canSend && input.trim() && (
+          <p className="text-[13px] text-muted" role="status">{sendBlockReason}</p>
+        )}
         <form className="flex items-end gap-2" onSubmit={send}>
+          <label className="sr-only" htmlFor="chat-input">Message</label>
           <textarea
+            id="chat-input"
             className="input min-h-[42px] flex-1 resize-none"
             rows={1}
             value={input}
@@ -601,16 +680,16 @@ export default function Chat() {
             disabled={mode === 'byok' && !selectedKey}
           />
           {busy ? (
-            <Button type="button" variant="secondary" onClick={stop}>Stop</Button>
+            <Button type="button" variant="secondary" onClick={stop} title="Stop (Esc)">Stop</Button>
           ) : (
-            <Button type="submit" disabled={!canSend}>Send</Button>
+            <Button type="submit" disabled={!canSend} title={canSend ? 'Send (Enter)' : sendBlockReason}>Send</Button>
           )}
         </form>
         <p className="num text-[12px] text-muted">
           {mode === 'pool' ? (
-            <>spendable: <Credits value={user.balance_credits} /> cr · Enter sends · Esc stops</>
+            <>spendable: <Credits value={user.balance_credits} /> cr · Enter sends, Shift+Enter for a new line · Esc stops</>
           ) : (
-            <>Your Key mode — free · Enter sends · Esc stops</>
+            <>Your Key mode — free · Enter sends, Shift+Enter for a new line · Esc stops</>
           )}
         </p>
       </div>

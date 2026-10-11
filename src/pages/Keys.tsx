@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api, ApiError } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { Button, Card, CardHeader, Input } from '../components/ui'
@@ -76,6 +77,7 @@ export default function Keys() {
   const [banner, setBanner] = useState<{ kind: 'ok' | 'err' | 'warn'; text: string } | null>(null)
   const [persisted, setPersisted] = useState<PersistedState>(() => loadPersisted())
   const [expandedIds, setExpandedIds] = useState<string[]>(() => loadPersisted().expandedIds ?? [])
+  const [testingId, setTestingId] = useState<string | null>(null)
 
   const loadKeys = async () => {
     try {
@@ -101,7 +103,7 @@ export default function Keys() {
     if (!form.label.trim() || form.label.length > 80) e.label = 'Label (1–80 chars) is required.'
     try { new URL(form.base_url) } catch { e.base_url = 'Enter a valid base URL (e.g. https://api.openai.com/v1).' }
     if (!form.upstream_model.trim()) e.upstream_model = 'Upstream model name is required (e.g. gpt-4o).'
-    if (!form.api_key.trim() || !form.api_key.startsWith('sk-')) e.api_key = 'Enter a valid API key (starts with sk-).'
+    if (!form.api_key.trim()) e.api_key = 'Paste your provider API key.'
     setErrors(e)
     return Object.keys(e).length === 0
   }
@@ -136,6 +138,7 @@ export default function Keys() {
 
   const handleTest = async (id: string) => {
     setBanner(null)
+    setTestingId(id)
     try {
       const res = await api.post<{ test: KeyTestResult }>(`/keys/${id}/test`)
       setKeys((prev) => prev.map((k) => (k.id === id ? { ...k, ...res.test } : k)))
@@ -143,16 +146,18 @@ export default function Keys() {
     } catch (err: unknown) {
       const msg = err instanceof ApiError ? err.message : err instanceof Response ? await err.text() : String(err)
       setBanner({ kind: 'err', text: `Test failed: ${msg}` })
+    } finally {
+      setTestingId(null)
     }
   }
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Delete this key? It cannot be undone.')) return
+  const handleDelete = async (key: ByokKey) => {
+    if (!confirm(`Delete key "${key.label}"? Chats using it will need another key. This cannot be undone.`)) return
     try {
-      await api.del(`/keys/${id}`)
-      setKeys((prev) => prev.filter((k) => k.id !== id))
-      setExpandedIds((prev) => prev.filter((e) => e !== id))
-      setBanner({ kind: 'ok', text: 'Key deleted.' })
+      await api.del(`/keys/${key.id}`)
+      setKeys((prev) => prev.filter((k) => k.id !== key.id))
+      setExpandedIds((prev) => prev.filter((e) => e !== key.id))
+      setBanner({ kind: 'ok', text: `Key "${key.label}" deleted.` })
     } catch (err: unknown) {
       const msg = err instanceof ApiError ? err.message : err instanceof Response ? await err.text() : String(err)
       setBanner({ kind: 'err', text: `Delete failed: ${msg}` })
@@ -166,7 +171,19 @@ export default function Keys() {
   const isExpanded = (id: string) => expandedIds.includes(id)
 
   if (authLoading) return <p className="py-12 text-center text-[13px] text-muted">Loading…</p>
-  if (!user) return null
+  if (!user) {
+    return (
+      <Card className="mx-auto max-w-md p-8 text-center">
+        <h1 className="text-lg font-semibold">Your Keys</h1>
+        <p className="mt-2 text-[13px] text-muted">
+          Sign in to store your own provider keys and chat free.
+        </p>
+        <div className="mt-4 flex justify-center gap-3">
+          <Link to="/login"><Button>Sign in with Google</Button></Link>
+        </div>
+      </Card>
+    )
+  }
 
   return (
     <div className="grid gap-4 lg:max-w-3xl mx-auto">
@@ -240,7 +257,12 @@ export default function Keys() {
 
       {banner && (
         <Card className={`border-${banner.kind === 'ok' ? 'gain' : banner.kind === 'err' ? 'loss' : 'warn'}`}>
-          <p className="p-4 text-[13px]">{banner.text}</p>
+          <div className="flex items-start gap-2 p-4">
+            <p role={banner.kind === 'err' ? 'alert' : 'status'} className="flex-1 text-[13px]">{banner.text}</p>
+            <button onClick={() => setBanner(null)} className="text-[12px] text-muted hover:text-content" aria-label="Dismiss message">
+              Dismiss
+            </button>
+          </div>
         </Card>
       )}
 
@@ -279,8 +301,11 @@ export default function Keys() {
                       </button>
                     </div>
                     <div className="flex gap-2">
-                      <Button variant="secondary" size="sm" onClick={() => handleTest(k.id)} disabled={adding}>Test</Button>
-                      <Button variant="secondary" size="sm" className="text-loss hover:bg-loss/10" onClick={() => handleDelete(k.id)}>Delete</Button>
+                      <Button variant="secondary" size="sm" onClick={() => handleTest(k.id)} disabled={testingId === k.id || adding}>
+                        {testingId === k.id ? 'Testing…' : 'Test'}
+                      </Button>
+                      <Link to="/chat" className="btn-secondary btn-sm">Use in chat</Link>
+                      <Button variant="secondary" size="sm" className="text-loss hover:bg-loss/10" onClick={() => handleDelete(k)}>Delete</Button>
                     </div>
                   </div>
                   {isExpanded(k.id) && (

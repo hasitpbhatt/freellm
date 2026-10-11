@@ -46,8 +46,14 @@ export default function AdminVault() {
   const [keys, setKeys] = useState<VaultKey[] | null>(null)
   const [error, setError] = useState('')
   const [revealingId, setRevealingId] = useState<string | null>(null)
-  const [revealedKey, setRevealedKey] = useState<{ id: string; key: string } | null>(null)
+  const [revealedKey, setRevealedKey] = useState<{ id: string; label: string; owner: string; key: string } | null>(null)
   const [toast, setToast] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+
+  useEffect(() => {
+    if (!toast) return
+    const timer = window.setTimeout(() => setToast(null), 4000)
+    return () => window.clearTimeout(timer)
+  }, [toast])
 
   const load = useCallback(async () => {
     try {
@@ -67,11 +73,16 @@ export default function AdminVault() {
     void load()
   }, [load])
 
-  const handleReveal = async (keyId: string) => {
-    setRevealingId(keyId)
+  const handleReveal = async (key: VaultKey) => {
+    if (revealedKey && revealedKey.id !== key.id) {
+      setToast({ kind: 'err', text: `Close the open reveal for "${revealedKey.label}" first — one secret at a time.` })
+      return
+    }
+    if (!confirm(`Reveal the bearer key of "${key.label}" (@${key.username})? It will be shown on screen — make sure nobody is watching.`)) return
+    setRevealingId(key.id)
     try {
-      const key = await revealVaultKey(keyId)
-      setRevealedKey({ id: keyId, key })
+      const apiKey = await revealVaultKey(key.id)
+      setRevealedKey({ id: key.id, label: key.label, owner: `@${key.username} (${key.email})`, key: apiKey })
     } catch (err) {
       setToast({ kind: 'err', text: `Reveal failed: ${err instanceof ApiError ? err.message : String(err)}` })
     } finally {
@@ -92,7 +103,16 @@ export default function AdminVault() {
     setRevealedKey(null)
   }
 
-  if (error) return <p className="py-12 text-center text-[13px] text-loss">{error}</p>
+  if (error) {
+    return (
+      <div className="mx-auto max-w-md py-12 text-center">
+        <p className="text-[13px] text-loss" role="alert">{error}</p>
+        <Button onClick={() => void load()} className="mt-4">
+          Retry
+        </Button>
+      </div>
+    )
+  }
   if (keys === null) return <p className="py-12 text-center text-[13px] text-muted">Loading…</p>
 
   return (
@@ -101,13 +121,13 @@ export default function AdminVault() {
         <h1 className="text-xl font-semibold">Vault (BYOK)</h1>
         <p className="mt-1 text-[13px] text-muted">
           All user-provided keys across the platform. Keys are encrypted at rest (AES-256-GCM).
-          Reveal decrypts the key and shows it inline — audit trail implied.
+          Reveal decrypts one key at a time and shows it inline — every reveal hits the server audit log.
         </p>
       </div>
 
       {keys.length === 0 && (
         <Card className="p-8 text-center text-[13px] text-muted">
-          No BYOK keys stored yet.
+          No BYOK keys stored yet. Keys appear here when users add them on the Keys page.
         </Card>
       )}
 
@@ -115,28 +135,28 @@ export default function AdminVault() {
         <Card key={k.id} className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className={`h-2 w-2 rounded-full ${statusDot[k.status]}`} />
+              <span className={`h-2 w-2 rounded-full ${statusDot[k.status]}`} aria-hidden="true" />
+              <span className="sr-only">{statusLabel[k.status]}: </span>
               <span className="font-medium">{k.label}</span>
               <span className="num rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted">
                 {statusLabel[k.status]}
               </span>
             </div>
-            <div className="flex flex-wrap gap-3 text-[12px] text-muted">
-              <span className="num font-mono">{k.key_masked}</span>
-              <span>@{k.username}</span>
-              <span>{k.email}</span>
-              <span>{k.base_url}</span>
-              <span className="font-mono">{k.upstream_model}</span>
-              <span>Served: {k.messages_served}</span>
-              <span>Added: {formatTime(k.created_at)}</span>
-              {k.last_checked_at && <span>Last checked: {formatTime(k.last_checked_at)}</span>}
-            </div>
+            <dl className="flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-muted">
+              <div><dt className="sr-only">Masked key</dt><dd className="num font-mono">{k.key_masked}</dd></div>
+              <div><dt className="sr-only">Owner</dt><dd>@{k.username} · {k.email}</dd></div>
+              <div><dt className="sr-only">Endpoint</dt><dd>{k.base_url}</dd></div>
+              <div><dt className="sr-only">Upstream model</dt><dd className="font-mono">{k.upstream_model}</dd></div>
+              <div><dt className="sr-only">Messages served</dt><dd>Served: {k.messages_served}</dd></div>
+              <div><dt className="sr-only">Added</dt><dd>Added: {formatTime(k.created_at)}</dd></div>
+              <div><dt className="sr-only">Last checked</dt><dd>Last checked: {formatTime(k.last_checked_at)}</dd></div>
+            </dl>
           </div>
           <div className="flex gap-2">
             <Button
               variant="ghost"
-              onClick={() => handleReveal(k.id)}
-              disabled={revealingId === k.id}
+              onClick={() => handleReveal(k)}
+              disabled={revealingId !== null}
               className="text-accent"
             >
               {revealingId === k.id ? 'Revealing…' : 'Reveal'}
@@ -148,15 +168,18 @@ export default function AdminVault() {
       {/* Reveal modal */}
       {revealedKey && (
         <div className="modal-overlay" onClick={closeReveal}>
-          <Card className="modal-content" onClick={(e) => e.stopPropagation()}>
+          <Card className="modal-content" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={`Revealed key for ${revealedKey.label}`}>
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold">Key revealed — {revealedKey.id.slice(0, 8)}…</h3>
-              <button onClick={closeReveal} className="text-muted hover:text-content text-2xl leading-none">×</button>
+              <h3 className="text-lg font-semibold">Key revealed — "{revealedKey.label}" ({revealedKey.owner})</h3>
+              <button onClick={closeReveal} className="text-muted hover:text-content text-2xl leading-none" aria-label="Close reveal dialog">×</button>
             </div>
             <div className="relative mb-4">
+              <label className="sr-only" htmlFor="revealed-key-value">Revealed bearer key</label>
               <textarea
+                id="revealed-key-value"
                 readOnly
-                className="input w-full font-mono text-[12px] min-h-[60px]"
+                onFocus={(e) => e.target.select()}
+                className="input w-full font-mono text-[12px] min-h-[60px] pr-20"
                 value={revealedKey.key}
               />
               <Button
@@ -169,7 +192,8 @@ export default function AdminVault() {
               </Button>
             </div>
             <p className="text-[12px] text-muted">
-              This key is decrypted on demand. Close this dialog when done — it will not be stored.
+              Decrypted on demand for this viewing. Copying puts it in your system clipboard — clear
+              the clipboard after use. Closing hides it again.
             </p>
             <div className="mt-4 flex justify-end">
               <Button variant="secondary" onClick={closeReveal}>Done</Button>
@@ -180,9 +204,9 @@ export default function AdminVault() {
 
       {/* Toast */}
       {toast && (
-        <div className="toast-container">
+        <div className="toast-container" role={toast.kind === 'err' ? 'alert' : 'status'}>
           <Card className={`border-${toast.kind === 'ok' ? 'gain' : 'loss'} max-w-sm`}>
-            <p className="p-3 text-[13px]">{toast.text}</p>
+            <p className="p-3 text-[13px]">{toast.kind === 'ok' ? '✓ ' : '⚠ '}{toast.text}</p>
           </Card>
         </div>
       )}

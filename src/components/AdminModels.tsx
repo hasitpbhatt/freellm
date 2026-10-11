@@ -55,7 +55,16 @@ export default function AdminModels() {
     void load()
   }, [load])
 
-  if (error) return <p className="py-12 text-center text-[13px] text-loss">{error}</p>
+  if (error) {
+    return (
+      <div className="mx-auto max-w-md py-12 text-center">
+        <p className="text-[13px] text-loss" role="alert">{error}</p>
+        <Button onClick={() => void load()} className="mt-4">
+          Retry
+        </Button>
+      </div>
+    )
+  }
   if (models === null) return <p className="py-12 text-center text-[13px] text-muted">Loading…</p>
 
   return (
@@ -85,14 +94,16 @@ export default function AdminModels() {
 }
 
 function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => void }) {
-  const [busyId, setBusyId] = useState('')
+  const [busyKey, setBusyKey] = useState<string | null>(null)
+  const busy = (key: string) => busyKey === key
   const [editingAlias, setEditingAlias] = useState(false)
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null)
+  const [revealed, setRevealed] = useState<{ providerId: string; label: string; key: string } | null>(null)
   const [actionError, setActionError] = useState('')
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({})
 
   async function testProvider(providerId: string) {
-    setBusyId(providerId)
+    setBusyKey(`test:${providerId}`)
     try {
       const data = await api.post<{ test: TestResult }>(`/admin/models/${model.id}/providers/${providerId}/test`)
       setTestResults((prev) => ({ ...prev, [providerId]: data.test }))
@@ -109,32 +120,39 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
         },
       }))
     } finally {
-      setBusyId('')
+      setBusyKey(null)
     }
   }
 
-  async function revealProviderKey(providerId: string) {
-    setBusyId(providerId)
+  async function revealProviderKey(provider: ModelProvider) {
+    if (!confirm(`Reveal the bearer key for "${provider.label}"? It will be shown on screen — make sure nobody is watching.`)) return
+    setBusyKey(`reveal:${provider.id}`)
+    setActionError('')
     try {
-      const key = await revealProvider(model.id, providerId)
-      navigator.clipboard.writeText(key)
-      alert(`Key copied to clipboard:\n${key}`)
+      const key = await revealProvider(model.id, provider.id)
+      setRevealed({ providerId: provider.id, label: provider.label, key })
+      try {
+        await navigator.clipboard.writeText(key)
+      } catch {
+        // clipboard denied — key stays visible below for manual copy
+      }
     } catch (err) {
-      alert(`Reveal failed: ${err instanceof ApiError ? err.message : String(err)}`)
+      setActionError(`Reveal failed: ${err instanceof ApiError ? err.message : String(err)}`)
     } finally {
-      setBusyId('')
+      setBusyKey(null)
     }
   }
 
   async function deleteAlias() {
+    const labels = model.providers.map((p) => p.label).join(', ') || 'none'
     if (
       !confirm(
-        `Delete alias "${model.label}"? This also deletes its ${model.providers.length} provider config${model.providers.length === 1 ? '' : 's'}.`,
+        `Delete alias "${model.label}" (${model.slug})? This also deletes its ${model.providers.length} provider config${model.providers.length === 1 ? '' : 's'}: ${labels}. This cannot be undone.`,
       )
     ) {
       return
     }
-    setBusyId(model.id)
+    setBusyKey(`delete-alias:${model.id}`)
     setActionError('')
     try {
       await api.del(`/admin/models/${model.id}`)
@@ -143,27 +161,28 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Failed to delete alias.')
     } finally {
-      setBusyId('')
+      setBusyKey(null)
     }
   }
 
-  async function deleteProvider(providerId: string) {
-    if (!confirm('Delete this provider config?')) return
-    setBusyId(providerId)
+  async function deleteProvider(provider: ModelProvider) {
+    if (!confirm(`Delete provider config "${provider.label}" (${provider.base_url} · ${provider.upstream_model})? This cannot be undone.`)) return
+    setBusyKey(`delete:${provider.id}`)
     setActionError('')
     try {
-      await api.del(`/admin/models/${model.id}/providers/${providerId}`)
-      if (editingProviderId === providerId) setEditingProviderId(null)
+      await api.del(`/admin/models/${model.id}/providers/${provider.id}`)
+      if (editingProviderId === provider.id) setEditingProviderId(null)
+      if (revealed?.providerId === provider.id) setRevealed(null)
       onChanged()
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Failed to delete provider config.')
     } finally {
-      setBusyId('')
+      setBusyKey(null)
     }
   }
 
   async function toggleProvider(provider: ModelProvider) {
-    setBusyId(provider.id)
+    setBusyKey(`toggle:${provider.id}`)
     setActionError('')
     try {
       await api.patch(`/admin/models/${model.id}/providers/${provider.id}`, { active: provider.active === 0 })
@@ -171,14 +190,15 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Failed to update provider config.')
     } finally {
-      setBusyId('')
+      setBusyKey(null)
     }
   }
 
   return (
     <Card>
       <div className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-3">
-        <span className={`h-2 w-2 rounded-full ${model.active ? 'bg-gain' : 'bg-muted'}`} />
+        <span className={`h-2 w-2 rounded-full ${model.active ? 'bg-gain' : 'bg-muted'}`} aria-hidden="true" />
+        <span className="sr-only">{model.active ? 'Active' : 'Inactive'} alias. </span>
         <h2 className="text-[15px] font-semibold">{model.label}</h2>
         <code className="num rounded bg-surface-2 px-1.5 py-0.5 text-[12px] text-muted">{model.slug}</code>
         <span className="num rounded bg-surface-2 px-1.5 py-0.5 text-[12px] text-muted">
@@ -214,15 +234,15 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
           size="sm"
           className="text-loss"
           onClick={() => void deleteAlias()}
-          disabled={busyId === model.id}
+          disabled={busy(`delete-alias:${model.id}`)}
         >
-          {busyId === model.id ? 'Deleting…' : 'Delete alias'}
+          {busy(`delete-alias:${model.id}`) ? 'Deleting…' : 'Delete alias'}
         </Button>
         <span className="num ml-auto text-[12px] text-muted">
           context {model.context_window?.toLocaleString('en-US') ?? '—'} · max out {model.max_output_tokens.toLocaleString('en-US')}
         </span>
       </div>
-      {actionError && <p className="px-4 pt-2 text-[12px] text-loss">{actionError}</p>}
+      {actionError && <p role="alert" className="px-4 pt-2 text-[12px] text-loss">{actionError}</p>}
       {editingAlias && (
         <EditAliasForm
           model={model}
@@ -239,7 +259,8 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
           const test = testResults[provider.id]
           return (
             <div key={provider.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
-              <span className={`h-2 w-2 rounded-full ${statusDot[provider.status]}`} />
+              <span className={`h-2 w-2 rounded-full ${statusDot[provider.status]}`} aria-hidden="true" />
+              <span className="sr-only">{provider.status}</span>
               <div className="flex min-w-[240px] flex-1 flex-col">
                 <span className="text-[13px] font-medium">{provider.label}</span>
                 <span className="num text-[12px] text-muted">
@@ -248,7 +269,9 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
               </div>
               <span className="num text-[12px] text-muted">{provider.key_masked}</span>
               {provider.avg_latency_ms != null && (
-                <span className="num text-[12px] text-muted">{provider.avg_latency_ms}ms</span>
+                <span className="num text-[12px] text-muted" title="Rolling average stream latency — latency_weighted routing prefers the lowest">
+                  {provider.avg_latency_ms}ms avg
+                </span>
               )}
               {provider.cooldown_ms != null && (
                 <span className="num text-[12px] text-muted" title="How long this config waits before retry after a failure (doubles per consecutive failure)">
@@ -262,19 +285,39 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
                 >
                   {editingProviderId === provider.id ? 'Cancel edit' : 'Edit'}
                 </Button>
-                <Button variant="secondary" onClick={() => testProvider(provider.id)} disabled={busyId === provider.id}>
-                  {busyId === provider.id ? 'Testing…' : 'Test'}
+                <Button variant="secondary" onClick={() => testProvider(provider.id)} disabled={busyKey !== null}>
+                  {busy(`test:${provider.id}`) ? 'Testing…' : 'Test'}
                 </Button>
-                <Button variant="ghost" onClick={() => revealProviderKey(provider.id)} disabled={busyId === provider.id} className="text-accent">
-                  {busyId === provider.id ? 'Revealing…' : 'Reveal'}
+                <Button variant="ghost" onClick={() => revealProviderKey(provider)} disabled={busyKey !== null} className="text-accent">
+                  {busy(`reveal:${provider.id}`) ? 'Revealing…' : 'Reveal'}
                 </Button>
-                <Button variant="ghost" onClick={() => toggleProvider(provider)} disabled={busyId === provider.id}>
-                  {provider.active === 0 ? 'Enable' : 'Disable'}
+                <Button variant="ghost" onClick={() => toggleProvider(provider)} disabled={busyKey !== null}>
+                  {busy(`toggle:${provider.id}`) ? 'Saving…' : provider.active === 0 ? 'Enable' : 'Disable'}
                 </Button>
-                <Button variant="ghost" onClick={() => deleteProvider(provider.id)} className="text-loss">
-                  Delete
+                <Button variant="ghost" onClick={() => deleteProvider(provider)} disabled={busyKey !== null} className="text-loss">
+                  {busy(`delete:${provider.id}`) ? 'Deleting…' : 'Delete'}
                 </Button>
               </div>
+              {revealed?.providerId === provider.id && (
+                <div className="flex w-full flex-col gap-2 rounded-lg border border-warn/40 bg-warn/5 p-3">
+                  <p className="text-[12px] text-warn">
+                    Bearer key for "{revealed.label}" — copied to clipboard when possible. Clear it from the clipboard after use.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <code className="num flex-1 break-all text-[12px]">{revealed.key}</code>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => { void navigator.clipboard.writeText(revealed.key).catch(() => {}) }}
+                    >
+                      Copy
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => setRevealed(null)}>
+                      Hide
+                    </Button>
+                  </div>
+                </div>
+              )}
               {editingProviderId === provider.id && (
                 <EditProviderForm
                   modelId={model.id}
@@ -288,11 +331,11 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
               )}
               {test && (
                 <p className={`w-full text-[12px] ${test.ok ? 'text-gain' : 'text-loss'}`}>
-                  {test.ok ? `OK via /${test.mode}` : 'Failed'} · {test.latencyMs ?? '—'}ms
+                  {test.ok ? `OK via ${test.mode === 'models' ? 'model list probe' : test.mode === 'chat' ? 'chat probe' : test.mode}` : 'Failed'} · {test.latencyMs ?? '—'}ms
                   {test.error ? ` — ${test.error}` : ''}
                 </p>
               )}
-              {provider.last_error && !test && (
+              {provider.last_error && (
                 <p className="w-full text-[12px] text-muted">Last error: {provider.last_error}</p>
               )}
             </div>
@@ -393,7 +436,7 @@ function EditAliasForm({
       <Field label="Label">
         <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} required />
       </Field>
-      <Field label="Slug (changing this changes API clients)">
+      <Field label="Slug — changing this breaks existing API clients using the old name">
         <input className="input" value={slug} onChange={(e) => setSlug(e.target.value)} required />
       </Field>
       <Field label="Description">
@@ -405,8 +448,8 @@ function EditAliasForm({
           placeholder="Empty removes the description"
         />
       </Field>
-      <Field label="Capabilities (comma separated)">
-        <input className="input" value={capabilities} onChange={(e) => setCapabilities(e.target.value)} />
+      <Field label="Capabilities (comma separated, saved lowercase)">
+        <input className="input" value={capabilities} onChange={(e) => setCapabilities(e.target.value)} placeholder="coding, fast" />
       </Field>
       <Field label="Context window (tokens, empty = unknown)">
         <input className="input" value={contextWindow} onChange={(e) => setContextWindow(e.target.value)} inputMode="numeric" />
@@ -417,12 +460,12 @@ function EditAliasForm({
       <Field label="Flat rate when provider omits usage">
         <input className="input" value={flatRate} onChange={(e) => setFlatRate(e.target.value)} inputMode="numeric" />
       </Field>
-      <Field label="Routing">
+      <Field label="Routing — how requests spread across configs">
         <select className="input" value={routing} onChange={(e) => setRouting(e.target.value as ModelAlias['routing'])}>
-          <option value="round_robin">round_robin</option>
-          <option value="random">random</option>
-          <option value="failover">failover</option>
-          <option value="latency_weighted">latency_weighted</option>
+          <option value="round_robin">round_robin — even rotation</option>
+          <option value="random">random — uniform shuffle</option>
+          <option value="failover">failover — priority order, lower first</option>
+          <option value="latency_weighted">latency_weighted — fastest first, 15% exploring</option>
         </select>
       </Field>
       <Field label="Access tier (who can use this alias)">
@@ -432,6 +475,10 @@ function EditAliasForm({
           <option value="enterprise">enterprise — locked</option>
         </select>
       </Field>
+      <p className="text-[12px] text-muted sm:col-span-2">
+        Access tier gates <em>who</em> may call; scoped-only gates <em>what pays</em> (scoped promo
+        credits only — combine both to lock premium capacity like luna).
+      </p>
       <label className="flex items-center gap-2 text-[13px]">
         <input type="checkbox" checked={scopedOnly} onChange={(e) => setScopedOnly(e.target.checked)} />
         Scoped-only payment (global credits can't buy this alias)
@@ -538,7 +585,7 @@ function EditProviderForm({
           placeholder="Leave blank to keep the current key"
         />
       </Field>
-      <Field label="Priority (failover order, lower first)">
+      <Field label="Priority (failover order, lower first — ignored by other routing modes)">
         <input className="input" value={priority} onChange={(e) => setPriority(e.target.value)} inputMode="numeric" />
       </Field>
       <Field label="Retry cooldown, minutes (empty = default 30m, e.g. 1440 for daily quotas)">
@@ -569,21 +616,38 @@ function NewAliasForm({ onCreated }: { onCreated: () => void }) {
   const [routing, setRouting] = useState('round_robin')
   const [accessTier, setAccessTier] = useState('free')
   const [scopedOnly, setScopedOnly] = useState(false)
+  const [createdMsg, setCreatedMsg] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
   async function submit(event: FormEvent) {
     event.preventDefault()
+    if (!label.trim() || label.trim().length > 80) {
+      setError('Label must be 1–80 characters.')
+      return
+    }
     const maxOutputTokens = Number(maxOutput)
     if (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 256 || maxOutputTokens > 200_000) {
       setError('Max output tokens must be an integer 256–200,000.')
       return
     }
+    const flatRateCredits = Number(flatRate)
+    if (!Number.isInteger(flatRateCredits) || flatRateCredits < 0 || flatRateCredits > 1_000_000) {
+      setError('Flat rate must be an integer 0–1,000,000 credits.')
+      return
+    }
+    if (contextWindow.trim() !== '') {
+      const context = Number(contextWindow)
+      if (!Number.isInteger(context) || context <= 0) {
+        setError('Context window must be empty or a positive integer.')
+        return
+      }
+    }
     setBusy(true)
     setError('')
     try {
-      await api.post('/admin/models', {
-        label,
+      const data = await api.post<{ model: { label: string } }>('/admin/models', {
+        label: label.trim(),
         slug: slug || undefined,
         description: description || undefined,
         capabilities: capabilities
@@ -592,7 +656,7 @@ function NewAliasForm({ onCreated }: { onCreated: () => void }) {
           .filter(Boolean),
         context_window: contextWindow ? Number(contextWindow) : null,
         max_output_tokens: maxOutputTokens,
-        flat_rate_credits: Number(flatRate),
+        flat_rate_credits: flatRateCredits,
         routing,
         access_tier: accessTier,
         scoped_only: scopedOnly,
@@ -607,6 +671,7 @@ function NewAliasForm({ onCreated }: { onCreated: () => void }) {
       setRouting('round_robin')
       setAccessTier('free')
       setScopedOnly(false)
+      setCreatedMsg(`Created alias "${data.model.label}" — add provider configs to it below.`)
       setOpen(false)
       onCreated()
     } catch (err) {
@@ -618,9 +683,12 @@ function NewAliasForm({ onCreated }: { onCreated: () => void }) {
 
   if (!open) {
     return (
-      <Button onClick={() => setOpen(true)} className="self-start">
-        + New model alias
-      </Button>
+      <div className="flex flex-col items-start gap-2">
+        <Button onClick={() => { setCreatedMsg(''); setOpen(true) }} className="self-start">
+          + New model alias
+        </Button>
+        {createdMsg && <p role="status" className="text-[13px] text-gain">{createdMsg}</p>}
+      </div>
     )
   }
 
@@ -630,7 +698,7 @@ function NewAliasForm({ onCreated }: { onCreated: () => void }) {
         <Field label="Label">
           <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Poolside Laguna" required />
         </Field>
-        <Field label="Slug (alias id, auto from label)">
+        <Field label="Slug (alias id — leave blank to auto-generate from the label)">
           <input className="input" value={slug} onChange={(e) => setSlug(e.target.value)} placeholder="poolside-laguna" />
         </Field>
         <Field label="Description">
@@ -736,7 +804,7 @@ function AddProviderForm({ modelId, onCreated }: { modelId: string; onCreated: (
   return (
     <div className="border-t border-line p-4">
       <form className="grid gap-3 sm:grid-cols-2" onSubmit={submit}>
-        <Field label="Config label (optional)">
+        <Field label="Config label (optional — blank uses the base URL)">
           <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="pool-key-1" />
         </Field>
         <Field label="OpenAI-compatible base URL">
