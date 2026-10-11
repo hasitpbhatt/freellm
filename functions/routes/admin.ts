@@ -150,8 +150,8 @@ app.post('/api/admin/models', async (c) => {
   const timestamp = now()
   try {
     await c.env.DB.prepare(
-      `INSERT INTO freellm_models (id, slug, label, description, capabilities, context_window, max_output_tokens, flat_rate_credits, routing, access_tier, active, sort_order, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+      `INSERT INTO freellm_models (id, slug, label, description, capabilities, context_window, max_output_tokens, flat_rate_credits, routing, access_tier, scoped_only, active, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
     )
       .bind(
         id,
@@ -164,6 +164,7 @@ app.post('/api/admin/models', async (c) => {
         flatRate,
         routing,
         accessTier,
+        body.scoped_only ? 1 : 0,
         Number(body.sort_order ?? 0),
         timestamp,
         timestamp,
@@ -229,6 +230,9 @@ app.patch('/api/admin/models/:id', async (c) => {
       return c.json({ error: 'invalid_input', message: 'Access tier must be free, pro, or enterprise.' }, 400)
     }
     updates.access_tier = String(body.access_tier)
+  }
+  if (body.scoped_only !== undefined) {
+    updates.scoped_only = body.scoped_only ? 1 : 0
   }
   if (body.context_window !== undefined) {
     const contextWindow = body.context_window == null ? null : Number(body.context_window)

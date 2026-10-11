@@ -501,6 +501,9 @@ export default function Chat() {
             {modelLocked && (
               <span className="text-[12px] text-warn">requires {model.access_tier} tier — contact an admin to upgrade</span>
             )}
+            {model.scoped_only === 1 && (
+              <span className="text-[12px] text-muted">scoped credits only — global balance can't buy this model</span>
+            )}
             {model.status === 'down' && (
               <span className="text-[12px] text-warn">all configs down — requests will fail free</span>
             )}

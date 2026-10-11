@@ -14,6 +14,7 @@ test('normalizeCatalogModel: preserves a well-formed catalog entry', () => {
       flat_rate_credits: 2000,
       routing: 'round_robin',
       access_tier: 'free',
+      scoped_only: 0,
       status: 'live',
       provider_count: 1,
     }),
@@ -27,6 +28,7 @@ test('normalizeCatalogModel: preserves a well-formed catalog entry', () => {
       flat_rate_credits: 2000,
       routing: 'round_robin',
       access_tier: 'free',
+      scoped_only: 0,
       status: 'live',
       provider_count: 1,
     },
@@ -44,6 +46,7 @@ test('normalizeCatalogModel: malformed entries cannot crash model pages', () => 
     flat_rate_credits: 0,
     routing: 'unknown',
     access_tier: 'free',
+    scoped_only: 0,
     status: 'unknown',
     provider_count: 0,
   })

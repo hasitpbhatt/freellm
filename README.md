@@ -187,3 +187,10 @@ an alias when their tier rank >= the alias's tier rank — e.g. set `gpt-luna` t
 denied call is never charged. Catalogs (`GET /api/models`, `GET /v1/models`)
 expose `access_tier` so clients can show locked state up front. Grant a tier
 with: `UPDATE freellm_users SET tier = 'pro' WHERE email = '…'`.
+
+Scarce provider capacity gets a second lock: `scoped_only` on an alias means
+requests to it spend that alias's scoped grant balance only — global credits
+can never buy in, so callers without luna tokens cannot burn luna pool quota
+(`402 insufficient_scoped_credits`, settled with zero global movement). Pair it
+with a scoped promo code for the same alias; remember a premium promo still
+needs the matching user tier unless the alias stays `free`.

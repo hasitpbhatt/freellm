@@ -49,6 +49,7 @@ export type CatalogModel = {
   flat_rate_credits: number
   routing: string
   access_tier: string
+  scoped_only: number
   status: 'live' | 'slow' | 'down' | 'unknown'
   provider_count: number
 }
@@ -82,6 +83,7 @@ export function normalizeCatalogModel(model: unknown): CatalogModel {
     access_tier: ['free', 'pro', 'enterprise'].includes(value.access_tier as string)
       ? (value.access_tier as string)
       : 'free',
+    scoped_only: value.scoped_only === 1 ? 1 : 0,
     status: MODEL_STATUSES.includes(status as CatalogModel['status'])
       ? (status as CatalogModel['status'])
       : 'unknown',

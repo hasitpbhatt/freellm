@@ -276,3 +276,38 @@ test('settle: free aborted stays aborted with zero charge', async () => {
   assert.equal(result.status, 'aborted')
   assert.equal(result.creditsCharged, 0)
 })
+
+test('settle: scoped-only never touches global balance', async () => {
+  const userId = await seedUser(db, { balanceCredits: 10_000, scopedCredits: 500 })
+  const model = { ...testModel, scoped_only: 1 }
+  const result = await settleRequest(db, {
+    userId,
+    requestId: 'req-scoped-only',
+    model,
+    providerLabel: 'luna-provider',
+    settlement: { kind: 'completed', usage: { input: 10, output: 20, total: 100 } },
+    latencyMs: 5,
+  })
+  assert.equal(result.creditsCharged, 100)
+  assert.equal(result.source, 'reported')
+  assert.deepEqual(await readBalances(db, userId), { global: 10_000, scoped: 400 })
+})
+
+test('settle: scoped-only with short scoped balance throws without charging global', async () => {
+  const userId = await seedUser(db, { balanceCredits: 10_000, scopedCredits: 40 })
+  const model = { ...testModel, scoped_only: 1 }
+  await placeHold(db, userId, 'req-scoped-short', 500)
+  await assert.rejects(
+    () =>
+      settleRequest(db, {
+        userId,
+        requestId: 'req-scoped-short',
+        model,
+        providerLabel: 'luna-provider',
+        settlement: { kind: 'completed', usage: { input: 0, output: 0, total: 500 } },
+        latencyMs: 5,
+      }),
+    /insufficient credits at settlement/,
+  )
+  assert.deepEqual(await readBalances(db, userId), { global: 10_000, scoped: 40 })
+})

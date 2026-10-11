@@ -45,6 +45,7 @@ export type ModelRow = {
   flat_rate_credits: number
   routing: 'round_robin' | 'random' | 'failover' | 'latency_weighted'
   access_tier: ModelTier
+  scoped_only: number
   active: number
   sort_order: number
   created_at: number

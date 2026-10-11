@@ -172,6 +172,11 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
         <span className={`num rounded px-1.5 py-0.5 text-[12px] ${model.access_tier === 'free' ? 'bg-surface-2 text-muted' : 'bg-accent/10 text-accent'}`}>
           {model.access_tier === 'free' ? 'free' : `🔒 ${model.access_tier}`}
         </span>
+        {model.scoped_only === 1 && (
+          <span className="num rounded bg-accent/10 px-1.5 py-0.5 text-[12px] text-accent" title="Spends this alias's scoped credits only — global balance cannot buy in">
+            scoped only
+          </span>
+        )}
         <span className="num text-[12px] text-muted">flat {model.flat_rate_credits.toLocaleString('en-US')} cr</span>
         {model.capabilities.map((tag) => (
           <span key={tag} className="rounded bg-accent/10 px-1.5 py-0.5 text-[11px] text-accent">
@@ -301,6 +306,7 @@ function EditAliasForm({
   const [flatRate, setFlatRate] = useState(model.flat_rate_credits.toString())
   const [routing, setRouting] = useState(model.routing)
   const [accessTier, setAccessTier] = useState(model.access_tier)
+  const [scopedOnly, setScopedOnly] = useState(model.scoped_only === 1)
   const [active, setActive] = useState(model.active === 1)
   const [sortOrder, setSortOrder] = useState(model.sort_order.toString())
   const [error, setError] = useState('')
@@ -350,6 +356,7 @@ function EditAliasForm({
         flat_rate_credits: flatRateCredits,
         routing,
         access_tier: accessTier,
+        scoped_only: scopedOnly,
         active,
         sort_order: sort,
       })
@@ -405,6 +412,10 @@ function EditAliasForm({
           <option value="enterprise">enterprise — locked</option>
         </select>
       </Field>
+      <label className="flex items-center gap-2 text-[13px]">
+        <input type="checkbox" checked={scopedOnly} onChange={(e) => setScopedOnly(e.target.checked)} />
+        Scoped-only payment (global credits can't buy this alias)
+      </label>
       <Field label="Sort order">
         <input className="input" value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} inputMode="numeric" />
       </Field>
@@ -523,6 +534,7 @@ function NewAliasForm({ onCreated }: { onCreated: () => void }) {
   const [flatRate, setFlatRate] = useState('2000')
   const [routing, setRouting] = useState('round_robin')
   const [accessTier, setAccessTier] = useState('free')
+  const [scopedOnly, setScopedOnly] = useState(false)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -549,6 +561,7 @@ function NewAliasForm({ onCreated }: { onCreated: () => void }) {
         flat_rate_credits: Number(flatRate),
         routing,
         access_tier: accessTier,
+        scoped_only: scopedOnly,
       })
       setLabel('')
       setSlug('')
@@ -559,6 +572,7 @@ function NewAliasForm({ onCreated }: { onCreated: () => void }) {
       setFlatRate('2000')
       setRouting('round_robin')
       setAccessTier('free')
+      setScopedOnly(false)
       setOpen(false)
       onCreated()
     } catch (err) {
@@ -615,6 +629,10 @@ function NewAliasForm({ onCreated }: { onCreated: () => void }) {
             <option value="enterprise">enterprise — locked</option>
           </select>
         </Field>
+        <label className="flex items-center gap-2 text-[13px]">
+          <input type="checkbox" checked={scopedOnly} onChange={(e) => setScopedOnly(e.target.checked)} />
+          Scoped-only payment (global credits can't buy this alias)
+        </label>
         {error && <p className="text-[13px] text-loss sm:col-span-2">{error}</p>}
         <div className="flex gap-2 sm:col-span-2">
           <Button type="submit" disabled={busy}>{busy ? 'Creating…' : 'Create alias'}</Button>

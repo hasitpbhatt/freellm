@@ -51,8 +51,8 @@ function usageFromChunk(chunk: Record<string, unknown>): Usage | null {
 
 app.get('/v1/models', async (c) => {
   const rows = await c.env.DB.prepare(
-    'SELECT slug, label, description, access_tier FROM freellm_models WHERE active = 1 ORDER BY sort_order, slug',
-  ).all<{ slug: string; label: string; description: string | null; access_tier: string }>()
+    'SELECT slug, label, description, access_tier, scoped_only FROM freellm_models WHERE active = 1 ORDER BY sort_order, slug',
+  ).all<{ slug: string; label: string; description: string | null; access_tier: string; scoped_only: number }>()
 
   return c.json({
     object: 'list',
@@ -62,6 +62,7 @@ app.get('/v1/models', async (c) => {
       created: 0,
       owned_by: 'freellm',
       access_tier: row.access_tier,
+      scoped_only: row.scoped_only,
       ...(row.description ? { description: row.description } : {}),
     })),
   })
@@ -144,7 +145,20 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
   const requestId = newId()
   const reserve = estimateReserve(messages, maxTokens)
   const spendable = await computeSpendable(c.env.DB, user.id, user.balance_credits, alias.model.id, requestId)
-  if (spendable.available < reserve) {
+  // Scoped-only aliases spend this alias's grant balance only — global
+  // credits cannot buy into scarce provider capacity.
+  if (alias.model.scoped_only === 1) {
+    if (spendable.scoped < reserve || spendable.available < reserve) {
+      return c.json(
+        openAiBody(
+          'billing_error',
+          `${alias.model.label} spends ${alias.model.label} credits only — you have ${spendable.scoped.toLocaleString('en-US')} scoped. Redeem a promo code for this model.`,
+          'insufficient_scoped_credits',
+        ),
+        402,
+      )
+    }
+  } else if (spendable.available < reserve) {
     return c.json(
       openAiBody(
         'billing_error',

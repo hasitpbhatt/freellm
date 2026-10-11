@@ -75,6 +75,7 @@ export const testModel = {
   flat_rate_credits: 2000,
   routing: 'round_robin' as const,
   access_tier: 'free' as const,
+  scoped_only: 0,
   active: 1,
   sort_order: 0,
   created_at: 0,

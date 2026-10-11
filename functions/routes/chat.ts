@@ -197,7 +197,22 @@ app.post('/api/chat', requireAuth, async (c) => {
     // --- Pool path: reserve, candidates, failover ---
     const reserve = estimateReserve(messages, maxTokens)
     const spendable = await computeSpendable(c.env.DB, user.id, user.balance_credits, alias.model.id, requestId)
-    if (spendable.available < reserve) {
+    // Scoped-only aliases spend this alias's grant balance only — global
+    // credits cannot buy into scarce provider capacity.
+    if (alias.model.scoped_only === 1) {
+      if (spendable.scoped < reserve || spendable.available < reserve) {
+        const shortfall = reserve - Math.min(spendable.scoped, spendable.available)
+        return c.json(
+          {
+            error: 'insufficient_scoped_credits',
+            message: `${alias.model.label} spends ${alias.model.label} credits only — you have ${spendable.scoped.toLocaleString('en-US')} scoped. Redeem a promo code for this model.`,
+            shortfall,
+            scoped: spendable.scoped,
+          },
+          402,
+        )
+      }
+    } else if (spendable.available < reserve) {
       const shortfall = reserve - spendable.available
       return c.json(
         {
@@ -418,7 +433,7 @@ app.post('/api/chat', requireAuth, async (c) => {
 app.get('/api/models', async (c) => {
   const rows = await c.env.DB.prepare(
     `SELECT m.slug, m.label, m.description, m.capabilities, m.context_window,
-            m.max_output_tokens, m.flat_rate_credits, m.routing, m.access_tier,
+            m.max_output_tokens, m.flat_rate_credits, m.routing, m.access_tier, m.scoped_only,
             p.status AS provider_status
      FROM freellm_models m
      LEFT JOIN freellm_model_providers p ON p.model_id = m.id AND p.active = 1
@@ -434,6 +449,7 @@ app.get('/api/models', async (c) => {
     flat_rate_credits: number
     routing: string
     access_tier: string
+    scoped_only: number
     provider_status: 'unknown' | 'live' | 'slow' | 'down' | null
   }>()
 
@@ -447,6 +463,7 @@ app.get('/api/models', async (c) => {
     flat_rate_credits: number
     routing: string
     access_tier: string
+    scoped_only: number
     status: 'live' | 'slow' | 'down' | 'unknown'
     provider_count: number
   }
@@ -465,6 +482,7 @@ app.get('/api/models', async (c) => {
         flat_rate_credits: row.flat_rate_credits,
         routing: row.routing,
         access_tier: row.access_tier,
+        scoped_only: row.scoped_only,
         status: 'unknown',
         provider_count: 0,
         statuses: [],

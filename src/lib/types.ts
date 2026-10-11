@@ -40,6 +40,7 @@ export type ModelAlias = {
   flat_rate_credits: number
   routing: 'round_robin' | 'random' | 'failover' | 'latency_weighted'
   access_tier: 'free' | 'pro' | 'enterprise'
+  scoped_only: number
   active: number
   sort_order: number
   created_at: number

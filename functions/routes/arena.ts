@@ -87,6 +87,23 @@ app.post('/api/battles', requireAuth, async (c) => {
       402,
     )
   }
+  // Scoped-only aliases spend their own grant balance only — a battle
+  // including one needs that alias's tokens, not just global credits.
+  for (let i = 0; i < reserves.length; i += 1) {
+    const entry = reserves[i]
+    if (entry.alias.model.scoped_only === 1 && spendables[i].scoped < entry.reserve) {
+      return c.json(
+        {
+          error: 'insufficient_scoped_credits',
+          message: `${entry.alias.model.label} spends ${entry.alias.model.label} credits only — you have ${spendables[i].scoped.toLocaleString('en-US')} scoped. Redeem a promo code for this model.`,
+          shortfall: entry.reserve - spendables[i].scoped,
+          scoped: spendables[i].scoped,
+          model: entry.slug,
+        },
+        402,
+      )
+    }
+  }
 
   // Blind labels: shuffle so A is not always the first model.
   const shuffled = shuffle(reserves)

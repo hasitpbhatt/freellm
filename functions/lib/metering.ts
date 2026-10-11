@@ -169,10 +169,13 @@ export async function settleRequest(
   }
 
   const scopedAvailable = grant?.credits ?? 0
+  // Scoped-only aliases (luna-class): global balance can never pay here, so a
+  // caller without this alias's tokens cannot burn its provider quota.
+  const scopedOnly = model.scoped_only === 1 && !isFree
   const fromScoped = Math.min(scopedAvailable, charge)
-  const fromGlobal = charge - fromScoped
+  const fromGlobal = scopedOnly ? 0 : charge - fromScoped
 
-  if (fromGlobal > user.balance_credits) {
+  if (fromGlobal > user.balance_credits || (scopedOnly && fromScoped < charge)) {
     await releaseHold(db, requestId).catch(() => {})
     throw new Error('insufficient credits at settlement')
   }

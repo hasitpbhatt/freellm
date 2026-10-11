@@ -55,6 +55,11 @@ export default function Models() {
                   🔒 {model.access_tier}
                 </span>
               )}
+              {model.scoped_only === 1 && (
+                <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent">
+                  scoped only
+                </span>
+              )}
               <span className="ml-auto text-[12px] capitalize text-muted">{model.status}</span>
             </div>
             {model.description && <p className="text-[13px] text-muted">{model.description}</p>}
