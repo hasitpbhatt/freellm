@@ -23,10 +23,13 @@ export function GoogleButton({
   if (safeRef) params.set('ref', safeRef)
   const query = params.toString()
   const href = query ? `/api/auth/google?${query}` : '/api/auth/google'
+  // NOTE: href stays put during the navigating state. An earlier version
+  // swapped href to undefined on click for feedback, which cancelled the
+  // browser's default navigation — the button stuck on "Opening Google…"
+  // and never left the page.
   return (
     <a
-      href={navigating ? undefined : href}
-      aria-disabled={navigating}
+      href={href}
       onClick={() => setNavigating(true)}
       title="Leaves freellm for Google sign-in, then returns here"
       className={`btn-secondary flex w-full items-center justify-center gap-2.5 ${navigating ? 'opacity-60' : ''}`}
