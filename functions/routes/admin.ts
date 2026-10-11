@@ -1,9 +1,10 @@
-// Admin API: the model catalog.
+// Admin API: the model catalog + user dashboard.
 //
 //   models           — aliases freellm_users chat with ("poolside-laguna")
 //   model_providers  — the upstream configs grouped under an alias. A request
 //                      to an alias multiplexes across its configs via the
 //                      alias's routing strategy (round_robin | random | failover | latency_weighted).
+//   users            — every signed-up user with balances + token leaderboard.
 //
 // Every route here is behind requireAuth + requireAdmin.
 
@@ -502,5 +503,64 @@ async function publicProvider(provider: ModelProviderRow, encryptionKey: string)
     cooldown_ms: provider.cooldown_ms ?? null,
   }
 }
+
+// ------------------------------------------------------------- user board
+// Every signed-up user with balances, ranked by token balance. Spent comes
+// from usage events (the full picture incl. scoped grants); earned from
+// positive ledger deltas. Password hashes never leave the server.
+
+app.get('/api/admin/users', async (c) => {
+  const limit = Math.min(Math.max(Number(c.req.query('limit') ?? 200), 1), 500)
+  const rows = await c.env.DB.prepare(
+    `SELECT u.id, u.email, u.username, u.tier, u.role, u.balance_credits,
+            u.email_verified, u.referral_code, u.created_at,
+            COALESCE((SELECT SUM(e.credits_charged) FROM freellm_usage_events e
+                      WHERE e.user_id = u.id AND e.status != 'failed'), 0) AS spent,
+            COALESCE((SELECT SUM(l.delta) FROM freellm_credit_ledger l
+                      WHERE l.user_id = u.id AND l.delta > 0), 0) AS earned
+     FROM freellm_users u
+     ORDER BY u.balance_credits DESC
+     LIMIT ?`,
+  )
+    .bind(limit)
+    .all<{
+      id: string
+      email: string
+      username: string
+      tier: string
+      role: string
+      balance_credits: number
+      email_verified: number
+      referral_code: string
+      created_at: number
+      spent: number
+      earned: number
+    }>()
+  return c.json({ users: rows.results })
+})
+
+app.patch('/api/admin/users/:id', async (c) => {
+  const id = c.req.param('id')
+  const existing = await c.env.DB.prepare('SELECT id FROM freellm_users WHERE id = ?').bind(id).first()
+  if (!existing) return c.json({ error: 'not_found', message: 'User not found.' }, 404)
+
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null)
+  if (!body) return c.json({ error: 'invalid_body', message: 'Send JSON.' }, 400)
+  if (body.tier === undefined) return c.json({ error: 'invalid_input', message: 'Nothing to update.' }, 400)
+  if (!['free', 'pro', 'enterprise'].includes(String(body.tier))) {
+    return c.json({ error: 'invalid_input', message: 'Tier must be free, pro, or enterprise.' }, 400)
+  }
+
+  const timestamp = now()
+  await c.env.DB.prepare('UPDATE freellm_users SET tier = ?, updated_at = ? WHERE id = ?')
+    .bind(String(body.tier), timestamp, id)
+    .run()
+  const user = await c.env.DB.prepare(
+    'SELECT id, email, username, tier, role, balance_credits, email_verified, referral_code, created_at FROM freellm_users WHERE id = ?',
+  )
+    .bind(id)
+    .first()
+  return c.json({ user })
+})
 
 export default app

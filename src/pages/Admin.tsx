@@ -3,20 +3,22 @@ import { useAuth } from '../lib/auth'
 import AdminModels from '../components/AdminModels'
 import AdminPromos from '../components/AdminPromos'
 import AdminVault from '../components/AdminVault'
+import AdminUsers from '../components/AdminUsers'
 
-type Tab = 'models' | 'promos' | 'vault'
+type Tab = 'models' | 'promos' | 'vault' | 'users'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'models', label: 'Model catalog' },
   { id: 'promos', label: 'Promo codes' },
   { id: 'vault', label: 'Vault (BYOK)' },
+  { id: 'users', label: 'Users' },
 ]
 
 export default function Admin() {
   const { user, loading: authLoading } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
   const rawTab = searchParams.get('tab')
-  const tab: Tab = rawTab === 'promos' || rawTab === 'vault' ? rawTab : 'models'
+  const tab: Tab = rawTab === 'promos' || rawTab === 'vault' || rawTab === 'users' ? rawTab : 'models'
 
   if (authLoading) return <p className="py-12 text-center text-[13px] text-muted" role="status">Checking admin access…</p>
   if (!user) {
@@ -47,7 +49,7 @@ export default function Admin() {
         ))}
       </div>
       <div role="tabpanel">
-        {tab === 'models' ? <AdminModels /> : tab === 'promos' ? <AdminPromos /> : <AdminVault />}
+        {tab === 'models' ? <AdminModels /> : tab === 'promos' ? <AdminPromos /> : tab === 'vault' ? <AdminVault /> : <AdminUsers />}
       </div>
     </div>
   )
