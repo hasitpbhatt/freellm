@@ -358,35 +358,41 @@ app.post('/api/tasks/:slug/complete', requireAuth, async (c) => {
   if (gate) return gate
 
   const slug = c.req.param('slug')
-  const task = await c.env.DB.prepare('SELECT * FROM freellm_tasks WHERE slug = ? AND active = 1').bind(slug).first<{
-    id: string
-    slug: string
-    reward: number
-  }>()
+  const task = await c.env.DB.prepare('SELECT * FROM freellm_tasks WHERE slug = ? AND active = 1')
+    .bind(slug)
+    .first<{ id: string; slug: string; reward: number }>()
   if (!task) return c.json({ error: 'not_found', message: 'Task not found.' }, 404)
 
-  const already = await c.env.DB.prepare('SELECT 1 AS x FROM freellm_task_completions WHERE user_id = ? AND task_id = ?')
+  // GitHub star validation: require recent visit to https://github.com/hasitpbhatt/codewhip
+  const visited = await c.env.DB.prepare(
+    `SELECT visited_at FROM freellm_user_visits WHERE user_id = ? AND url = ?`
+  )
+    .bind(user.id, 'https://github.com/hasitpbhatt/codewhip')
+    .first<{ visited_at: number }>()
+  const recent = visited && now() - visited.visited_at <= 7_200_000 // 2h window
+  if (!recent) {
+    return c.json({ error: 'visit_required', message: 'Please visit https://github.com/hasitpbhatt/codewhip and star CodeWhip, then try again.' }, 409)
+  }
+
+  const claimed = await c.env.DB.prepare(
+    'SELECT COUNT(*) AS n FROM freellm_task_completions WHERE user_id = ? AND task_id = ?'
+  )
     .bind(user.id, task.id)
-    .first()
-  if (already) return c.json({ error: 'already_completed', message: 'Task already claimed.' }, 409)
+    .first<{ n: number }>()
+  if ((claimed?.n ?? 0) >= 1) {
+    return c.json({ error: 'already_completed', message: 'Task already claimed.' }, 409)
+  }
 
   const timestamp = now()
   try {
     await c.env.DB.batch([
-      c.env.DB.prepare('INSERT INTO freellm_task_completions (user_id, task_id, reward, created_at) VALUES (?, ?, ?, ?)').bind(
-        user.id,
-        task.id,
-        task.reward,
-        timestamp,
-      ),
+      c.env.DB.prepare('INSERT INTO freellm_task_completions (user_id, task_id, reward, created_at) VALUES (?, ?, ?, ?)')
+        .bind(user.id, task.id, task.reward, timestamp),
       c.env.DB.prepare(
-        "INSERT INTO freellm_credit_ledger (id, user_id, delta, reason, meta, created_at) VALUES (?, ?, ?, 'task_reward', ?, ?)",
+        'INSERT INTO freellm_credit_ledger (id, user_id, delta, reason, meta, created_at) VALUES (?, ?, ?, 'task_reward', ?, ?)'
       ).bind(newId(), user.id, task.reward, JSON.stringify({ task_id: task.id, slug: task.slug }), timestamp),
-      c.env.DB.prepare('UPDATE freellm_users SET balance_credits = balance_credits + ?, updated_at = ? WHERE id = ?').bind(
-        task.reward,
-        timestamp,
-        user.id,
-      ),
+      c.env.DB.prepare('UPDATE freellm_users SET balance_credits = balance_credits + ?, updated_at = ? WHERE id = ?')
+        .bind(task.reward, timestamp, user.id),
     ])
   } catch (err) {
     if (err instanceof Error && err.message.includes('UNIQUE constraint failed: freellm_task_completions')) {
@@ -396,12 +402,11 @@ app.post('/api/tasks/:slug/complete', requireAuth, async (c) => {
   }
 
   return c.json({ ok: true, reward: task.reward, balance: user.balance_credits + task.reward })
-})
 
 // =====================================================================
 // Usage dashboard
 // =====================================================================
-
+})
 app.get('/api/usage', requireAuth, async (c) => {
   const user = c.get('user')
 

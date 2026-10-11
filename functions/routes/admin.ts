@@ -1,9 +1,9 @@
 // Admin API: the model catalog + user dashboard.
 //
 //   models           — aliases freellm_users chat with ("poolside-laguna")
-//   model_providers  — the upstream configs grouped under an alias. A request
-//                      to an alias multiplexes across its configs via the
-//                      alias's routing strategy (round_robin | random | failover | latency_weighted).
+//   upstream_providers — real upstream providers (Poolside, OpenAI, etc.)
+//   upstream_models   — canonical model names per provider
+//   model_providers   — alias -> upstream_provider + upstream_model mapping
 //   users            — every signed-up user with balances + token leaderboard.
 //
 // Every route here is behind requireAuth + requireAdmin.
@@ -24,7 +24,7 @@ import {
   validateCapabilities,
   validateUpstreamModel,
 } from '../lib/validate'
-import type { Bindings, ModelProviderRow, ModelRow, Variables } from '../lib/types'
+import type { Bindings, ModelProviderRow, ModelRow, UpstreamProviderRow, Variables } from '../lib/types'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -49,47 +49,6 @@ class HttpError extends Error {
   }
 }
 
-// -------------------------------------------------------------- list
-
-app.get('/api/admin/models', async (c) => {
-  const models = await c.env.DB.prepare('SELECT * FROM freellm_models ORDER BY sort_order, label').all<ModelRow>()
-  const providers = await c.env.DB.prepare('SELECT * FROM freellm_model_providers ORDER BY priority, label').all<ModelProviderRow>()
-
-  const byModel = new Map<string, ModelProviderRow[]>()
-  for (const provider of providers.results) {
-    const list = byModel.get(provider.model_id) ?? []
-    list.push(provider)
-    byModel.set(provider.model_id, list)
-  }
-
-  const encryptionKey = c.env.ENCRYPTION_KEY
-  const modelPayloads = await Promise.all(
-    models.results.map(async (model) => ({
-      ...model,
-      capabilities: safeParseArray(model.capabilities),
-      providers: await Promise.all(
-        (byModel.get(model.id) ?? []).map(async (provider) => ({
-          id: provider.id,
-          label: provider.label,
-          base_url: provider.base_url,
-          upstream_model: provider.upstream_model,
-          key_masked: encryptionKey ? await safeKeyMask(provider, encryptionKey) : '••••',
-          status: provider.active === 0 ? 'disabled' : provider.status,
-          last_checked_at: provider.last_checked_at,
-          last_error: provider.last_error,
-          avg_latency_ms: provider.avg_latency_ms,
-          priority: provider.priority,
-          active: provider.active,
-          messages_served: provider.messages_served,
-          cooldown_ms: provider.cooldown_ms ?? null,
-        })),
-      ),
-    })),
-  )
-
-  return c.json({ models: modelPayloads })
-})
-
 function safeParseArray(json: string): string[] {
   try {
     const parsed = JSON.parse(json)
@@ -99,7 +58,93 @@ function safeParseArray(json: string): string[] {
   }
 }
 
-async function safeKeyMask(provider: ModelProviderRow, encryptionKey: string): Promise<string> {
+// -------------------------------------------------------------- list models
+
+app.get('/api/admin/models', async (c) => {
+  const models = await c.env.DB.prepare('SELECT * FROM freellm_models ORDER BY sort_order, label').all<ModelRow>()
+  
+  // Join model_providers -> upstream_providers -> upstream_models
+  const providerRows = await c.env.DB.prepare(
+    `SELECT mp.*, up.id AS up_id, up.label AS up_label, up.base_url, up.api_key_ciphertext, up.api_key_iv,
+            up.status AS up_status, up.avg_latency_ms, up.consecutive_failures, up.cooldown_until,
+            up.cooldown_base_ms, up.last_checked_at, up.last_error,
+            um.capabilities, um.context_window, um.max_output_tokens
+     FROM freellm_model_providers mp
+     JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
+     LEFT JOIN freellm_upstream_models um 
+       ON um.upstream_provider_id = up.id AND um.upstream_model = mp.upstream_model
+     WHERE mp.active = 1
+     ORDER BY mp.model_id, mp.priority, mp.label`
+  ).all<{
+    id: string
+    model_id: string
+    upstream_provider_id: string
+    upstream_model: string
+    priority: number
+    active: number
+    messages_served: number
+    created_at: number
+    updated_at: number
+    up_id: string
+    up_label: string
+    base_url: string
+    api_key_ciphertext: string
+    api_key_iv: string
+    up_status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled'
+    avg_latency_ms: number | null
+    consecutive_failures: number
+    cooldown_until: number | null
+    cooldown_base_ms: number | null
+    last_checked_at: number | null
+    last_error: string | null
+    capabilities: string | null
+    context_window: number | null
+    max_output_tokens: number | null
+  }>()
+
+  const byModel = new Map<string, typeof providerRows.results[0][]>()
+  for (const p of providerRows.results) {
+    const list = byModel.get(p.model_id) ?? []
+    list.push(p)
+    byModel.set(p.model_id, list)
+  }
+
+  const encryptionKey = c.env.ENCRYPTION_KEY
+  const modelPayloads = await Promise.all(
+    models.results.map(async (model) => ({
+      ...model,
+      capabilities: safeParseArray(model.capabilities),
+      providers: await Promise.all(
+        (byModel.get(model.id) ?? []).map(async (p) => ({
+          id: p.id,
+          label: p.up_label,
+          upstream_provider_id: p.upstream_provider_id,
+          upstream_model: p.upstream_model,
+          upstream_model_caps: p.capabilities ? safeParseArray(p.capabilities) : [],
+          upstream_model_context: p.context_window,
+          upstream_model_max_output: p.max_output_tokens,
+          base_url: p.base_url,
+          key_masked: encryptionKey ? await safeKeyMask(p, encryptionKey) : '••••',
+          status: p.active === 0 ? 'disabled' : p.up_status,
+          last_checked_at: p.last_checked_at,
+          last_error: p.last_error,
+          avg_latency_ms: p.avg_latency_ms,
+          priority: p.priority,
+          active: p.active,
+          messages_served: p.messages_served,
+          cooldown_base_ms: p.cooldown_base_ms,
+        })),
+      ),
+    })),
+  )
+
+  return c.json({ models: modelPayloads })
+})
+
+async function safeKeyMask(provider: {
+  api_key_ciphertext: string
+  api_key_iv: string
+}, encryptionKey: string): Promise<string> {
   try {
     return maskSecret(await decryptSecret(provider.api_key_ciphertext, provider.api_key_iv, encryptionKey))
   } catch {
@@ -107,7 +152,7 @@ async function safeKeyMask(provider: ModelProviderRow, encryptionKey: string): P
   }
 }
 
-// ------------------------------------------------------- create alias
+// ------------------------------------------------------- create alias (model)
 
 app.post('/api/admin/models', async (c) => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => null)
@@ -288,72 +333,81 @@ app.delete('/api/admin/models/:id', async (c) => {
   return c.json({ ok: true })
 })
 
-// ------------------------------------------------ add provider config
+// ------------------------------------------------ list upstream providers
 
-app.post('/api/admin/models/:id/providers', async (c) => {
-  const modelId = c.req.param('id')
-  const model = await c.env.DB.prepare('SELECT id FROM freellm_models WHERE id = ?').bind(modelId).first()
-  if (!model) return c.json({ error: 'not_found', message: 'Model not found.' }, 404)
+app.get('/api/admin/upstream-providers', async (c) => {
+  const rows = await c.env.DB.prepare(
+    `SELECT * FROM freellm_upstream_providers ORDER BY label`
+  ).all<UpstreamProviderRow>()
 
+  const encryptionKey = c.env.ENCRYPTION_KEY
+  const providers = await Promise.all(
+    rows.results.map(async (p) => ({
+      ...p,
+      key_masked: await safeKeyMask(p, encryptionKey),
+    }))
+  )
+
+  return c.json({ providers })
+})
+
+// ------------------------------------------------ create upstream provider
+
+app.post('/api/admin/upstream-providers', async (c) => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => null)
   if (!body) return c.json({ error: 'invalid_body', message: 'Send JSON.' }, 400)
 
-  const label = String(body.label ?? '').trim() || `${String(body.base_url ?? 'provider')}`
-  if (label.length > 80) return c.json({ error: 'invalid_input', message: 'Label must be max 80 chars.' }, 400)
+  const label = String(body.label ?? '').trim()
+  if (!label || label.length > 80) {
+    return c.json({ error: 'invalid_input', message: 'Label is required (max 80 chars).' }, 400)
+  }
 
   const allowHttp = c.env.ENVIRONMENT !== 'production'
   const urlError = validateBaseUrl(body.base_url, allowHttp)
   if (urlError) return c.json({ error: 'invalid_input', message: urlError }, 400)
-  const modelError = validateUpstreamModel(body.upstream_model)
-  if (modelError) return c.json({ error: 'invalid_input', message: modelError }, 400)
+
   const keyError = validateBearer(body.api_key)
   if (keyError) return c.json({ error: 'invalid_input', message: keyError }, 400)
 
   const encryptionKey = await requireEncryptionKey(c.env)
   const { ciphertext, iv } = await encryptSecret(String(body.api_key).trim(), encryptionKey)
 
-  let cooldownMs: number | null = null
-  if (body.cooldown_ms !== undefined && body.cooldown_ms !== null) {
-    cooldownMs = Number(body.cooldown_ms)
-    if (!Number.isInteger(cooldownMs) || cooldownMs < 0 || cooldownMs > 604800000) {
-      return c.json({ error: 'invalid_input', message: 'Cooldown must be an integer 0–604800000 ms (7 days), or null for the default.' }, 400)
+  let cooldownBaseMs: number | null = null
+  if (body.cooldown_base_ms !== undefined && body.cooldown_base_ms !== null) {
+    cooldownBaseMs = Number(body.cooldown_base_ms)
+    if (!Number.isInteger(cooldownBaseMs) || cooldownBaseMs < 0 || cooldownBaseMs > 604800000) {
+      return c.json({ error: 'invalid_input', message: 'Cooldown base must be an integer 0–604800000 ms (7 days), or null for the default.' }, 400)
     }
   }
 
   const id = newId()
   const timestamp = now()
   await c.env.DB.prepare(
-    `INSERT INTO freellm_model_providers (id, model_id, label, base_url, upstream_model, api_key_ciphertext, api_key_iv, status, priority, active, messages_served, consecutive_failures, cooldown_ms, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'unknown', ?, 1, 0, 0, ?, ?, ?)`,
+    `INSERT INTO freellm_upstream_providers (id, label, base_url, api_key_ciphertext, api_key_iv, status, cooldown_base_ms, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'unknown', ?, ?, ?)`,
   )
     .bind(
       id,
-      modelId,
       label,
       String(body.base_url).trim().replace(/\/+$/, ''),
-      String(body.upstream_model).trim(),
       ciphertext,
       iv,
-      Number(body.priority ?? 0),
-      cooldownMs,
+      cooldownBaseMs,
       timestamp,
       timestamp,
     )
     .run()
 
-  const provider = await c.env.DB.prepare('SELECT * FROM freellm_model_providers WHERE id = ?').bind(id).first<ModelProviderRow>()
-  return c.json({ provider: await publicProvider(provider!, encryptionKey) }, 201)
+  const provider = await c.env.DB.prepare('SELECT * FROM freellm_upstream_providers WHERE id = ?').bind(id).first<UpstreamProviderRow>()
+  return c.json({ provider: { ...provider!, key_masked: await safeKeyMask(provider!, encryptionKey) } }, 201)
 })
 
-// ------------------------------------------------ update provider config
+// ------------------------------------------------ update upstream provider
 
-app.patch('/api/admin/models/:id/providers/:providerId', async (c) => {
-  const modelId = c.req.param('id')
-  const providerId = c.req.param('providerId')
-  const existing = await c.env.DB.prepare('SELECT * FROM freellm_model_providers WHERE id = ? AND model_id = ?')
-    .bind(providerId, modelId)
-    .first<ModelProviderRow>()
-  if (!existing) return c.json({ error: 'not_found', message: 'Provider config not found.' }, 404)
+app.patch('/api/admin/upstream-providers/:id', async (c) => {
+  const id = c.req.param('id')
+  const existing = await c.env.DB.prepare('SELECT * FROM freellm_upstream_providers WHERE id = ?').bind(id).first<UpstreamProviderRow>()
+  if (!existing) return c.json({ error: 'not_found', message: 'Upstream provider not found.' }, 404)
 
   const body = await c.req.json<Record<string, unknown>>().catch(() => null)
   if (!body) return c.json({ error: 'invalid_body', message: 'Send JSON.' }, 400)
@@ -371,27 +425,15 @@ app.patch('/api/admin/models/:id/providers/:providerId', async (c) => {
     if (urlError) return c.json({ error: 'invalid_input', message: urlError }, 400)
     updates.base_url = String(body.base_url).trim().replace(/\/+$/, '')
   }
-  if (body.upstream_model !== undefined) {
-    const modelError = validateUpstreamModel(body.upstream_model)
-    if (modelError) return c.json({ error: 'invalid_input', message: modelError }, 400)
-    updates.upstream_model = String(body.upstream_model).trim()
-  }
-  if (body.priority !== undefined) {
-    const priority = Number(body.priority)
-    if (!Number.isInteger(priority)) return c.json({ error: 'invalid_input', message: 'Priority must be an integer.' }, 400)
-    updates.priority = priority
-  }
-  // Retry cooldown after a failure, in milliseconds (0 = retry immediately,
-  // null = global 30m default, max 7 days for slow-resetting quotas).
-  if (body.cooldown_ms !== undefined) {
-    if (body.cooldown_ms === null) {
-      updates.cooldown_ms = null
+  if (body.cooldown_base_ms !== undefined) {
+    if (body.cooldown_base_ms === null) {
+      updates.cooldown_base_ms = null
     } else {
-      const cooldownMs = Number(body.cooldown_ms)
-      if (!Number.isInteger(cooldownMs) || cooldownMs < 0 || cooldownMs > 604800000) {
-        return c.json({ error: 'invalid_input', message: 'Cooldown must be an integer 0–604800000 ms (7 days), or null for the default.' }, 400)
+      const cooldownBaseMs = Number(body.cooldown_base_ms)
+      if (!Number.isInteger(cooldownBaseMs) || cooldownBaseMs < 0 || cooldownBaseMs > 604800000) {
+        return c.json({ error: 'invalid_input', message: 'Cooldown base must be an integer 0–604800000 ms (7 days), or null for the default.' }, 400)
       }
-      updates.cooldown_ms = cooldownMs
+      updates.cooldown_base_ms = cooldownBaseMs
     }
   }
   if (body.active !== undefined) updates.active = body.active ? 1 : 0
@@ -405,6 +447,8 @@ app.patch('/api/admin/models/:id/providers/:providerId', async (c) => {
     // force a re-test after key rotation
     updates.status = 'unknown'
     updates.last_error = null
+    updates.consecutive_failures = 0
+    updates.cooldown_until = null
   }
 
   const columns = Object.keys(updates)
@@ -412,45 +456,44 @@ app.patch('/api/admin/models/:id/providers/:providerId', async (c) => {
 
   updates.updated_at = now()
   const assignments = columns.map((column) => `${column} = ?`).join(', ')
-  await c.env.DB.prepare(`UPDATE freellm_model_providers SET ${assignments} WHERE id = ?`)
-    .bind(...columns.map((column) => updates[column]), providerId)
+  await c.env.DB.prepare(`UPDATE freellm_upstream_providers SET ${assignments} WHERE id = ?`)
+    .bind(...columns.map((column) => updates[column]), id)
     .run()
 
-  const provider = await c.env.DB.prepare('SELECT * FROM freellm_model_providers WHERE id = ?').bind(providerId).first<ModelProviderRow>()
-  return c.json({ provider: await publicProvider(provider!, await requireEncryptionKey(c.env)) })
+  const provider = await c.env.DB.prepare('SELECT * FROM freellm_upstream_providers WHERE id = ?').bind(id).first<UpstreamProviderRow>()
+  return c.json({ provider: { ...provider!, key_masked: await safeKeyMask(provider!, await requireEncryptionKey(c.env)) } })
 })
 
-// ------------------------------------------------ delete provider config
+// ------------------------------------------------ delete upstream provider
 
-app.delete('/api/admin/models/:id/providers/:providerId', async (c) => {
-  const modelId = c.req.param('id')
-  const providerId = c.req.param('providerId')
-  const existing = await c.env.DB.prepare('SELECT id FROM freellm_model_providers WHERE id = ? AND model_id = ?')
-    .bind(providerId, modelId)
-    .first()
-  if (!existing) return c.json({ error: 'not_found', message: 'Provider config not found.' }, 404)
-  await c.env.DB.prepare('DELETE FROM freellm_model_providers WHERE id = ?').bind(providerId).run()
+app.delete('/api/admin/upstream-providers/:id', async (c) => {
+  const id = c.req.param('id')
+  const existing = await c.env.DB.prepare('SELECT id FROM freellm_upstream_providers WHERE id = ?').bind(id).first()
+  if (!existing) return c.json({ error: 'not_found', message: 'Upstream provider not found.' }, 404)
+  
+  // Check if any model_providers reference this upstream provider
+  const refs = await c.env.DB.prepare('SELECT 1 FROM freellm_model_providers WHERE upstream_provider_id = ? LIMIT 1').bind(id).first()
+  if (refs) return c.json({ error: 'in_use', message: 'Cannot delete — provider is referenced by model configs.' }, 409)
+
+  await c.env.DB.prepare('DELETE FROM freellm_upstream_providers WHERE id = ?').bind(id).run()
   return c.json({ ok: true })
 })
 
-// ------------------------------------------------------ test connection
+// ------------------------------------------------ test upstream provider
 
-app.post('/api/admin/models/:id/providers/:providerId/test', async (c) => {
-  const modelId = c.req.param('id')
-  const providerId = c.req.param('providerId')
-  const provider = await c.env.DB.prepare('SELECT * FROM freellm_model_providers WHERE id = ? AND model_id = ?')
-    .bind(providerId, modelId)
-    .first<ModelProviderRow>()
-  if (!provider) return c.json({ error: 'not_found', message: 'Provider config not found.' }, 404)
+app.post('/api/admin/upstream-providers/:id/test', async (c) => {
+  const id = c.req.param('id')
+  const provider = await c.env.DB.prepare('SELECT * FROM freellm_upstream_providers WHERE id = ?').bind(id).first<UpstreamProviderRow>()
+  if (!provider) return c.json({ error: 'not_found', message: 'Upstream provider not found.' }, 404)
 
   const encryptionKey = await requireEncryptionKey(c.env)
   const apiKey = await decryptSecret(provider.api_key_ciphertext, provider.api_key_iv, encryptionKey)
-  const result = await pingProvider(provider.base_url, provider.upstream_model, apiKey)
+  const result = await pingProvider(provider.base_url, 'test', apiKey)
 
   const timestamp = now()
   // Same EWMA as pool configs — a single probe must not wipe stream history.
   await c.env.DB.prepare(
-    `UPDATE freellm_model_providers
+    `UPDATE freellm_upstream_providers
      SET status = ?, last_checked_at = ?, last_error = ?,
          avg_latency_ms = CASE WHEN avg_latency_ms IS NULL THEN ?
                                ELSE CAST(avg_latency_ms * ? + ? * ? AS INTEGER) END,
@@ -467,46 +510,406 @@ app.post('/api/admin/models/:id/providers/:providerId/test', async (c) => {
       EWMA_ALPHA,
       result.ok ? 0 : provider.consecutive_failures + 1,
       timestamp,
-      providerId,
+      id,
     )
     .run()
 
-  const updated = await c.env.DB.prepare('SELECT * FROM freellm_model_providers WHERE id = ?').bind(providerId).first<ModelProviderRow>()
-  return c.json({ provider: await publicProvider(updated!, encryptionKey), test: result })
+  const updated = await c.env.DB.prepare('SELECT * FROM freellm_upstream_providers WHERE id = ?').bind(id).first<UpstreamProviderRow>()
+  return c.json({ provider: { ...updated!, key_masked: await safeKeyMask(updated!, encryptionKey) }, test: result })
 })
 
-// ------------------------------------------------------ reveal pool config key
+// ------------------------------------------------ reveal upstream provider key
 
-app.post('/api/admin/models/:id/providers/:providerId/reveal', async (c) => {
-  const modelId = c.req.param('id')
-  const providerId = c.req.param('providerId')
-  const provider = await c.env.DB.prepare('SELECT * FROM freellm_model_providers WHERE id = ? AND model_id = ?')
-    .bind(providerId, modelId)
-    .first<ModelProviderRow>()
-  if (!provider) return c.json({ error: 'not_found', message: 'Provider config not found.' }, 404)
+app.post('/api/admin/upstream-providers/:id/reveal', async (c) => {
+  const id = c.req.param('id')
+  const provider = await c.env.DB.prepare('SELECT * FROM freellm_upstream_providers WHERE id = ?').bind(id).first<UpstreamProviderRow>()
+  if (!provider) return c.json({ error: 'not_found', message: 'Upstream provider not found.' }, 404)
 
   const encryptionKey = await requireEncryptionKey(c.env)
   const apiKey = await decryptSecret(provider.api_key_ciphertext, provider.api_key_iv, encryptionKey)
   return c.json({ id: provider.id, label: provider.label, api_key: apiKey })
 })
 
-async function publicProvider(provider: ModelProviderRow, encryptionKey: string) {
+// ------------------------------------------------ model providers (alias -> upstream provider + model)
+
+// List model providers for an alias
+app.get('/api/admin/models/:id/providers', async (c) => {
+  const modelId = c.req.param('id')
+  const model = await c.env.DB.prepare('SELECT id FROM freellm_models WHERE id = ?').bind(modelId).first()
+  if (!model) return c.json({ error: 'not_found', message: 'Model not found.' }, 404)
+
+  const rows = await c.env.DB.prepare(
+    `SELECT mp.*, up.id AS up_id, up.label AS up_label, up.base_url, up.api_key_ciphertext, up.api_key_iv,
+            up.status AS up_status, up.avg_latency_ms, up.consecutive_failures, up.cooldown_until,
+            up.cooldown_base_ms, up.last_checked_at, up.last_error,
+            um.capabilities, um.context_window, um.max_output_tokens
+     FROM freellm_model_providers mp
+     JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
+     LEFT JOIN freellm_upstream_models um 
+       ON um.upstream_provider_id = up.id AND um.upstream_model = mp.upstream_model
+     WHERE mp.model_id = ? AND mp.active = 1
+     ORDER BY mp.priority, mp.label`
+  ).all<{
+    id: string
+    model_id: string
+    upstream_provider_id: string
+    upstream_model: string
+    priority: number
+    active: number
+    messages_served: number
+    created_at: number
+    updated_at: number
+    up_id: string
+    up_label: string
+    base_url: string
+    api_key_ciphertext: string
+    api_key_iv: string
+    up_status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled'
+    avg_latency_ms: number | null
+    consecutive_failures: number
+    cooldown_until: number | null
+    cooldown_base_ms: number | null
+    last_checked_at: number | null
+    last_error: string | null
+    capabilities: string | null
+    context_window: number | null
+    max_output_tokens: number | null
+  }>()
+
+  const encryptionKey = c.env.ENCRYPTION_KEY
+  const providers = await Promise.all(
+    rows.results.map(async (p) => ({
+      id: p.id,
+      label: p.up_label,
+      upstream_provider_id: p.upstream_provider_id,
+      upstream_model: p.upstream_model,
+      upstream_model_caps: p.capabilities ? safeParseArray(p.capabilities) : [],
+      upstream_model_context: p.context_window,
+      upstream_model_max_output: p.max_output_tokens,
+      base_url: p.base_url,
+      key_masked: await safeKeyMask(p, encryptionKey),
+      status: p.active === 0 ? 'disabled' : p.up_status,
+      last_checked_at: p.last_checked_at,
+      last_error: p.last_error,
+      avg_latency_ms: p.avg_latency_ms,
+      priority: p.priority,
+      active: p.active,
+      messages_served: p.messages_served,
+      cooldown_base_ms: p.cooldown_base_ms,
+    }))
+  )
+
+  return c.json({ providers })
+})
+
+// Add model provider (link alias to upstream provider + model)
+app.post('/api/admin/models/:id/providers', async (c) => {
+  const modelId = c.req.param('id')
+  const model = await c.env.DB.prepare('SELECT id FROM freellm_models WHERE id = ?').bind(modelId).first()
+  if (!model) return c.json({ error: 'not_found', message: 'Model not found.' }, 404)
+
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null)
+  if (!body) return c.json({ error: 'invalid_body', message: 'Send JSON.' }, 400)
+
+  // Validate upstream provider exists
+  const upstreamProviderId = String(body.upstream_provider_id ?? '').trim()
+  if (!upstreamProviderId) return c.json({ error: 'invalid_input', message: 'upstream_provider_id is required.' }, 400)
+  
+  const upstreamProvider = await c.env.DB.prepare('SELECT id FROM freellm_upstream_providers WHERE id = ? AND active = 1').bind(upstreamProviderId).first()
+  if (!upstreamProvider) return c.json({ error: 'invalid_input', message: 'Upstream provider not found or inactive.' }, 400)
+
+  // Validate upstream_model exists for this provider
+  const upstreamModel = String(body.upstream_model ?? '').trim()
+  if (!upstreamModel) return c.json({ error: 'invalid_input', message: 'upstream_model is required.' }, 400)
+  
+  const upstreamModelRow = await c.env.DB.prepare(
+    'SELECT * FROM freellm_upstream_models WHERE upstream_provider_id = ? AND upstream_model = ?'
+  ).bind(upstreamProviderId, upstreamModel).first()
+  if (!upstreamModelRow) return c.json({ error: 'invalid_input', message: 'Unknown upstream_model for this provider.' }, 400)
+
+  const id = newId()
+  const timestamp = now()
+  await c.env.DB.prepare(
+    `INSERT INTO freellm_model_providers (id, model_id, upstream_provider_id, upstream_model, priority, active, messages_served, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?)`,
+  )
+    .bind(id, modelId, upstreamProviderId, upstreamModel, Number(body.priority ?? 0), timestamp, timestamp)
+    .run()
+
+  const provider = await c.env.DB.prepare(
+    `SELECT mp.*, up.label AS up_label, up.base_url, up.api_key_ciphertext, up.api_key_iv,
+            up.status AS up_status, up.avg_latency_ms, up.consecutive_failures, up.cooldown_until,
+            up.cooldown_base_ms, up.last_checked_at, up.last_error
+     FROM freellm_model_providers mp
+     JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
+     WHERE mp.id = ?`
+  ).bind(id).first()
+
+  const encryptionKey = c.env.ENCRYPTION_KEY
+  return c.json({ provider: await publicModelProvider(provider!, encryptionKey) }, 201)
+})
+
+// Update model provider
+app.patch('/api/admin/models/:id/providers/:providerId', async (c) => {
+  const modelId = c.req.param('id')
+  const providerId = c.req.param('providerId')
+  const existing = await c.env.DB.prepare('SELECT * FROM freellm_model_providers WHERE id = ? AND model_id = ?')
+    .bind(providerId, modelId)
+    .first<ModelProviderRow>()
+  if (!existing) return c.json({ error: 'not_found', message: 'Provider config not found.' }, 404)
+
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null)
+  if (!body) return c.json({ error: 'invalid_body', message: 'Send JSON.' }, 400)
+
+  const updates: Record<string, unknown> = {}
+
+  if (body.priority !== undefined) {
+    const priority = Number(body.priority)
+    if (!Number.isInteger(priority)) return c.json({ error: 'invalid_input', message: 'Priority must be an integer.' }, 400)
+    updates.priority = priority
+  }
+  if (body.active !== undefined) updates.active = body.active ? 1 : 0
+  if (body.upstream_model !== undefined) {
+    const upstreamModel = String(body.upstream_model).trim()
+    // Validate it exists for the upstream provider
+    const upstreamModelRow = await c.env.DB.prepare(
+      'SELECT * FROM freellm_upstream_models WHERE upstream_provider_id = ? AND upstream_model = ?'
+    ).bind(existing.upstream_provider_id, upstreamModel).first()
+    if (!upstreamModelRow) return c.json({ error: 'invalid_input', message: 'Unknown upstream_model for this provider.' }, 400)
+    updates.upstream_model = upstreamModel
+  }
+  if (body.upstream_provider_id !== undefined) {
+    const upstreamProviderId = String(body.upstream_provider_id).trim()
+    const upstreamProvider = await c.env.DB.prepare('SELECT id FROM freellm_upstream_providers WHERE id = ? AND active = 1').bind(upstreamProviderId).first()
+    if (!upstreamProvider) return c.json({ error: 'invalid_input', message: 'Upstream provider not found or inactive.' }, 400)
+    updates.upstream_provider_id = upstreamProviderId
+  }
+
+  const columns = Object.keys(updates)
+  if (columns.length === 0) return c.json({ error: 'invalid_input', message: 'Nothing to update.' }, 400)
+
+  updates.updated_at = now()
+  const assignments = columns.map((column) => `${column} = ?`).join(', ')
+  await c.env.DB.prepare(`UPDATE freellm_model_providers SET ${assignments} WHERE id = ?`)
+    .bind(...columns.map((column) => updates[column]), providerId)
+    .run()
+
+  const provider = await c.env.DB.prepare(
+    `SELECT mp.*, up.label AS up_label, up.base_url, up.api_key_ciphertext, up.api_key_iv,
+            up.status AS up_status, up.avg_latency_ms, up.consecutive_failures, up.cooldown_until,
+            up.cooldown_base_ms, up.last_checked_at, up.last_error
+     FROM freellm_model_providers mp
+     JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
+     WHERE mp.id = ?`
+  ).bind(providerId).first()
+
+  const encryptionKey = c.env.ENCRYPTION_KEY
+  return c.json({ provider: await publicModelProvider(provider!, encryptionKey) })
+})
+
+// Delete model provider
+app.delete('/api/admin/models/:id/providers/:providerId', async (c) => {
+  const modelId = c.req.param('id')
+  const providerId = c.req.param('providerId')
+  const existing = await c.env.DB.prepare('SELECT id FROM freellm_model_providers WHERE id = ? AND model_id = ?')
+    .bind(providerId, modelId)
+    .first()
+  if (!existing) return c.json({ error: 'not_found', message: 'Provider config not found.' }, 404)
+  await c.env.DB.prepare('DELETE FROM freellm_model_providers WHERE id = ?').bind(providerId).run()
+  return c.json({ ok: true })
+})
+
+// Test model provider (uses upstream provider's credentials)
+app.post('/api/admin/models/:id/providers/:providerId/test', async (c) => {
+  const modelId = c.req.param('id')
+  const providerId = c.req.param('providerId')
+  const provider = await c.env.DB.prepare(
+    `SELECT mp.*, up.base_url, up.api_key_ciphertext, up.api_key_iv, up.status AS up_status
+     FROM freellm_model_providers mp
+     JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
+     WHERE mp.id = ? AND mp.model_id = ?`
+  ).bind(providerId, modelId).first()
+
+  if (!provider) return c.json({ error: 'not_found', message: 'Provider config not found.' }, 404)
+
+  const encryptionKey = await requireEncryptionKey(c.env)
+  const apiKey = await decryptSecret(provider.api_key_ciphertext, provider.api_key_iv, encryptionKey)
+  const result = await pingProvider(provider.base_url, provider.upstream_model, apiKey)
+
+  const timestamp = now()
+  // Update upstream provider health (shared)
+  await c.env.DB.prepare(
+    `UPDATE freellm_upstream_providers
+     SET status = ?, last_checked_at = ?, last_error = ?,
+         avg_latency_ms = CASE WHEN avg_latency_ms IS NULL THEN ?
+                               ELSE CAST(avg_latency_ms * ? + ? * ? AS INTEGER) END,
+         consecutive_failures = ?, cooldown_until = NULL, updated_at = ?
+     WHERE id = ?`,
+  )
+    .bind(
+      result.status,
+      timestamp,
+      result.error ?? null,
+      result.latencyMs,
+      EWMA_BETA,
+      result.latencyMs,
+      EWMA_ALPHA,
+      result.ok ? 0 : provider.consecutive_failures + 1,
+      timestamp,
+      provider.upstream_provider_id,
+    )
+    .run()
+
+  // Also update model_provider messages_served on success
+  if (result.ok) {
+    await c.env.DB.prepare(
+      'UPDATE freellm_model_providers SET messages_served = messages_served + 1, updated_at = ? WHERE id = ?'
+    ).bind(timestamp, providerId).run()
+  }
+
+  const updated = await c.env.DB.prepare(
+    `SELECT mp.*, up.label AS up_label, up.base_url, up.api_key_ciphertext, up.api_key_iv,
+            up.status AS up_status, up.avg_latency_ms, up.consecutive_failures, up.cooldown_until,
+            up.cooldown_base_ms, up.last_checked_at, up.last_error
+     FROM freellm_model_providers mp
+     JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
+     WHERE mp.id = ?`
+  ).bind(providerId).first()
+
+  return c.json({ provider: await publicModelProvider(updated!, encryptionKey), test: result })
+})
+
+// Reveal model provider key (actually reveals upstream provider key)
+app.post('/api/admin/models/:id/providers/:providerId/reveal', async (c) => {
+  const modelId = c.req.param('id')
+  const providerId = c.req.param('providerId')
+  const provider = await c.env.DB.prepare(
+    `SELECT mp.*, up.api_key_ciphertext, up.api_key_iv
+     FROM freellm_model_providers mp
+     JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
+     WHERE mp.id = ? AND mp.model_id = ?`
+  ).bind(providerId, modelId).first()
+
+  if (!provider) return c.json({ error: 'not_found', message: 'Provider config not found.' }, 404)
+
+  const encryptionKey = await requireEncryptionKey(c.env)
+  const apiKey = await decryptSecret(provider.api_key_ciphertext, provider.api_key_iv, encryptionKey)
+  return c.json({ id: provider.id, label: provider.up_label, api_key: apiKey })
+})
+
+async function publicModelProvider(provider: {
+  id: string
+  model_id: string
+  upstream_provider_id: string
+  upstream_model: string
+  priority: number
+  active: number
+  messages_served: number
+  created_at: number
+  updated_at: number
+  up_label: string
+  base_url: string
+  api_key_ciphertext: string
+  api_key_iv: string
+  up_status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled'
+  avg_latency_ms: number | null
+  consecutive_failures: number
+  cooldown_until: number | null
+  cooldown_base_ms: number | null
+  last_checked_at: number | null
+  last_error: string | null
+}, encryptionKey: string) {
   return {
     id: provider.id,
-    label: provider.label,
-    base_url: provider.base_url,
+    label: provider.up_label,
+    upstream_provider_id: provider.upstream_provider_id,
     upstream_model: provider.upstream_model,
+    base_url: provider.base_url,
     key_masked: await safeKeyMask(provider, encryptionKey),
-    status: provider.active === 0 ? 'disabled' : provider.status,
+    status: provider.active === 0 ? 'disabled' : provider.up_status,
     last_checked_at: provider.last_checked_at,
     last_error: provider.last_error,
     avg_latency_ms: provider.avg_latency_ms,
     priority: provider.priority,
     active: provider.active,
     messages_served: provider.messages_served,
-    cooldown_ms: provider.cooldown_ms ?? null,
+    cooldown_base_ms: provider.cooldown_base_ms,
   }
 }
+
+// ------------------------------------------------ upstream models catalog
+
+app.get('/api/admin/upstream-models', async (c) => {
+  const rows = await c.env.DB.prepare(
+    `SELECT um.*, up.label AS provider_label
+     FROM freellm_upstream_models um
+     JOIN freellm_upstream_providers up ON up.id = um.upstream_provider_id
+     ORDER BY up.label, um.upstream_model`
+  ).all<{
+    upstream_provider_id: string
+    upstream_model: string
+    capabilities: string | null
+    context_window: number | null
+    max_output_tokens: number | null
+    provider_label: string
+  }>()
+
+  return c.json({ models: rows.results })
+})
+
+app.post('/api/admin/upstream-models', async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null)
+  if (!body) return c.json({ error: 'invalid_body', message: 'Send JSON.' }, 400)
+
+  const upstreamProviderId = String(body.upstream_provider_id ?? '').trim()
+  const upstreamModel = String(body.upstream_model ?? '').trim()
+  if (!upstreamProviderId || !upstreamModel) {
+    return c.json({ error: 'invalid_input', message: 'upstream_provider_id and upstream_model are required.' }, 400)
+  }
+
+  const provider = await c.env.DB.prepare('SELECT id FROM freellm_upstream_providers WHERE id = ? AND active = 1').bind(upstreamProviderId).first()
+  if (!provider) return c.json({ error: 'invalid_input', message: 'Upstream provider not found or inactive.' }, 400)
+
+  const capabilities = Array.isArray(body.capabilities) ? body.capabilities : []
+  const contextWindow = body.context_window == null ? null : Number(body.context_window)
+  const maxOutputTokens = body.max_output_tokens == null ? null : Number(body.max_output_tokens)
+
+  const timestamp = now()
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO freellm_upstream_models (upstream_provider_id, upstream_model, capabilities, context_window, max_output_tokens)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).bind(upstreamProviderId, upstreamModel, JSON.stringify(capabilities), contextWindow, maxOutputTokens).run()
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('UNIQUE constraint failed')) {
+      return c.json({ error: 'already_exists', message: 'This model is already registered for this provider.' }, 409)
+    }
+    throw err
+  }
+
+  return c.json({ ok: true }, 201)
+})
+
+app.delete('/api/admin/upstream-models/:providerId/:modelName', async (c) => {
+  const upstreamProviderId = c.req.param('providerId')
+  const upstreamModel = decodeURIComponent(c.req.param('modelName'))
+  const existing = await c.env.DB.prepare(
+    'SELECT 1 FROM freellm_upstream_models WHERE upstream_provider_id = ? AND upstream_model = ?'
+  ).bind(upstreamProviderId, upstreamModel).first()
+  if (!existing) return c.json({ error: 'not_found', message: 'Upstream model not found.' }, 404)
+
+  // Check if any model_providers reference this
+  const refs = await c.env.DB.prepare(
+    'SELECT 1 FROM freellm_model_providers WHERE upstream_provider_id = ? AND upstream_model = ? LIMIT 1'
+  ).bind(upstreamProviderId, upstreamModel).first()
+  if (refs) return c.json({ error: 'in_use', message: 'Cannot delete — model is referenced by model configs.' }, 409)
+
+  await c.env.DB.prepare(
+    'DELETE FROM freellm_upstream_models WHERE upstream_provider_id = ? AND upstream_model = ?'
+  ).bind(upstreamProviderId, upstreamModel).run()
+
+  return c.json({ ok: true })
+})
 
 // ------------------------------------------------------------- user board
 // Every signed-up user with balances, ranked by token balance. Spent comes

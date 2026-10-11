@@ -1,8 +1,15 @@
 // Provider multiplexing: resolving a model alias to one of its upstream
 // configs and calling it.
 //
-// An alias (freellm_models row) groups N provider configs (freellm_model_providers rows).
-// The alias's routing strategy picks among them:
+// Schema (post-migration 20241201120000):
+//   freellm_models              — alias users chat with ("poolside-laguna")
+//   freellm_upstream_providers  — real upstream provider (Poolside, OpenAI)
+//   freellm_upstream_models     — canonical model names per provider
+//   freellm_model_providers     — alias -> upstream_provider + upstream_model mapping
+//
+// An alias groups N model_provider rows. Each model_provider references
+// one upstream_provider and one upstream_model. The alias's routing
+// strategy picks among its model_providers:
 //   round_robin      — rotating counter in KV, even spread
 //   random           — uniform pick
 //   failover         — priority order (lower first)
@@ -12,13 +19,15 @@
 //                      configs still get traffic and EWMAs stay fresh
 // Any strategy falls through to the next candidate when the upstream
 // refuses the request (5xx/429), which is what makes a degraded pool
-// survivable. A failed config then cools down for 30 minutes before it can
-// be selected again.
+// survivable. A failed config then cools down before it can be selected again.
 //
-// Minimal interface for any upstream caller — pool configs or BYOK keys.
+// Health/cooldown is now **shared at the upstream provider level**:
+//   - If any config using Poolside fails, the upstream provider cools down
+//   - EWMA latency is per-upstream-provider, so all aliases benefit
+//   - API key stored once, decrypted per request
 
 import { decryptSecret } from './crypto'
-import type { Bindings, ModelProviderRow, ModelRow } from './types'
+import type { Bindings, ModelProviderRow, ModelRow, UpstreamProviderRow } from './types'
 
 const ROLLING_AVG_ALPHA = 0.3
 const ROLLING_AVG_BETA = 0.7
@@ -29,7 +38,7 @@ export const EWMA_BETA = ROLLING_AVG_BETA
 /** Above this stream latency a healthy config is marked 'slow'. */
 export const SLOW_THRESHOLD_MS = 8000
 
-/** Base cooldown after a failure; grows exponentially with consecutive failures. */
+/** Default base cooldown after a failure; grows exponentially with consecutive failures. */
 export const FAILED_PROVIDER_COOLDOWN_MS = 30 * 60 * 1000
 
 /** Upper bound for exponential backoff. */
@@ -63,26 +72,91 @@ export const UPSTREAM_TIMEOUT_MS = 30_000
  */
 export const LATENCY_WEIGHTED_EXPLORATION_RATE = 0.15
 
+/** Alias with its resolved upstream providers (for routing). */
+export type AliasWithProviders = {
+  model: ModelRow
+  providers: Array<ModelProviderRow & { upstream: UpstreamProviderRow }>
+}
+
+/** Minimal upstream config for callProvider (decrypted on demand). */
 export type UpstreamConfig = {
   id: string
   base_url: string
   upstream_model: string
 }
 
-export type AliasWithProviders = {
-  model: ModelRow
-  providers: ModelProviderRow[]
-}
-
 export async function loadAlias(env: Bindings, slug: string): Promise<AliasWithProviders | null> {
-  const model = await env.DB.prepare('SELECT * FROM freellm_models WHERE slug = ? AND active = 1').bind(slug).first<ModelRow>()
+  const model = await env.DB.prepare('SELECT * FROM freellm_models WHERE slug = ? AND active = 1')
+    .bind(slug)
+    .first<ModelRow>()
   if (!model) return null
-  const providers = await env.DB.prepare(
-    'SELECT * FROM freellm_model_providers WHERE model_id = ? AND active = 1 ORDER BY priority, label',
-  )
-    .bind(model.id)
-    .all<ModelProviderRow>()
-  return { model, providers: providers.results }
+
+  // Join model_providers -> upstream_providers in one query.
+  const rows = await env.DB.prepare(
+    `SELECT mp.*, 
+            up.id AS up_id, up.label, up.base_url, up.api_key_ciphertext, up.api_key_iv,
+            up.status, up.avg_latency_ms, up.consecutive_failures, up.cooldown_until,
+            up.cooldown_base_ms, up.last_checked_at, up.last_error, 
+            up.created_at AS up_created_at, up.updated_at AS up_updated_at
+     FROM freellm_model_providers mp
+     JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
+     WHERE mp.model_id = ? AND mp.active = 1
+     ORDER BY mp.priority, mp.label`
+  ).bind(model.id).all<{
+    id: string
+    model_id: string
+    upstream_provider_id: string
+    upstream_model: string
+    priority: number
+    active: number
+    messages_served: number
+    created_at: number
+    updated_at: number
+    up_id: string
+    label: string
+    base_url: string
+    api_key_ciphertext: string
+    api_key_iv: string
+    status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled'
+    avg_latency_ms: number | null
+    consecutive_failures: number
+    cooldown_until: number | null
+    cooldown_base_ms: number | null
+    last_checked_at: number | null
+    last_error: string | null
+    up_created_at: number
+    up_updated_at: number
+  }>()
+
+  const providers = rows.results.map((r) => ({
+    id: r.id,
+    model_id: r.model_id,
+    upstream_provider_id: r.upstream_provider_id,
+    upstream_model: r.upstream_model,
+    priority: r.priority,
+    active: r.active,
+    messages_served: r.messages_served,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+    upstream: {
+      id: r.up_id,
+      label: r.label,
+      base_url: r.base_url,
+      api_key_ciphertext: r.api_key_ciphertext,
+      api_key_iv: r.api_key_iv,
+      status: r.status,
+      avg_latency_ms: r.avg_latency_ms,
+      consecutive_failures: r.consecutive_failures,
+      cooldown_until: r.cooldown_until,
+      cooldown_base_ms: r.cooldown_base_ms,
+      last_checked_at: r.last_checked_at,
+      last_error: r.last_error,
+      created_at: r.up_created_at,
+      updated_at: r.up_updated_at,
+    },
+  }))
+
+  return { model, providers }
 }
 
 /** Active configs ordered by the alias's routing strategy. */
@@ -91,21 +165,21 @@ export async function resolveCandidates(
   alias: AliasWithProviders,
   now: number = Date.now(),
   opts: { random?: () => number } = {},
-): Promise<ModelProviderRow[]> {
-  // loadAlias filters active=1, but callers may pass rows directly —
-  // belt-and-braces so a disabled config can never be selected.
-  const usable = alias.providers.filter((p) => p.status !== 'disabled' && p.active !== 0)
+): Promise<Array<ModelProviderRow & { upstream: UpstreamProviderRow }>> {
+  // Filter active + not disabled (upstream.status can also be 'disabled').
+  const usable = alias.providers.filter(
+    (p) => p.active !== 0 && p.upstream.status !== 'disabled',
+  )
   if (usable.length === 0) return []
 
-  // Recently failed configs cool down before they can be selected again. If
-  // every config is cooling down, fail without calling a known-bad upstream.
-  const rested = usable.filter((p) => p.cooldown_until == null || p.cooldown_until <= now)
+  // Cooldown is at the upstream provider level — if the shared provider is cooling,
+  // none of its configs can be selected.
+  const rested = usable.filter((p) => p.upstream.cooldown_until == null || p.upstream.cooldown_until <= now)
   if (rested.length === 0) return []
 
-  // Prefer live/unknown, then slow, then down — a degraded config is only
-  // used when nothing better is rested.
-  const healthy = rested.filter((p) => p.status !== 'down')
-  const fresh = healthy.filter((p) => p.status !== 'slow')
+  // Prefer live/unknown, then slow, then down — degraded only when nothing better.
+  const healthy = rested.filter((p) => p.upstream.status !== 'down')
+  const fresh = healthy.filter((p) => p.upstream.status !== 'slow')
   const pool = fresh.length > 0 ? fresh : healthy.length > 0 ? healthy : rested
 
   switch (alias.model.routing) {
@@ -116,11 +190,11 @@ export async function resolveCandidates(
     case 'latency_weighted': {
       const random = opts.random ?? Math.random
       if (random() < LATENCY_WEIGHTED_EXPLORATION_RATE) {
-        // Explore: round-robin rotation over the rested (non-cooldown) pool
-        // so unknown/slow configs are still probed and EWMAs stay fresh.
+        // Explore: round-robin over the rested pool so unknown/slow configs
+        // are still probed and EWMAs stay fresh.
         return rotateRoundRobin(env, alias.model.id, pool)
       }
-      // Exploit: lowest EWMA first, unknown (NULL) last, priority breaks ties.
+      // Exploit: lowest upstream EWMA first, unknown (NULL) last, priority breaks ties.
       return sortByLatency(pool)
     }
     case 'round_robin':
@@ -130,14 +204,16 @@ export async function resolveCandidates(
   }
 }
 
-/** Lowest avg_latency_ms first; NULL (never measured) last. */
-export function sortByLatency(pool: ModelProviderRow[]): ModelProviderRow[] {
+/** Lowest upstream avg_latency_ms first; NULL (never measured) last. */
+export function sortByLatency(
+  pool: Array<ModelProviderRow & { upstream: UpstreamProviderRow }>
+): Array<ModelProviderRow & { upstream: UpstreamProviderRow }> {
   return [...pool].sort((a, b) => {
-    const la = a.avg_latency_ms ?? Number.MAX_SAFE_INTEGER
-    const lb = b.avg_latency_ms ?? Number.MAX_SAFE_INTEGER
+    const la = a.upstream.avg_latency_ms ?? Number.MAX_SAFE_INTEGER
+    const lb = b.upstream.avg_latency_ms ?? Number.MAX_SAFE_INTEGER
     if (la !== lb) return la - lb
     if (a.priority !== b.priority) return a.priority - b.priority
-    return a.label < b.label ? -1 : a.label > b.label ? 1 : 0
+    return a.upstream.id < b.upstream.id ? -1 : a.upstream.id > b.upstream.id ? 1 : 0
   })
 }
 
@@ -145,8 +221,8 @@ export function sortByLatency(pool: ModelProviderRow[]): ModelProviderRow[] {
 async function rotateRoundRobin(
   env: Bindings,
   modelId: string,
-  pool: ModelProviderRow[],
-): Promise<ModelProviderRow[]> {
+  pool: Array<ModelProviderRow & { upstream: UpstreamProviderRow }>,
+): Promise<Array<ModelProviderRow & { upstream: UpstreamProviderRow }>> {
   try {
     const key = `rr:${modelId}`
     const raw = await env.freellm_sessions.get(key)
@@ -196,7 +272,9 @@ export async function callProvider(
   const base = provider.base_url.replace(/\/+$/, '')
   const signal =
     options.signal ??
-    (typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(options.timeoutMs ?? UPSTREAM_TIMEOUT_MS) : undefined)
+    (typeof AbortSignal.timeout === 'function'
+      ? AbortSignal.timeout(options.timeoutMs ?? UPSTREAM_TIMEOUT_MS)
+      : undefined)
   const response = await fetch(`${base}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -223,17 +301,19 @@ export async function callProvider(
 /** Records the outcome of a request against a config (health + impact). */
 export async function recordOutcome(
   env: Bindings,
-  providerId: string,
+  providerId: string,                // upstream provider id
+  modelProviderId: string,           // model_provider row id (for messages_served)
   outcome: { ok: boolean; latencyMs: number; error?: string },
 ): Promise<void> {
   if (outcome.ok) {
+    // Update upstream provider health (shared across all aliases using it).
     await env.DB.prepare(
-      `UPDATE freellm_model_providers
+      `UPDATE freellm_upstream_providers
        SET status = ?, last_checked_at = ?, last_error = NULL, consecutive_failures = 0,
            cooldown_until = NULL,
            avg_latency_ms = CASE WHEN avg_latency_ms IS NULL THEN ?
                                  ELSE CAST(avg_latency_ms * ? + ? * ? AS INTEGER) END,
-           messages_served = messages_served + 1, updated_at = ?
+           updated_at = ?
        WHERE id = ?`,
     )
       .bind(
@@ -247,30 +327,43 @@ export async function recordOutcome(
         providerId,
       )
       .run()
-  } else {
-    // Exponential backoff on consecutive failures over the provider's own
-    // base TTL (or the global default when unset). Read-then-write is fine
-    // here — worst case of a race is a shorter cooldown.
-    const row = await env.DB.prepare('SELECT consecutive_failures, cooldown_ms FROM freellm_model_providers WHERE id = ?')
-      .bind(providerId)
-      .first<{ consecutive_failures: number; cooldown_ms: number | null }>()
-    const failures = (row?.consecutive_failures ?? 0) + 1
-    const base = row?.cooldown_ms ?? FAILED_PROVIDER_COOLDOWN_MS
-    const backoff = cooldownForAttempt(base, failures)
+
+    // Also bump messages_served on the specific model_provider row.
     await env.DB.prepare(
       `UPDATE freellm_model_providers
-       SET status = 'down', last_checked_at = ?, last_error = ?, consecutive_failures = consecutive_failures + 1,
+       SET messages_served = messages_served + 1, updated_at = ?
+       WHERE id = ?`,
+    )
+      .bind(Date.now(), modelProviderId)
+      .run()
+  } else {
+    // Exponential backoff on consecutive failures over the upstream provider's
+    // own base TTL (or the global default when unset).
+    const row = await env.DB.prepare(
+      `SELECT consecutive_failures, cooldown_base_ms
+       FROM freellm_upstream_providers WHERE id = ?`
+    )
+      .bind(providerId)
+      .first<{ consecutive_failures: number; cooldown_base_ms: number | null }>()
+    const failures = (row?.consecutive_failures ?? 0) + 1
+    const base = row?.cooldown_base_ms ?? FAILED_PROVIDER_COOLDOWN_MS
+    const backoff = cooldownForAttempt(base, failures)
+
+    // Cool down the upstream provider — affects ALL configs using it.
+    await env.DB.prepare(
+      `UPDATE freellm_upstream_providers
+       SET status = 'down', last_checked_at = ?, last_error = ?, consecutive_failures = ?,
            cooldown_until = ?, updated_at = ?
        WHERE id = ?`,
     )
-      .bind(Date.now(), outcome.error?.slice(0, 300) ?? 'unknown error', Date.now() + backoff, Date.now(), providerId)
+      .bind(Date.now(), outcome.error?.slice(0, 300) ?? 'unknown error', failures, Date.now() + backoff, Date.now(), providerId)
       .run()
   }
 }
 
-/** Decrypts a config's bearer for one request. */
-export async function providerApiKey(env: Bindings, provider: ModelProviderRow): Promise<string> {
-  return decryptSecret(provider.api_key_ciphertext, provider.api_key_iv, env.ENCRYPTION_KEY)
+/** Decrypts an upstream provider's bearer for one request. */
+export async function providerApiKey(env: Bindings, upstream: UpstreamProviderRow): Promise<string> {
+  return decryptSecret(upstream.api_key_ciphertext, upstream.api_key_iv, env.ENCRYPTION_KEY)
 }
 
 /**
@@ -282,7 +375,7 @@ export async function openStreamingCall(
   alias: AliasWithProviders,
   messages: ChatMessage[],
   options: { maxTokens: number; sampling?: { temperature?: number; top_p?: number } },
-): Promise<{ provider: ModelProviderRow; response: Response } | { error: string }> {
+): Promise<{ provider: ModelProviderRow & { upstream: UpstreamProviderRow }; response: Response } | { error: string }> {
   const candidates = await resolveCandidates(env, alias)
   if (candidates.length === 0) return { error: 'no usable provider configs' }
 
@@ -290,19 +383,28 @@ export async function openStreamingCall(
   for (const candidate of candidates) {
     const startedAt = Date.now()
     try {
-      const apiKey = await providerApiKey(env, candidate)
-      const { response } = await callProvider(candidate, apiKey, messages, {
-        maxTokens: options.maxTokens,
-        stream: true,
-        sampling: options.sampling,
-      })
+      const apiKey = await providerApiKey(env, candidate.upstream)
+      const { response } = await callProvider(
+        { id: candidate.id, base_url: candidate.upstream.base_url, upstream_model: candidate.upstream_model },
+        apiKey,
+        messages,
+        { maxTokens: options.maxTokens, stream: true, sampling: options.sampling },
+      )
       if (response.ok && response.body) return { provider: candidate, response }
       lastError = `${response.status} ${response.statusText}`
       const detail = (await response.text().catch(() => '')).slice(0, 200)
-      await recordOutcome(env, candidate.id, { ok: false, latencyMs: Date.now() - startedAt, error: `${lastError} ${detail}` })
+      await recordOutcome(env, candidate.upstream.id, candidate.id, {
+        ok: false,
+        latencyMs: Date.now() - startedAt,
+        error: `${lastError} ${detail}`,
+      })
     } catch (err) {
       lastError = err instanceof Error ? err.message : 'network error'
-      await recordOutcome(env, candidate.id, { ok: false, latencyMs: Date.now() - startedAt, error: lastError })
+      await recordOutcome(env, candidate.upstream.id, candidate.id, {
+        ok: false,
+        latencyMs: Date.now() - startedAt,
+        error: lastError,
+      })
     }
   }
   return { error: lastError || 'all configs failed' }

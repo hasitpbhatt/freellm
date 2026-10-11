@@ -578,6 +578,9 @@ export default function Chat() {
           {messages.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
               <p className="text-[13px] text-muted">
+                What is freellm.hasit.in? A community-owned arena for indie AI models. Bring your own key and chat free, or spend credits (1 cr = 1 token) on models in The Pool.
+              </p>
+              <p className="text-[13px] text-muted">
                 Ask {mode === 'pool' ? (model?.label ?? 'a model') : (selectedKey?.label ?? 'your key')} anything.
               </p>
               <p className="num text-[12px] text-muted max-w-md">

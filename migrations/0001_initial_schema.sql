@@ -166,9 +166,7 @@ CREATE TABLE freellm_battle_votes (
 
 -- ------------------------------------------------------- default tasks
 INSERT INTO freellm_tasks (id, slug, title, description, reward, url, sort_order, active, created_at) VALUES
-  ('task_follow_x',  'follow_x',  'Follow @freellm on X',      'Get model launches and pool status updates.', 25000, 'https://x.com/freellm', 1, 1, unixepoch() * 1000),
-  ('task_star_gh',   'star_gh',   'Star freellm on GitHub',    'The frontend is open source — see how the metering works.', 25000, 'https://github.com/freellm', 2, 1, unixepoch() * 1000),
-  ('task_discord',   'discord',   'Join the Discord',          'Vote on which models join The Pool next.', 25000, 'https://discord.gg/freellm', 3, 1, unixepoch() * 1000);
+  ('task_star_gh', 'star_gh', 'Star CodeWhip on GitHub', 'Star the CodeWhip repository to earn credits. Visit https://github.com/hasitpbhatt/codewhip, star the project, then claim your reward.', 1000000, 'https://github.com/hasitpbhatt/codewhip', 1, 1, unixepoch() * 1000);
 
 -- --------------------------------------------- email verification tokens
 -- The gate for earning credits and pool usage (anti-farming). Password

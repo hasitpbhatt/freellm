@@ -22,7 +22,7 @@ const REASON_LABELS: Record<string, string> = {
   admin_grant: 'Admin grant',
   chat_spend: 'Pool chat',
   promo_code: 'Promo code',
-  game_reward: 'Reaction game',
+  game_reward: 'Arcade game',
   refund: 'Refund',
 }
 

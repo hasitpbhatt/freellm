@@ -1,4 +1,4 @@
-import { after, before, test } from 'node:test'
+import { after, afterEach, before, test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { D1Database } from '@cloudflare/workers-types'
 import {
@@ -12,7 +12,7 @@ import {
   sortByLatency,
 } from '../functions/lib/providers'
 import { encryptSecret } from '../functions/lib/crypto'
-import type { Bindings, ModelProviderRow } from '../functions/lib/types'
+import type { Bindings, ModelProviderRow, UpstreamProviderRow } from '../functions/lib/types'
 import { createTestDb, testModel } from './helpers/db'
 
 let db: D1Database
@@ -28,27 +28,130 @@ after(async () => {
   if (dispose) await dispose()
 })
 
-function providerRow(id: string, priority: number, overrides: Partial<ModelProviderRow> = {}): ModelProviderRow {
-  return {
+afterEach(async () => {
+  // Clean up all test data for model_test in correct FK order
+  await db.prepare("DELETE FROM freellm_model_providers WHERE model_id = 'model_test'").run()
+  await db.prepare("DELETE FROM freellm_upstream_providers").run()
+  await db.prepare("DELETE FROM freellm_upstream_models").run()
+  await db.prepare("DELETE FROM freellm_models WHERE id LIKE 'model_%' AND id NOT IN ('model_test', 'model_failover')").run()
+})
+
+/** Create a test upstream provider row. */
+async function createUpstreamProvider(
+  id: string,
+  overrides: Partial<UpstreamProviderRow> = {}
+): Promise<UpstreamProviderRow> {
+  const now = Date.now()
+  const row: UpstreamProviderRow = {
     id,
-    model_id: 'model_test',
     label: id,
     base_url: 'https://provider.example/v1',
-    upstream_model: 'test-upstream',
     api_key_ciphertext: 'ciphertext',
     api_key_iv: 'iv',
     status: 'live',
     last_checked_at: null,
     last_error: null,
     avg_latency_ms: null,
+    consecutive_failures: 0,
     cooldown_until: null,
-    cooldown_ms: null,
+    cooldown_base_ms: null,
+    created_at: now,
+    updated_at: now,
+    ...overrides,
+  }
+  await db.prepare(
+    `INSERT OR REPLACE INTO freellm_upstream_providers (id, label, base_url, api_key_ciphertext, api_key_iv,
+                                             status, avg_latency_ms, consecutive_failures,
+                                             cooldown_until, cooldown_base_ms, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      row.id,
+      row.label,
+      row.base_url,
+      row.api_key_ciphertext,
+      row.api_key_iv,
+      row.status,
+      row.avg_latency_ms,
+      row.consecutive_failures,
+      row.cooldown_until,
+      row.cooldown_base_ms,
+      row.created_at,
+      row.updated_at,
+    )
+    .run()
+  // Also create upstream_models entry for 'test-upstream' to satisfy FK
+  await db.prepare(
+    `INSERT OR IGNORE INTO freellm_upstream_models (upstream_provider_id, upstream_model)
+     VALUES (?, 'test-upstream')`
+  ).bind(row.id).run()
+  return row
+}
+
+/** Create a test model provider row linking to an upstream provider. */
+async function createModelProvider(
+  id: string,
+  upstreamProviderId: string,
+  priority: number,
+  overrides: Partial<ModelProviderRow> = {}
+): Promise<ModelProviderRow> {
+  const now = Date.now()
+  const row: ModelProviderRow = {
+    id,
+    model_id: 'model_test',
+    upstream_provider_id: upstreamProviderId,
+    upstream_model: 'test-upstream',
     priority,
     active: 1,
     messages_served: 0,
+    created_at: now,
+    updated_at: now,
+    ...overrides,
+  }
+  await db.prepare(
+    `INSERT OR REPLACE INTO freellm_model_providers (id, model_id, upstream_provider_id, upstream_model,
+                                         priority, active, messages_served, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(row.id, row.model_id, row.upstream_provider_id, row.upstream_model,
+          row.priority, row.active, row.messages_served, row.created_at, row.updated_at)
+    .run()
+  return row
+}
+
+function providerRow(id: string, upstreamProviderId: string, priority: number, overrides: Partial<ModelProviderRow> = {}): ModelProviderRow {
+  const now = Date.now()
+  return {
+    id,
+    model_id: 'model_test',
+    upstream_provider_id: upstreamProviderId,
+    upstream_model: 'test-upstream',
+    priority,
+    active: 1,
+    messages_served: 0,
+    created_at: now,
+    updated_at: now,
+    ...overrides,
+  }
+}
+
+function upstreamProviderRow(id: string, overrides: Partial<UpstreamProviderRow> = {}): UpstreamProviderRow {
+  const now = Date.now()
+  return {
+    id,
+    label: id,
+    base_url: 'https://provider.example/v1',
+    api_key_ciphertext: 'ciphertext',
+    api_key_iv: 'iv',
+    status: 'live',
+    last_checked_at: null,
+    last_error: null,
+    avg_latency_ms: null,
     consecutive_failures: 0,
-    created_at: 0,
-    updated_at: 0,
+    cooldown_until: null,
+    cooldown_base_ms: null,
+    created_at: now,
+    updated_at: now,
     ...overrides,
   }
 }
@@ -57,13 +160,11 @@ function kvMock(initial = '') {
   let value = initial
   return {
     get: async (_key: string) => value,
-    put: async (_key: string, v: string) => {
-      value = v
-    },
+    put: async (_key: string, v: string) => { value = v },
   }
 }
 
-async function storedProviders(): Promise<ModelProviderRow[]> {
+async function storedModelProviders(): Promise<ModelProviderRow[]> {
   const rows = await db
     .prepare('SELECT * FROM freellm_model_providers WHERE model_id = ? ORDER BY priority')
     .bind('model_test')
@@ -71,53 +172,53 @@ async function storedProviders(): Promise<ModelProviderRow[]> {
   return rows.results
 }
 
+async function storedUpstreamProviders(): Promise<UpstreamProviderRow[]> {
+  const rows = await db
+    .prepare('SELECT * FROM freellm_upstream_providers ORDER BY label')
+    .all<UpstreamProviderRow>()
+  return rows.results
+}
+
 test('failed providers cool down for 30 minutes while healthy providers stay eligible', async () => {
   const env = { DB: db } as unknown as Bindings
   const now = Date.now()
-  await db
-    .prepare(
-      `INSERT INTO freellm_models (id, slug, label, capabilities, flat_rate_credits, routing, active, sort_order, created_at, updated_at)
-       VALUES ('model_test', 'test-model', 'Test Model', '[]', 2000, 'failover', 1, 0, ?, ?)`,
-    )
-    .bind(now, now)
-    .run()
-  for (const row of [providerRow('provider-a', 0), providerRow('provider-b', 1)]) {
-    await db
-      .prepare(
-        `INSERT INTO freellm_model_providers (id, model_id, label, base_url, upstream_model, api_key_ciphertext, api_key_iv,
-                                              status, priority, active, messages_served, consecutive_failures, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        row.id,
-        row.model_id,
-        row.label,
-        row.base_url,
-        row.upstream_model,
-        row.api_key_ciphertext,
-        row.api_key_iv,
-        row.status,
-        row.priority,
-        row.active,
-        row.messages_served,
-        row.consecutive_failures,
-        now,
-        now,
-      )
-      .run()
-  }
+  
+  await db.prepare(
+    `INSERT INTO freellm_models (id, slug, label, capabilities, flat_rate_credits, routing, active, sort_order, created_at, updated_at)
+     VALUES ('model_test', 'test-model', 'Test Model', '[]', 2000, 'failover', 1, 0, ?, ?)`,
+  ).bind(now, now).run()
 
-  await recordOutcome(env, 'provider-a', { ok: false, latencyMs: 12, error: '502 upstream' })
-  const [failed, healthy] = await storedProviders()
-  assert.equal(failed.status, 'down')
+  // Create two upstream providers
+  const upA = await createUpstreamProvider('upstream-a')
+  const upB = await createUpstreamProvider('upstream-b')
+  
+  // Create two model providers linking to them
+  const mpA = await createModelProvider('provider-a', 'upstream-a', 0)
+  const mpB = await createModelProvider('provider-b', 'upstream-b', 1)
+
+  await recordOutcome(env, 'upstream-a', 'provider-a', { ok: false, latencyMs: 12, error: '502 upstream' })
+  
+  const storedMps = await storedModelProviders()
+  const failedMp = storedMps.find(r => r.id === 'provider-a')!
+  const healthyMp = storedMps.find(r => r.id === 'provider-b')!
+  
+  const storedUps = await storedUpstreamProviders()
+  const failedUp = storedUps.find(r => r.id === 'upstream-a')!
+  assert.equal(failedUp.status, 'down')
   assert.ok(
-    (failed.cooldown_until ?? 0) >= now + FAILED_PROVIDER_COOLDOWN_MS,
+    (failedUp.cooldown_until ?? 0) >= now + FAILED_PROVIDER_COOLDOWN_MS,
     'a failure starts the full cooldown window',
   )
 
   const duringCooldown = await resolveCandidates(
     env,
-    { model: { ...testModel, routing: 'failover' }, providers: [failed, healthy] },
+    { 
+      model: { ...testModel, routing: 'failover' }, 
+      providers: [
+        { ...mpA, upstream: failedUp },
+        { ...mpB, upstream: storedUps.find(r => r.id === 'upstream-b')! }
+      ] 
+    },
     now,
   )
   assert.deepEqual(
@@ -126,13 +227,20 @@ test('failed providers cool down for 30 minutes while healthy providers stay eli
     'the failed provider is skipped while alternatives remain',
   )
 
-  await db
-    .prepare("UPDATE freellm_model_providers SET status = 'live', cooldown_until = ? WHERE id = ?")
-    .bind(now - 1, 'provider-a')
+  // Manually expire cooldown
+  await db.prepare("UPDATE freellm_upstream_providers SET status = 'live', cooldown_until = ? WHERE id = ?")
+    .bind(now - 1, 'upstream-a')
     .run()
+  
   const afterCooldown = await resolveCandidates(
     env,
-    { model: { ...testModel, routing: 'failover' }, providers: await storedProviders() },
+    { 
+      model: { ...testModel, routing: 'failover' }, 
+      providers: [
+        { ...mpA, upstream: { ...failedUp, status: 'live', cooldown_until: null } },
+        { ...mpB, upstream: storedUps.find(r => r.id === 'upstream-b')! }
+      ]
+    },
     now,
   )
   assert.deepEqual(
@@ -142,11 +250,11 @@ test('failed providers cool down for 30 minutes while healthy providers stay eli
   )
 
   await db
-    .prepare("UPDATE freellm_model_providers SET status = 'down', cooldown_until = ? WHERE id = ?")
-    .bind(now + FAILED_PROVIDER_COOLDOWN_MS, 'provider-a')
+    .prepare("UPDATE freellm_upstream_providers SET status = 'down', cooldown_until = ? WHERE id = ?")
+    .bind(now + FAILED_PROVIDER_COOLDOWN_MS, 'upstream-a')
     .run()
-  await recordOutcome(env, 'provider-a', { ok: true, latencyMs: 12 })
-  const recovered = (await storedProviders()).find((row) => row.id === 'provider-a')
+  await recordOutcome(env, 'upstream-a', 'provider-a', { ok: true, latencyMs: 12 })
+  const recovered = (await storedUpstreamProviders()).find((row) => row.id === 'upstream-a')
   assert.equal(recovered?.status, 'live')
   assert.equal(recovered?.cooldown_until, null)
 })
@@ -156,26 +264,17 @@ test('openStreamingCall tries the next provider after an upstream refusal', asyn
   const encrypted = await encryptSecret('test-key', key)
   const env = { DB: db, ENCRYPTION_KEY: key } as unknown as Bindings
   const now = Date.now()
-  await db
-    .prepare(
-      `INSERT INTO freellm_models (id, slug, label, capabilities, flat_rate_credits, routing, active, sort_order, created_at, updated_at)
-       VALUES ('model_failover', 'failover-model', 'Failover Model', '[]', 2000, 'failover', 1, 0, ?, ?)`,
-    )
-    .bind(now, now)
-    .run()
-  for (const [id, baseUrl] of [
-    ['fail-a', 'https://a.example/v1'],
-    ['fail-b', 'https://b.example/v1'],
-  ] as const) {
-    await db
-      .prepare(
-        `INSERT INTO freellm_model_providers (id, model_id, label, base_url, upstream_model, api_key_ciphertext, api_key_iv,
-                                              status, priority, active, messages_served, consecutive_failures, created_at, updated_at)
-         VALUES (?, 'model_failover', ?, ?, 'test-upstream', ?, ?, 'live', 0, 1, 0, 0, ?, ?)`,
-      )
-      .bind(id, id, baseUrl, encrypted.ciphertext, encrypted.iv, now, now)
-      .run()
-  }
+  
+  await db.prepare(
+    `INSERT INTO freellm_models (id, slug, label, capabilities, flat_rate_credits, routing, active, sort_order, created_at, updated_at)
+     VALUES ('model_failover', 'failover-model', 'Failover Model', '[]', 2000, 'failover', 1, 0, ?, ?)`,
+  ).bind(now, now).run()
+
+  const upA = await createUpstreamProvider('upstream-fail-a', { base_url: 'https://a.example/v1', api_key_ciphertext: encrypted.ciphertext, api_key_iv: encrypted.iv })
+  const upB = await createUpstreamProvider('upstream-fail-b', { base_url: 'https://b.example/v1', api_key_ciphertext: encrypted.ciphertext, api_key_iv: encrypted.iv })
+  
+  const mpA = await createModelProvider('fail-a', 'upstream-fail-a', 0)
+  const mpB = await createModelProvider('fail-b', 'upstream-fail-b', 1)
 
   const requestedUrls: string[] = []
   const realFetch = globalThis.fetch
@@ -190,11 +289,10 @@ test('openStreamingCall tries the next provider after an upstream refusal', asyn
       env,
       {
         model: { ...testModel, id: 'model_failover', slug: 'failover-model', routing: 'failover' },
-        providers: await db
-          .prepare('SELECT * FROM freellm_model_providers WHERE model_id = ? ORDER BY priority')
-          .bind('model_failover')
-          .all<ModelProviderRow>()
-          .then((rows) => rows.results),
+        providers: [
+          { ...mpA, upstream: upA },
+          { ...mpB, upstream: upB },
+        ],
       },
       [{ role: 'user', content: 'hi' }],
       { maxTokens: 10 },
@@ -217,15 +315,28 @@ test('latency_weighted exploit orders by lowest EWMA, unknown last', async () =>
   const store = kvMock()
   const env = { DB: db, freellm_sessions: store } as unknown as Bindings
   const now = Date.now()
-  const providers = [
-    providerRow('slow', 0, { avg_latency_ms: 5000 }),
-    providerRow('fast', 0, { avg_latency_ms: 200 }),
-    providerRow('unknown', 0, { avg_latency_ms: null }),
-    providerRow('mid', 1, { avg_latency_ms: 800 }),
-  ]
+  
+  const upSlow = await createUpstreamProvider('upstream-slow', { avg_latency_ms: 5000 })
+  const upFast = await createUpstreamProvider('upstream-fast', { avg_latency_ms: 200 })
+  const upUnknown = await createUpstreamProvider('upstream-unknown', { avg_latency_ms: null })
+  const upMid = await createUpstreamProvider('upstream-mid', { avg_latency_ms: 800 })
+  
+  const mpSlow = await createModelProvider('slow', 'upstream-slow', 0)
+  const mpFast = await createModelProvider('fast', 'upstream-fast', 0)
+  const mpUnknown = await createModelProvider('unknown', 'upstream-unknown', 0)
+  const mpMid = await createModelProvider('mid', 'upstream-mid', 1)
+  
   const candidates = await resolveCandidates(
     env,
-    { model: { ...testModel, routing: 'latency_weighted' }, providers },
+    { 
+      model: { ...testModel, routing: 'latency_weighted' }, 
+      providers: [
+        { ...mpSlow, upstream: upSlow },
+        { ...mpFast, upstream: upFast },
+        { ...mpUnknown, upstream: upUnknown },
+        { ...mpMid, upstream: upMid },
+      ] 
+    },
     now,
     { random: () => 0.99 },
   )
@@ -239,13 +350,25 @@ test('latency_weighted exploit skips cooldown providers even when fastest', asyn
   const store = kvMock()
   const env = { DB: db, freellm_sessions: store } as unknown as Bindings
   const now = Date.now()
-  const providers = [
-    providerRow('fast-cooling', 0, { avg_latency_ms: 50, cooldown_until: now + FAILED_PROVIDER_COOLDOWN_MS }),
-    providerRow('slow-rested', 0, { avg_latency_ms: 4000 }),
-  ]
+  
+  const upCooling = await createUpstreamProvider('upstream-fast-cooling', { 
+    avg_latency_ms: 50, 
+    cooldown_until: now + FAILED_PROVIDER_COOLDOWN_MS 
+  })
+  const upSlow = await createUpstreamProvider('upstream-slow-rested', { avg_latency_ms: 4000 })
+  
+  const mpCooling = await createModelProvider('fast-cooling', 'upstream-fast-cooling', 0)
+  const mpSlow = await createModelProvider('slow-rested', 'upstream-slow-rested', 0)
+  
   const candidates = await resolveCandidates(
     env,
-    { model: { ...testModel, routing: 'latency_weighted' }, providers },
+    { 
+      model: { ...testModel, routing: 'latency_weighted' }, 
+      providers: [
+        { ...mpCooling, upstream: upCooling },
+        { ...mpSlow, upstream: upSlow },
+      ] 
+    },
     now,
     { random: () => 0.99 },
   )
@@ -257,21 +380,42 @@ test('latency_weighted explore rotates round-robin over rested pool only', async
   const store = kvMock('')
   const env = { DB: db, freellm_sessions: store } as unknown as Bindings
   const now = Date.now()
-  const providers = [
-    providerRow('a', 0, { avg_latency_ms: 100 }),
-    providerRow('b', 0, { avg_latency_ms: 200 }),
-    providerRow('cooling', 0, { avg_latency_ms: 10, cooldown_until: now + FAILED_PROVIDER_COOLDOWN_MS }),
-  ]
+  
+  const upA = await createUpstreamProvider('upstream-a', { avg_latency_ms: 100 })
+  const upB = await createUpstreamProvider('upstream-b', { avg_latency_ms: 200 })
+  const upCooling = await createUpstreamProvider('upstream-cooling', { 
+    avg_latency_ms: 10, 
+    cooldown_until: now + FAILED_PROVIDER_COOLDOWN_MS 
+  })
+  
+  const mpA = await createModelProvider('a', 'upstream-a', 0)
+  const mpB = await createModelProvider('b', 'upstream-b', 0)
+  const mpCooling = await createModelProvider('cooling', 'upstream-cooling', 0)
+  
   const first = await resolveCandidates(
     env,
-    { model: { ...testModel, routing: 'latency_weighted' }, providers },
+    { 
+      model: { ...testModel, routing: 'latency_weighted' }, 
+      providers: [
+        { ...mpA, upstream: upA },
+        { ...mpB, upstream: upB },
+        { ...mpCooling, upstream: upCooling },
+      ] 
+    },
     now,
     { random: () => 0 },
   )
   assert.deepEqual(first.map((c) => c.id), ['b', 'a'])
   const second = await resolveCandidates(
     env,
-    { model: { ...testModel, routing: 'latency_weighted' }, providers },
+    { 
+      model: { ...testModel, routing: 'latency_weighted' }, 
+      providers: [
+        { ...mpA, upstream: upA },
+        { ...mpB, upstream: upB },
+        { ...mpCooling, upstream: upCooling },
+      ] 
+    },
     now,
     { random: () => 0 },
   )
@@ -294,22 +438,19 @@ test('cooldownForAttempt: daily-quota base (llm7.io style) ladders 1d, 2d, cappe
   assert.equal(cooldownForAttempt(0, 3), 0)
 })
 
-test('recordOutcome: provider cooldown_ms overrides the global base', async () => {
+test('recordOutcome: provider cooldown_base_ms overrides the global base', async () => {
   const env = { DB: db } as unknown as Bindings
   const now = Date.now()
   const day = 24 * 60 * 60 * 1000
-  await db
-    .prepare(
-      `INSERT OR REPLACE INTO freellm_model_providers (id, model_id, label, base_url, upstream_model, api_key_ciphertext, api_key_iv,
-                                                       status, priority, active, messages_served, consecutive_failures, cooldown_ms, created_at, updated_at)
-       VALUES ('cooldown-custom', 'model_test', 'cooldown-custom', 'https://x.example/v1', 'm', 'c', 'iv', 'live', 0, 1, 0, 0, ?, ?, ?)`,
-    )
-    .bind(day, now, now)
-    .run()
+  
+  const upCustom = await createUpstreamProvider('upstream-cooldown-custom', { cooldown_base_ms: day })
+  const mpCustom = await createModelProvider('cooldown-custom', 'upstream-cooldown-custom', 0)
+
   const before = Date.now()
-  await recordOutcome(env, 'cooldown-custom', { ok: false, latencyMs: 10, error: 'quota exhausted' })
-  const row = (await db.prepare('SELECT consecutive_failures, cooldown_until FROM freellm_model_providers WHERE id = ?')
-    .bind('cooldown-custom')
+  await recordOutcome(env, 'upstream-cooldown-custom', 'cooldown-custom', { ok: false, latencyMs: 10, error: 'quota exhausted' })
+  
+  const row = (await db.prepare('SELECT consecutive_failures, cooldown_until FROM freellm_upstream_providers WHERE id = ?')
+    .bind('upstream-cooldown-custom')
     .first<{ consecutive_failures: number; cooldown_until: number }>())!
   assert.equal(row.consecutive_failures, 1)
   assert.ok(row.cooldown_until >= before + day)
@@ -317,12 +458,14 @@ test('recordOutcome: provider cooldown_ms overrides the global base', async () =
 })
 
 test('sortByLatency breaks EWMA ties by priority', () => {
-  const providers = [
-    providerRow('p1', 5, { avg_latency_ms: 300 }),
-    providerRow('p0', 0, { avg_latency_ms: 300 }),
-  ]
+  const up0 = upstreamProviderRow('up0', { avg_latency_ms: 300 })
+  const up5 = upstreamProviderRow('up5', { avg_latency_ms: 300 })
+  
+  const mp0 = providerRow('p0', 'up0', 0)
+  const mp5 = providerRow('p1', 'up5', 5)
+  
   assert.deepEqual(
-    sortByLatency(providers).map((c) => c.id),
+    sortByLatency([{ ...mp0, upstream: up0 }, { ...mp5, upstream: up5 }]).map((c) => c.id),
     ['p0', 'p1'],
   )
 })
@@ -331,13 +474,22 @@ test('slow configs are skipped while live configs are rested', async () => {
   const store = kvMock()
   const env = { DB: db, freellm_sessions: store } as unknown as Bindings
   const now = Date.now()
-  const providers = [
-    providerRow('slow', 0, { status: 'slow', avg_latency_ms: 9000 }),
-    providerRow('live', 0, { status: 'live', avg_latency_ms: 5000 }),
-  ]
+  
+  const upSlow = await createUpstreamProvider('upstream-slow', { status: 'slow', avg_latency_ms: 9000 })
+  const upLive = await createUpstreamProvider('upstream-live', { status: 'live', avg_latency_ms: 5000 })
+  
+  const mpSlow = await createModelProvider('slow', 'upstream-slow', 0)
+  const mpLive = await createModelProvider('live', 'upstream-live', 0)
+  
   const candidates = await resolveCandidates(
     env,
-    { model: { ...testModel, routing: 'failover' }, providers },
+    { 
+      model: { ...testModel, routing: 'failover' }, 
+      providers: [
+        { ...mpSlow, upstream: upSlow },
+        { ...mpLive, upstream: upLive },
+      ] 
+    },
     now,
   )
   assert.deepEqual(candidates.map((c) => c.id), ['live'])
@@ -347,13 +499,22 @@ test('all-slow pool is still usable when nothing better exists', async () => {
   const store = kvMock()
   const env = { DB: db, freellm_sessions: store } as unknown as Bindings
   const now = Date.now()
-  const providers = [
-    providerRow('slow-a', 1, { status: 'slow', avg_latency_ms: 9000 }),
-    providerRow('slow-b', 0, { status: 'slow', avg_latency_ms: 9500 }),
-  ]
+  
+  const upSlowA = await createUpstreamProvider('upstream-slow-a', { status: 'slow', avg_latency_ms: 9000 })
+  const upSlowB = await createUpstreamProvider('upstream-slow-b', { status: 'slow', avg_latency_ms: 9500 })
+  
+  const mpSlowA = await createModelProvider('slow-a', 'upstream-slow-a', 1)
+  const mpSlowB = await createModelProvider('slow-b', 'upstream-slow-b', 0)
+  
   const candidates = await resolveCandidates(
     env,
-    { model: { ...testModel, routing: 'failover' }, providers },
+    { 
+      model: { ...testModel, routing: 'failover' }, 
+      providers: [
+        { ...mpSlowA, upstream: upSlowA },
+        { ...mpSlowB, upstream: upSlowB },
+      ] 
+    },
     now,
   )
   assert.deepEqual(candidates.map((c) => c.id), ['slow-b', 'slow-a'])
@@ -362,37 +523,32 @@ test('all-slow pool is still usable when nothing better exists', async () => {
 test('consecutive failures back off exponentially up to the cap', async () => {
   const env = { DB: db } as unknown as Bindings
   const now = Date.now()
-  await db
-    .prepare(
-      `INSERT OR REPLACE INTO freellm_models (id, slug, label, capabilities, flat_rate_credits, routing, active, sort_order, created_at, updated_at)
-       VALUES ('model_backoff', 'backoff-model', 'Backoff Model', '[]', 2000, 'failover', 1, 0, ?, ?)`,
-    )
-    .bind(now, now)
-    .run()
-  await db
-    .prepare(
-      `INSERT OR REPLACE INTO freellm_model_providers (id, model_id, label, base_url, upstream_model, api_key_ciphertext, api_key_iv,
-                                                       status, priority, active, messages_served, consecutive_failures, cooldown_until, created_at, updated_at)
-       VALUES ('backoff-a', 'model_backoff', 'backoff-a', 'https://x.example/v1', 'm', 'c', 'iv', 'live', 0, 1, 0, 0, NULL, ?, ?)`,
-    )
-    .bind(now, now)
-    .run()
+  
+  await db.prepare(
+    `INSERT INTO freellm_models (id, slug, label, capabilities, flat_rate_credits, routing, active, sort_order, created_at, updated_at)
+     VALUES ('model_backoff', 'backoff-model', 'Backoff Model', '[]', 2000, 'failover', 1, 0, ?, ?)`,
+  ).bind(now, now).run()
+  
+  const upBackoff = await createUpstreamProvider('upstream-backoff-a')
+  const mpBackoff = await createModelProvider('backoff-a', 'upstream-backoff-a', 0)
 
   const before1 = Date.now()
-  await recordOutcome(env, 'backoff-a', { ok: false, latencyMs: 10, error: 'boom' })
-  const after1 = (await db.prepare('SELECT consecutive_failures, cooldown_until FROM freellm_model_providers WHERE id = ?')
-    .bind('backoff-a')
+  await recordOutcome(env, 'upstream-backoff-a', 'backoff-a', { ok: false, latencyMs: 10, error: 'boom' })
+  
+  const after1 = (await db.prepare('SELECT consecutive_failures, cooldown_until FROM freellm_upstream_providers WHERE id = ?')
+    .bind('upstream-backoff-a')
     .first<{ consecutive_failures: number; cooldown_until: number }>())!
   assert.equal(after1.consecutive_failures, 1)
   assert.ok(after1.cooldown_until >= before1 + FAILED_PROVIDER_COOLDOWN_MS)
   assert.ok(after1.cooldown_until <= Date.now() + FAILED_PROVIDER_COOLDOWN_MS + 5000)
 
   // Reset cooldown so the second failure can be recorded, keeping the failure count.
-  await db.prepare('UPDATE freellm_model_providers SET cooldown_until = NULL WHERE id = ?').bind('backoff-a').run()
+  await db.prepare('UPDATE freellm_upstream_providers SET cooldown_until = NULL WHERE id = ?').bind('upstream-backoff-a').run()
   const before2 = Date.now()
-  await recordOutcome(env, 'backoff-a', { ok: false, latencyMs: 10, error: 'boom' })
-  const after2 = (await db.prepare('SELECT consecutive_failures, cooldown_until FROM freellm_model_providers WHERE id = ?')
-    .bind('backoff-a')
+  await recordOutcome(env, 'upstream-backoff-a', 'backoff-a', { ok: false, latencyMs: 10, error: 'boom' })
+  
+  const after2 = (await db.prepare('SELECT consecutive_failures, cooldown_until FROM freellm_upstream_providers WHERE id = ?')
+    .bind('upstream-backoff-a')
     .first<{ consecutive_failures: number; cooldown_until: number }>())!
   assert.equal(after2.consecutive_failures, 2)
   assert.ok(after2.cooldown_until >= before2 + FAILED_PROVIDER_COOLDOWN_MS * 2 - 5000)

@@ -5,5 +5,5 @@ UPDATE freellm_tasks
 SET title       = 'Star CodeWhip on GitHub',
     description = 'CodeWhip — the open, policy-checked terminal coding agent. Star it, then point it at The Pool.',
     url         = 'https://github.com/hasitpbhatt/codewhip',
-    reward      = 50000
+    reward      = 1000000
 WHERE slug = 'star_gh';

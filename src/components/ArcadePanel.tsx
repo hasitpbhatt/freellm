@@ -1,15 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, ApiError } from '../lib/api'
 import { Button, Card, CardHeader } from '../components/ui'
-import ReactionGame from './ReactionGame'
 import TypingGame from './TypingGame'
-import TapsGame from './TapsGame'
 
 type ClearState = {
   done: boolean
   ready: boolean
   reward: number
-  needs: ('reaction' | 'typing' | 'taps')[]
+  needs: ('typing' | 'memory' | 'chess')[]
 }
 
 type LevelState = {
@@ -20,11 +18,10 @@ type LevelState = {
   pending: { level: number; reward: number } | null
 }
 
-const GAME_LABELS: Record<string, string> = { reaction: 'Daily sprint', typing: 'Typing sprint', taps: 'Tap frenzy' }
+const GAME_LABELS: Record<string, string> = { typing: 'Typing proficiency', memory: 'Memory match', chess: 'Chess tactics' }
 
-// The arcade: three 10-second skill games plus a daily-clear bonus for
-// finishing all three. Progress is always visible; the bonus states exactly
-// what remains. Max haul per day is bounded by the per-game caps + 150cr.
+// The arcade: skill games with bounded payouts, effort-proportional rewards.
+// Typing, memory match, and chess tactics — all require real skill, no reflex games.
 export default function ArcadePanel() {
   const [clear, setClear] = useState<ClearState | null>(null)
   const [level, setLevel] = useState<LevelState | null>(null)
@@ -117,7 +114,7 @@ export default function ArcadePanel() {
       <Card>
         <CardHeader
           title="Arcade clear bonus"
-          action={<span className="num text-[12px] text-muted">+150 cr · once a day</span>}
+          action={<span className="num text-[12px] text-muted">+{clear?.reward ?? 7000} cr · once a day</span>}
         />
         <div className="flex flex-col gap-2 p-4">
           {clear === null ? (
@@ -128,12 +125,12 @@ export default function ArcadePanel() {
             <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
               <p className="text-[13px] text-gain">All three games finished today — claim it.</p>
               <Button disabled={claiming} onClick={() => void claimClear()} className="w-full sm:w-auto">
-                {claiming ? 'Claiming…' : 'Claim +150 cr'}
+                {claiming ? 'Claiming…' : `Claim +${clear.reward} cr`}
               </Button>
             </div>
           ) : (
             <p className="text-[13px] text-muted" role="status">
-              Finish {clear.needs.map((g) => GAME_LABELS[g]).join(', ')} today to unlock the +150 cr clear bonus.
+              Finish {clear.needs.map((g) => GAME_LABELS[g]).join(', ')} today to unlock the +{clear.reward} cr clear bonus.
             </p>
           )}
           {message && (
@@ -144,9 +141,8 @@ export default function ArcadePanel() {
         </div>
       </Card>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        <ReactionGame />
         <TypingGame />
-        <TapsGame />
+        {/* Memory and Chess games will be added here in a future update */}
       </div>
     </div>
   )
