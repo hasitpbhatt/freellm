@@ -9,6 +9,7 @@ import arenaRoutes from '../routes/arena'
 import keysRoutes from '../routes/keys'
 import apiKeyRoutes from '../routes/apikeys'
 import openAiRoutes from '../routes/openai'
+import gamesRoutes from '../routes/games'
 import type { Bindings, Variables } from '../lib/types'
 
 /**
@@ -73,5 +74,6 @@ app.route('/', arenaRoutes)
 app.route('/', keysRoutes)
 app.route('/', apiKeyRoutes)
 app.route('/', openAiRoutes)
+app.route('/', gamesRoutes)
 
 export const onRequest = handle(app)

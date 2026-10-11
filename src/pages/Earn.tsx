@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { api, ApiError } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { Button, Card, CardHeader, Credits } from '../components/ui'
+import ReactionGame from '../components/ReactionGame'
 
 type EarnState = {
   verified: boolean
@@ -49,6 +50,7 @@ export default function Earn() {
   const [code, setCode] = useState('')
   const [redeemStatus, setRedeemStatus] = useState<{ kind: 'ok' | 'err'; message: string } | null>(null)
   const [busyAction, setBusyAction] = useState<string | null>(null)
+  const [arcadeLoaded, setArcadeLoaded] = useState(false)
   const [banner, setBanner] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [verifyLink, setVerifyLink] = useState<string | null>(null)
   const [openedTask, setOpenedTask] = useState<string | null>(null)
@@ -255,6 +257,44 @@ export default function Earn() {
           </div>
         </Card>
       )}
+
+      {/* Daily sprint — skill game with bounded payouts */}
+      {user && <ReactionGame />}
+
+      {/* Play & earn — SkillArcade embedded so players never leave */}
+      <Card>
+        <CardHeader
+          title="Play & earn"
+          action={<a href="https://games.hasit.in" target="_blank" rel="noopener" className="text-[12px] text-accent hover:underline">Full screen ↗</a>}
+        />
+        <div className="flex flex-col gap-3 p-4">
+          <p className="text-[13px] text-muted">
+            Skill games from SkillArcade, playable right here. Scores earn arcade points; redeem{' '}
+            <code className="num">SKILLARCADE-1000</code> below for +1,000 free Pool credits (once per user).
+          </p>
+          {arcadeLoaded ? (
+            <iframe
+              src="https://games.hasit.in"
+              title="SkillArcade games"
+              loading="lazy"
+              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+              className="h-[78vh] min-h-[560px] w-full rounded-lg border border-line bg-bg"
+            />
+          ) : (
+            <button
+              onClick={() => setArcadeLoaded(true)}
+              className="flex min-h-[280px] flex-col items-center justify-center gap-2 rounded-lg border border-line bg-surface-2 p-8 text-center transition-colors hover:border-muted"
+            >
+              <span className="text-3xl" aria-hidden="true">🕹️</span>
+              <span className="text-[15px] font-semibold">Load the arcade</span>
+              <span className="max-w-md text-[13px] text-muted">
+                Play as a guest — no extra account. If games don't remember you (strict tracking
+                protection), use Full screen ↗ instead.
+              </span>
+            </button>
+          )}
+        </div>
+      </Card>
 
       {/* Referrals */}
       {state && (
