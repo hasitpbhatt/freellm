@@ -15,7 +15,7 @@
     "db:create": "wrangler d1 create hasit-in",
     "db:migrate:local": "wrangler d1 migrations apply hasit-in --local",
     "db:migrate:remote": "wrangler d1 migrations apply hasit-in --remote",
-    "deploy": "npm run build && wrangler pages deploy dist"
+    "deploy": "npm run build && wrangler pages deploy dist --branch=main"
   },
   "dependencies": {
     "@cloudflare/workers-types": "^5.20261010.1",

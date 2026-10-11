@@ -56,6 +56,51 @@ npm run deploy                   # build + wrangler pages deploy dist
 Then point `freellm.hasit.in` at the Pages project (CNAME to
 `<project>.pages.dev`) in the Cloudflare dashboard.
 
+## Deploying
+
+Production tracks the `main` branch (`freellm.hasit.in` serves the Production
+environment). The normal flow is push-to-deploy:
+
+```bash
+npm test                          # 65+ unit + D1-backed integration tests
+npm run db:migrate:remote         # apply pending migrations to remote D1 FIRST
+git push origin main              # Pages builds (npm run build) → Production
+```
+
+Verify after each deploy:
+
+```bash
+curl -s https://freellm.hasit.in/v1/models | head -c 300
+curl -s https://freellm.hasit.in/ads.txt
+npx wrangler pages deployment list # newest Production row should be your commit
+```
+
+Manual deploy (when the Git-integration build is red — Oct 2026: Pages'
+automatic `npm clean-install` crashes in their container before our build
+command runs; clear the dashboard build cache first, and if that fails, ship
+by hand):
+
+```bash
+npm run build
+npx wrangler pages deploy dist --branch=main \
+  --commit-hash=$(git rev-parse HEAD) --commit-message="$(git log -1 --pretty=%s)"
+# --branch=main is what promotes the upload to Production; without it the
+# upload lands in Preview and freellm.hasit.in keeps serving the old build.
+```
+
+Two hard-won rules:
+
+* **Migrations run before code.** The deployed Functions expect the migrated
+  schema — migrate remote D1 before (or with) every deploy that adds a file
+  under `migrations/`.
+* **Never `DROP TABLE` a parent with live children.** D1 enforces `ON DELETE
+  CASCADE` even under `PRAGMA foreign_keys=OFF`, so rebuilding a table (e.g.
+  to widen a `CHECK`) silently deletes referencing rows — this wiped every
+  provider config in Oct 2026 (recovered via D1 time-travel). Back up the
+  child, drop it, rebuild the parent, restore the child; see
+  `migrations/0011_latency_weighted_routing.sql` and the
+  `tests/migration-safety.test.ts` regression test that guards it.
+
 ## Scripts
 
 | Script | What it does |
@@ -66,7 +111,7 @@ Then point `freellm.hasit.in` at the Pages project (CNAME to
 | `npm run lint` | oxlint |
 | `npm test` | Compiles the test project and runs unit + D1-backed integration tests on Node's built-in runner |
 | `npm run db:migrate:local` / `:remote` | Apply D1 migrations |
-| `npm run deploy` | Build + deploy to Cloudflare Pages |
+| `npm run deploy` | Build + deploy `dist` to Production (`--branch=main`) |
 
 Tests need no extra install: the D1-backed metering suite runs against an
 in-process miniflare database (already in the tree via wrangler) with the real
