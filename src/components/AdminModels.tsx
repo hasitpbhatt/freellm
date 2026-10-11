@@ -194,6 +194,130 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
     }
   }
 
+  type ProviderGroup = { key: string; base_url: string; upstream_model: string; members: ModelProvider[] }
+
+  // Club configs that differ only by bearer key (same endpoint + model) so a
+  // pool of keys reads as one unit instead of N near-identical rows.
+  const groups: ProviderGroup[] = []
+  for (const p of model.providers) {
+    const key = `${p.base_url}||${p.upstream_model}`
+    const existing = groups.find((g) => g.key === key)
+    if (existing) existing.members.push(p)
+    else groups.push({ key, base_url: p.base_url, upstream_model: p.upstream_model, members: [p] })
+  }
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  const [keyPreset, setKeyPreset] = useState<{ baseUrl: string; upstreamModel: string; nonce: number } | null>(null)
+
+  function groupStatus(members: ModelProvider[]): string {
+    const statuses = members.map((m) => (m.active === 0 ? 'disabled' : m.status))
+    if (statuses.includes('live')) return 'live'
+    if (statuses.includes('slow')) return 'slow'
+    if (statuses.includes('unknown')) return 'unknown'
+    if (statuses.includes('down')) return 'down'
+    return 'disabled'
+  }
+
+  async function testGroup(members: ModelProvider[]) {
+    for (const m of members) {
+      await testProvider(m.id)
+    }
+  }
+
+  const renderProviderRow = (provider: ModelProvider) => {
+    const test = testResults[provider.id]
+    return (
+      <div key={provider.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+        <span className={`h-2 w-2 rounded-full ${statusDot[provider.status]}`} aria-hidden="true" />
+        <span className="sr-only">{provider.status}</span>
+        <div className="flex min-w-[240px] flex-1 flex-col">
+          <span className="text-[13px] font-medium">{provider.label}</span>
+          <span className="num text-[12px] text-muted">
+            {provider.base_url} · {provider.upstream_model}
+          </span>
+        </div>
+        <span className="num text-[12px] text-muted">{provider.key_masked}</span>
+        {provider.avg_latency_ms != null && (
+          <span className="num text-[12px] text-muted" title="Rolling average stream latency — latency_weighted routing prefers the lowest">
+            {provider.avg_latency_ms}ms avg
+          </span>
+        )}
+        {provider.cooldown_ms != null && (
+          <span className="num text-[12px] text-muted" title="How long this config waits before retry after a failure (doubles per consecutive failure)">
+            {formatCooldown(provider.cooldown_ms)}
+          </span>
+        )}
+        <div className="flex gap-2">
+          <Button
+            variant="secondary"
+            onClick={() => setEditingProviderId(editingProviderId === provider.id ? null : provider.id)}
+          >
+            {editingProviderId === provider.id ? 'Cancel edit' : 'Edit'}
+          </Button>
+          <Button variant="secondary" onClick={() => testProvider(provider.id)} disabled={busyKey !== null}>
+            {busy(`test:${provider.id}`) ? 'Testing…' : 'Test'}
+          </Button>
+          <Button variant="ghost" onClick={() => revealProviderKey(provider)} disabled={busyKey !== null} className="text-accent">
+            {busy(`reveal:${provider.id}`) ? 'Revealing…' : 'Reveal'}
+          </Button>
+          <Button variant="ghost" onClick={() => toggleProvider(provider)} disabled={busyKey !== null}>
+            {busy(`toggle:${provider.id}`) ? 'Saving…' : provider.active === 0 ? 'Enable' : 'Disable'}
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={() => setKeyPreset({ baseUrl: provider.base_url, upstreamModel: provider.upstream_model, nonce: Date.now() })}
+            disabled={busyKey !== null}
+            title="Add another key for this same endpoint and model"
+          >
+            Clone key
+          </Button>
+          <Button variant="ghost" onClick={() => deleteProvider(provider)} disabled={busyKey !== null} className="text-loss">
+            {busy(`delete:${provider.id}`) ? 'Deleting…' : 'Delete'}
+          </Button>
+        </div>
+        {revealed?.providerId === provider.id && (
+          <div className="flex w-full flex-col gap-2 rounded-lg border border-warn/40 bg-warn/5 p-3">
+            <p className="text-[12px] text-warn">
+              Bearer key for "{revealed.label}" — copied to clipboard when possible. Clear it from the clipboard after use.
+            </p>
+            <div className="flex items-center gap-2">
+              <code className="num flex-1 break-all text-[12px]">{revealed.key}</code>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => { void navigator.clipboard.writeText(revealed.key).catch(() => {}) }}
+              >
+                Copy
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setRevealed(null)}>
+                Hide
+              </Button>
+            </div>
+          </div>
+        )}
+        {editingProviderId === provider.id && (
+          <EditProviderForm
+            modelId={model.id}
+            provider={provider}
+            onDone={() => setEditingProviderId(null)}
+            onChanged={() => {
+              setEditingProviderId(null)
+              onChanged()
+            }}
+          />
+        )}
+        {test && (
+          <p className={`w-full text-[12px] ${test.ok ? 'text-gain' : 'text-loss'}`}>
+            {test.ok ? `OK via ${test.mode === 'models' ? 'model list probe' : test.mode === 'chat' ? 'chat probe' : test.mode}` : 'Failed'} · {test.latencyMs ?? '—'}ms
+            {test.error ? ` — ${test.error}` : ''}
+          </p>
+        )}
+        {provider.last_error && (
+          <p className="w-full text-[12px] text-muted">Last error: {provider.last_error}</p>
+        )}
+      </div>
+    )
+  }
+
   return (
     <Card>
       <div className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-3">
@@ -255,89 +379,46 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
       )}
 
       <div className="flex flex-col divide-y divide-line">
-        {model.providers.map((provider) => {
-          const test = testResults[provider.id]
+        {groups.map((group) => {
+          if (group.members.length === 1) return renderProviderRow(group.members[0])
+          const status = groupStatus(group.members)
+          const served = group.members.reduce((sum, m) => sum + m.messages_served, 0)
+          const isCollapsed = collapsed[group.key] === true
           return (
-            <div key={provider.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
-              <span className={`h-2 w-2 rounded-full ${statusDot[provider.status]}`} aria-hidden="true" />
-              <span className="sr-only">{provider.status}</span>
-              <div className="flex min-w-[240px] flex-1 flex-col">
-                <span className="text-[13px] font-medium">{provider.label}</span>
-                <span className="num text-[12px] text-muted">
-                  {provider.base_url} · {provider.upstream_model}
-                </span>
-              </div>
-              <span className="num text-[12px] text-muted">{provider.key_masked}</span>
-              {provider.avg_latency_ms != null && (
-                <span className="num text-[12px] text-muted" title="Rolling average stream latency — latency_weighted routing prefers the lowest">
-                  {provider.avg_latency_ms}ms avg
-                </span>
-              )}
-              {provider.cooldown_ms != null && (
-                <span className="num text-[12px] text-muted" title="How long this config waits before retry after a failure (doubles per consecutive failure)">
-                  {formatCooldown(provider.cooldown_ms)}
-                </span>
-              )}
-              <div className="flex gap-2">
-                <Button
-                  variant="secondary"
-                  onClick={() => setEditingProviderId(editingProviderId === provider.id ? null : provider.id)}
+            <div key={group.key} className="border-b border-line last:border-0">
+              <div className="flex flex-wrap items-center gap-2 bg-surface-2/50 px-4 py-2">
+                <button
+                  onClick={() => setCollapsed((prev) => ({ ...prev, [group.key]: !prev[group.key] }))}
+                  aria-expanded={!isCollapsed}
+                  className="rounded px-1 text-[13px] text-muted hover:text-content"
+                  aria-label={isCollapsed ? `Expand ${group.members.length} keys` : `Collapse ${group.members.length} keys`}
                 >
-                  {editingProviderId === provider.id ? 'Cancel edit' : 'Edit'}
-                </Button>
-                <Button variant="secondary" onClick={() => testProvider(provider.id)} disabled={busyKey !== null}>
-                  {busy(`test:${provider.id}`) ? 'Testing…' : 'Test'}
-                </Button>
-                <Button variant="ghost" onClick={() => revealProviderKey(provider)} disabled={busyKey !== null} className="text-accent">
-                  {busy(`reveal:${provider.id}`) ? 'Revealing…' : 'Reveal'}
-                </Button>
-                <Button variant="ghost" onClick={() => toggleProvider(provider)} disabled={busyKey !== null}>
-                  {busy(`toggle:${provider.id}`) ? 'Saving…' : provider.active === 0 ? 'Enable' : 'Disable'}
-                </Button>
-                <Button variant="ghost" onClick={() => deleteProvider(provider)} disabled={busyKey !== null} className="text-loss">
-                  {busy(`delete:${provider.id}`) ? 'Deleting…' : 'Delete'}
-                </Button>
+                  {isCollapsed ? '▸' : '▾'}
+                </button>
+                <span className={`h-2 w-2 rounded-full ${statusDot[status]}`} aria-hidden="true" />
+                <span className="sr-only">Club status {status}: </span>
+                <span className="num text-[12px] text-muted">
+                  {group.base_url} · {group.upstream_model}
+                </span>
+                <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent">
+                  {group.members.length} keys, one endpoint
+                </span>
+                <span className="num text-[12px] text-muted">{served.toLocaleString('en-US')} served</span>
+                <span className="ml-auto flex gap-2">
+                  <Button variant="secondary" size="sm" onClick={() => void testGroup(group.members)} disabled={busyKey !== null}>
+                    Test all
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setKeyPreset({ baseUrl: group.base_url, upstreamModel: group.upstream_model, nonce: Date.now() })}
+                    disabled={busyKey !== null}
+                  >
+                    + Add key
+                  </Button>
+                </span>
               </div>
-              {revealed?.providerId === provider.id && (
-                <div className="flex w-full flex-col gap-2 rounded-lg border border-warn/40 bg-warn/5 p-3">
-                  <p className="text-[12px] text-warn">
-                    Bearer key for "{revealed.label}" — copied to clipboard when possible. Clear it from the clipboard after use.
-                  </p>
-                  <div className="flex items-center gap-2">
-                    <code className="num flex-1 break-all text-[12px]">{revealed.key}</code>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => { void navigator.clipboard.writeText(revealed.key).catch(() => {}) }}
-                    >
-                      Copy
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={() => setRevealed(null)}>
-                      Hide
-                    </Button>
-                  </div>
-                </div>
-              )}
-              {editingProviderId === provider.id && (
-                <EditProviderForm
-                  modelId={model.id}
-                  provider={provider}
-                  onDone={() => setEditingProviderId(null)}
-                  onChanged={() => {
-                    setEditingProviderId(null)
-                    onChanged()
-                  }}
-                />
-              )}
-              {test && (
-                <p className={`w-full text-[12px] ${test.ok ? 'text-gain' : 'text-loss'}`}>
-                  {test.ok ? `OK via ${test.mode === 'models' ? 'model list probe' : test.mode === 'chat' ? 'chat probe' : test.mode}` : 'Failed'} · {test.latencyMs ?? '—'}ms
-                  {test.error ? ` — ${test.error}` : ''}
-                </p>
-              )}
-              {provider.last_error && (
-                <p className="w-full text-[12px] text-muted">Last error: {provider.last_error}</p>
-              )}
+              {!isCollapsed && group.members.map((member) => renderProviderRow(member))}
             </div>
           )
         })}
@@ -346,7 +427,7 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
         )}
       </div>
 
-      <AddProviderForm modelId={model.id} onCreated={onChanged} />
+      <AddProviderForm modelId={model.id} preset={keyPreset} onCreated={() => { setKeyPreset(null); onChanged() }} />
     </Card>
   )
 }
@@ -745,7 +826,15 @@ function NewAliasForm({ onCreated }: { onCreated: () => void }) {
   )
 }
 
-function AddProviderForm({ modelId, onCreated }: { modelId: string; onCreated: () => void }) {
+function AddProviderForm({
+  modelId,
+  preset,
+  onCreated,
+}: {
+  modelId: string
+  preset: { baseUrl: string; upstreamModel: string; nonce: number } | null
+  onCreated: () => void
+}) {
   const [open, setOpen] = useState(false)
   const [label, setLabel] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
@@ -755,6 +844,14 @@ function AddProviderForm({ modelId, onCreated }: { modelId: string; onCreated: (
   const [cooldownMinutes, setCooldownMinutes] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+
+  // Clone / add-key-to-club: prefill the endpoint, operator only adds the bearer.
+  useEffect(() => {
+    if (!preset) return
+    setBaseUrl(preset.baseUrl)
+    setUpstreamModel(preset.upstreamModel)
+    setOpen(true)
+  }, [preset])
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -782,6 +879,8 @@ function AddProviderForm({ modelId, onCreated }: { modelId: string; onCreated: (
       setBaseUrl('')
       setUpstreamModel('')
       setApiKey('')
+      setPriority('0')
+      setCooldownMinutes('')
       setOpen(false)
       onCreated()
     } catch (err) {
