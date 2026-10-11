@@ -65,6 +65,7 @@ export type ModelProviderRow = {
   last_error: string | null
   avg_latency_ms: number | null
   cooldown_until: number | null
+  cooldown_ms: number | null
   priority: number
   active: number
   messages_served: number

@@ -194,3 +194,10 @@ can never buy in, so callers without luna tokens cannot burn luna pool quota
 (`402 insufficient_scoped_credits`, settled with zero global movement). Pair it
 with a scoped promo code for the same alias; remember a premium promo still
 needs the matching user tier unless the alias stays `free`.
+
+Provider retry cooldown is per config: after a failure a config waits out its
+`cooldown_ms` (unset = global 30m default, `0` = retry immediately, max 7 days)
+before it can be selected again, doubling per consecutive failure up to 8x the
+base. Daily-reset quotas like llm7.io or Google fit a 1440-minute base — set it
+in the config's Edit form ("Retry cooldown"). Unset configs keep the historic
+30m → 1h → 2h → 4h ladder.

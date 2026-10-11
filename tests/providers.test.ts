@@ -5,6 +5,7 @@ import {
   FAILED_PROVIDER_COOLDOWN_MS,
   LATENCY_WEIGHTED_EXPLORATION_RATE,
   MAX_PROVIDER_COOLDOWN_MS,
+  cooldownForAttempt,
   openStreamingCall,
   recordOutcome,
   resolveCandidates,
@@ -41,6 +42,7 @@ function providerRow(id: string, priority: number, overrides: Partial<ModelProvi
     last_error: null,
     avg_latency_ms: null,
     cooldown_until: null,
+    cooldown_ms: null,
     priority,
     active: 1,
     messages_served: 0,
@@ -274,6 +276,44 @@ test('latency_weighted explore rotates round-robin over rested pool only', async
     { random: () => 0 },
   )
   assert.deepEqual(second.map((c) => c.id), ['a', 'b'])
+})
+
+test('cooldownForAttempt: default base reproduces the 30m ladder to the 4h cap', () => {
+  assert.equal(cooldownForAttempt(FAILED_PROVIDER_COOLDOWN_MS, 1), 30 * 60 * 1000)
+  assert.equal(cooldownForAttempt(FAILED_PROVIDER_COOLDOWN_MS, 2), 60 * 60 * 1000)
+  assert.equal(cooldownForAttempt(FAILED_PROVIDER_COOLDOWN_MS, 3), 2 * 60 * 60 * 1000)
+  assert.equal(cooldownForAttempt(FAILED_PROVIDER_COOLDOWN_MS, 4), MAX_PROVIDER_COOLDOWN_MS)
+  assert.equal(cooldownForAttempt(FAILED_PROVIDER_COOLDOWN_MS, 10), MAX_PROVIDER_COOLDOWN_MS)
+})
+
+test('cooldownForAttempt: daily-quota base (llm7.io style) ladders 1d, 2d, capped', () => {
+  const day = 24 * 60 * 60 * 1000
+  assert.equal(cooldownForAttempt(day, 1), day)
+  assert.equal(cooldownForAttempt(day, 2), 2 * day)
+  assert.equal(cooldownForAttempt(day, 5), 7 * day)
+  assert.equal(cooldownForAttempt(0, 3), 0)
+})
+
+test('recordOutcome: provider cooldown_ms overrides the global base', async () => {
+  const env = { DB: db } as unknown as Bindings
+  const now = Date.now()
+  const day = 24 * 60 * 60 * 1000
+  await db
+    .prepare(
+      `INSERT OR REPLACE INTO freellm_model_providers (id, model_id, label, base_url, upstream_model, api_key_ciphertext, api_key_iv,
+                                                       status, priority, active, messages_served, consecutive_failures, cooldown_ms, created_at, updated_at)
+       VALUES ('cooldown-custom', 'model_test', 'cooldown-custom', 'https://x.example/v1', 'm', 'c', 'iv', 'live', 0, 1, 0, 0, ?, ?, ?)`,
+    )
+    .bind(day, now, now)
+    .run()
+  const before = Date.now()
+  await recordOutcome(env, 'cooldown-custom', { ok: false, latencyMs: 10, error: 'quota exhausted' })
+  const row = (await db.prepare('SELECT consecutive_failures, cooldown_until FROM freellm_model_providers WHERE id = ?')
+    .bind('cooldown-custom')
+    .first<{ consecutive_failures: number; cooldown_until: number }>())!
+  assert.equal(row.consecutive_failures, 1)
+  assert.ok(row.cooldown_until >= before + day)
+  assert.ok(row.cooldown_until <= Date.now() + day + 5000)
 })
 
 test('sortByLatency breaks EWMA ties by priority', () => {

@@ -76,6 +76,7 @@ app.get('/api/admin/models', async (c) => {
           priority: provider.priority,
           active: provider.active,
           messages_served: provider.messages_served,
+          cooldown_ms: provider.cooldown_ms ?? null,
         })),
       ),
     })),
@@ -306,11 +307,19 @@ app.post('/api/admin/models/:id/providers', async (c) => {
   const encryptionKey = await requireEncryptionKey(c.env)
   const { ciphertext, iv } = await encryptSecret(String(body.api_key).trim(), encryptionKey)
 
+  let cooldownMs: number | null = null
+  if (body.cooldown_ms !== undefined && body.cooldown_ms !== null) {
+    cooldownMs = Number(body.cooldown_ms)
+    if (!Number.isInteger(cooldownMs) || cooldownMs < 0 || cooldownMs > 604800000) {
+      return c.json({ error: 'invalid_input', message: 'Cooldown must be an integer 0–604800000 ms (7 days), or null for the default.' }, 400)
+    }
+  }
+
   const id = newId()
   const timestamp = now()
   await c.env.DB.prepare(
-    `INSERT INTO freellm_model_providers (id, model_id, label, base_url, upstream_model, api_key_ciphertext, api_key_iv, status, priority, active, messages_served, consecutive_failures, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'unknown', ?, 1, 0, 0, ?, ?)`,
+    `INSERT INTO freellm_model_providers (id, model_id, label, base_url, upstream_model, api_key_ciphertext, api_key_iv, status, priority, active, messages_served, consecutive_failures, cooldown_ms, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'unknown', ?, 1, 0, 0, ?, ?, ?)`,
   )
     .bind(
       id,
@@ -321,6 +330,7 @@ app.post('/api/admin/models/:id/providers', async (c) => {
       ciphertext,
       iv,
       Number(body.priority ?? 0),
+      cooldownMs,
       timestamp,
       timestamp,
     )
@@ -365,6 +375,19 @@ app.patch('/api/admin/models/:id/providers/:providerId', async (c) => {
     const priority = Number(body.priority)
     if (!Number.isInteger(priority)) return c.json({ error: 'invalid_input', message: 'Priority must be an integer.' }, 400)
     updates.priority = priority
+  }
+  // Retry cooldown after a failure, in milliseconds (0 = retry immediately,
+  // null = global 30m default, max 7 days for slow-resetting quotas).
+  if (body.cooldown_ms !== undefined) {
+    if (body.cooldown_ms === null) {
+      updates.cooldown_ms = null
+    } else {
+      const cooldownMs = Number(body.cooldown_ms)
+      if (!Number.isInteger(cooldownMs) || cooldownMs < 0 || cooldownMs > 604800000) {
+        return c.json({ error: 'invalid_input', message: 'Cooldown must be an integer 0–604800000 ms (7 days), or null for the default.' }, 400)
+      }
+      updates.cooldown_ms = cooldownMs
+    }
   }
   if (body.active !== undefined) updates.active = body.active ? 1 : 0
   if (body.api_key !== undefined && body.api_key !== null && String(body.api_key) !== '') {
@@ -476,6 +499,7 @@ async function publicProvider(provider: ModelProviderRow, encryptionKey: string)
     priority: provider.priority,
     active: provider.active,
     messages_served: provider.messages_served,
+    cooldown_ms: provider.cooldown_ms ?? null,
   }
 }
 

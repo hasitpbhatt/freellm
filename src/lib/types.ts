@@ -27,6 +27,7 @@ export type ModelProvider = {
   priority: number
   active: number
   messages_served: number
+  cooldown_ms: number | null
 }
 
 export type ModelAlias = {

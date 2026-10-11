@@ -35,6 +35,24 @@ export const FAILED_PROVIDER_COOLDOWN_MS = 30 * 60 * 1000
 /** Upper bound for exponential backoff. */
 export const MAX_PROVIDER_COOLDOWN_MS = 4 * 60 * 60 * 1000
 
+/** Absolute ceiling for a per-provider cooldown base (7 days). */
+export const MAX_CONFIGURED_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000
+
+/**
+ * Cooldown after a failure: per-provider base doubled per consecutive
+ * failure (30m,1h,2h shape), capped at 8x base and the 7-day ceiling.
+ * With the default 30m base this reproduces the historic 30m→4h ladder.
+ * Base 0 disables the cooldown (immediate retry).
+ */
+export function cooldownForAttempt(baseMs: number, failures: number): number {
+  if (!(baseMs > 0)) return 0
+  return Math.min(
+    baseMs * 2 ** Math.min(Math.max(failures, 1) - 1, 3),
+    baseMs * 8,
+    MAX_CONFIGURED_COOLDOWN_MS,
+  )
+}
+
 /** Per-attempt upstream timeout so a hung provider fails over instead of blocking. */
 export const UPSTREAM_TIMEOUT_MS = 30_000
 
@@ -230,16 +248,15 @@ export async function recordOutcome(
       )
       .run()
   } else {
-    // Exponential backoff on consecutive failures: 30m, 1h, 2h, 4h cap.
-    // Read-then-write is fine here — worst case of a race is a shorter cooldown.
-    const row = await env.DB.prepare('SELECT consecutive_failures FROM freellm_model_providers WHERE id = ?')
+    // Exponential backoff on consecutive failures over the provider's own
+    // base TTL (or the global default when unset). Read-then-write is fine
+    // here — worst case of a race is a shorter cooldown.
+    const row = await env.DB.prepare('SELECT consecutive_failures, cooldown_ms FROM freellm_model_providers WHERE id = ?')
       .bind(providerId)
-      .first<{ consecutive_failures: number }>()
+      .first<{ consecutive_failures: number; cooldown_ms: number | null }>()
     const failures = (row?.consecutive_failures ?? 0) + 1
-    const backoff = Math.min(
-      FAILED_PROVIDER_COOLDOWN_MS * 2 ** Math.min(failures - 1, 3),
-      MAX_PROVIDER_COOLDOWN_MS,
-    )
+    const base = row?.cooldown_ms ?? FAILED_PROVIDER_COOLDOWN_MS
+    const backoff = cooldownForAttempt(base, failures)
     await env.DB.prepare(
       `UPDATE freellm_model_providers
        SET status = 'down', last_checked_at = ?, last_error = ?, consecutive_failures = consecutive_failures + 1,

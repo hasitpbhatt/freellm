@@ -5,6 +5,21 @@ import type { ModelAlias, ModelProvider } from '../lib/types'
 
 type TestResult = { ok: boolean; status: string; latencyMs: number | null; error?: string; mode: string }
 
+/** Human retry cooldown: null = global 30m default, 0 = retry immediately. */
+function formatCooldown(ms: number | null): string {
+  if (ms == null) return 'retry default 30m'
+  if (ms === 0) return 'retry now'
+  if (ms % 86_400_000 === 0) return `retry ${ms / 86_400_000}d`
+  if (ms % 3_600_000 === 0) return `retry ${ms / 3_600_000}h`
+  if (ms % 60_000 === 0) return `retry ${ms / 60_000}m`
+  return `retry ${ms}ms`
+}
+
+function msToMinutesInput(ms: number | null): string {
+  if (ms == null) return ''
+  return String(ms / 60000)
+}
+
 const statusDot: Record<string, string> = {
   live: 'bg-gain',
   slow: 'bg-warn',
@@ -235,6 +250,11 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
               {provider.avg_latency_ms != null && (
                 <span className="num text-[12px] text-muted">{provider.avg_latency_ms}ms</span>
               )}
+              {provider.cooldown_ms != null && (
+                <span className="num text-[12px] text-muted" title="How long this config waits before retry after a failure (doubles per consecutive failure)">
+                  {formatCooldown(provider.cooldown_ms)}
+                </span>
+              )}
               <div className="flex gap-2">
                 <Button
                   variant="secondary"
@@ -448,6 +468,7 @@ function EditProviderForm({
   const [upstreamModel, setUpstreamModel] = useState(provider.upstream_model)
   const [apiKey, setApiKey] = useState('')
   const [priority, setPriority] = useState(provider.priority.toString())
+  const [cooldownMinutes, setCooldownMinutes] = useState(msToMinutesInput(provider.cooldown_ms))
   const [active, setActive] = useState(provider.active === 1)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -468,6 +489,15 @@ function EditProviderForm({
       setError('Priority must be an integer.')
       return
     }
+    let cooldownMs: number | null = null
+    if (cooldownMinutes.trim() !== '') {
+      const minutes = Number(cooldownMinutes)
+      if (!Number.isInteger(minutes) || minutes < 0 || minutes > 10080) {
+        setError('Retry cooldown must be empty (default) or an integer 0–10080 minutes.')
+        return
+      }
+      cooldownMs = minutes * 60000
+    }
 
     setBusy(true)
     setError('')
@@ -477,6 +507,7 @@ function EditProviderForm({
         base_url: baseUrl.trim(),
         upstream_model: upstreamModel.trim(),
         priority: priorityValue,
+        cooldown_ms: cooldownMs,
         active,
         ...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
       })
@@ -509,6 +540,9 @@ function EditProviderForm({
       </Field>
       <Field label="Priority (failover order, lower first)">
         <input className="input" value={priority} onChange={(e) => setPriority(e.target.value)} inputMode="numeric" />
+      </Field>
+      <Field label="Retry cooldown, minutes (empty = default 30m, e.g. 1440 for daily quotas)">
+        <input className="input" value={cooldownMinutes} onChange={(e) => setCooldownMinutes(e.target.value)} inputMode="numeric" placeholder="default" />
       </Field>
       <label className="flex items-center gap-2 text-[13px]">
         <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
@@ -650,11 +684,21 @@ function AddProviderForm({ modelId, onCreated }: { modelId: string; onCreated: (
   const [upstreamModel, setUpstreamModel] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [priority, setPriority] = useState('0')
+  const [cooldownMinutes, setCooldownMinutes] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
   async function submit(event: FormEvent) {
     event.preventDefault()
+    let cooldownMs: number | null = null
+    if (cooldownMinutes.trim() !== '') {
+      const minutes = Number(cooldownMinutes)
+      if (!Number.isInteger(minutes) || minutes < 0 || minutes > 10080) {
+        setError('Retry cooldown must be empty (default) or an integer 0–10080 minutes.')
+        return
+      }
+      cooldownMs = minutes * 60000
+    }
     setBusy(true)
     setError('')
     try {
@@ -664,6 +708,7 @@ function AddProviderForm({ modelId, onCreated }: { modelId: string; onCreated: (
         upstream_model: upstreamModel,
         api_key: apiKey,
         priority: Number(priority),
+        cooldown_ms: cooldownMs,
       })
       setLabel('')
       setBaseUrl('')
@@ -705,6 +750,9 @@ function AddProviderForm({ modelId, onCreated }: { modelId: string; onCreated: (
         </Field>
         <Field label="Priority (failover order, lower first)">
           <input className="input" value={priority} onChange={(e) => setPriority(e.target.value)} inputMode="numeric" />
+        </Field>
+        <Field label="Retry cooldown, minutes (empty = default 30m, e.g. 1440 for daily quotas)">
+          <input className="input" value={cooldownMinutes} onChange={(e) => setCooldownMinutes(e.target.value)} inputMode="numeric" placeholder="default" />
         </Field>
         {error && <p className="text-[13px] text-loss sm:col-span-2">{error}</p>}
         <div className="flex gap-2 sm:col-span-2">
