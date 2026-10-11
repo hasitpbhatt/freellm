@@ -1,0 +1,8 @@
+# Local secrets for `wrangler pages dev` — never commit (gitignored).
+# Generate ENCRYPTION_KEY with: openssl rand -base64 32
+ENCRYPTION_KEY="REPLACE_WITH_BASE64_32_BYTE_KEY"
+GOOGLE_CLIENT_ID=""
+GOOGLE_CLIENT_SECRET=""
+POOLSIDE_API_KEY=""
+AGNES_API_KEY=""
+ATRIA_API_KEY=""

@@ -1,0 +1,7 @@
+# SPA fallback for Cloudflare Pages.
+#
+# The app is a BrowserRouter SPA, so deep links (/chat, /dashboard, /keys, …)
+# must serve index.html on a hard refresh. Requests handled by Pages Functions
+# (/api/*, /v1/*) are exempt from _redirects by design, so this catch-all
+# cannot shadow the API surface.
+/*    /index.html   200

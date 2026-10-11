@@ -1,0 +1,132 @@
+# freellm
+
+The community-owned arena for indie AI models. Two ways in: bring your own API
+key and chat free forever, or spend earned credits on The Pool — models kept
+alive by contributors. 1 credit = 1 token, metered per request.
+
+## Stack
+
+Cloudflare Pages (static SPA + Functions) · D1 (SQLite) · KV · Hono · React 19 + Vite 8 · Tailwind 3
+
+## License
+
+[AGPL-3.0](LICENSE) — network use counts as distribution, so hosted variants
+stay open.
+
+## Layout
+
+```
+functions/api/[[route]].ts   Hono API (auth, chat, metering, economy)
+functions/v1/[[route]].ts    OpenAI-compatible mount at /v1
+functions/routes/            one router per surface
+migrations/                  D1 schema, applied in order
+public/
+  _redirects                 SPA fallback (deep links serve index.html)
+src/
+  components/                AppShell, UI primitives
+  pages/                     Landing + route pages
+  lib/                       api client, formatting
+tests/                       unit + D1-backed integration tests (node --test)
+```
+
+## Local development
+
+```bash
+npm install
+cp .dev.vars.example .dev.vars   # add secrets (openssl rand -base64 32 for ENCRYPTION_KEY)
+npm run db:migrate:local         # apply D1 migrations to the local emulator
+npm run dev:pages                # build + serve SPA and Functions at http://localhost:8788
+```
+
+`npm run dev` runs the Vite dev server alone (no API) — use `dev:pages` for the
+full stack.
+
+## First-time Cloudflare setup (before first deploy)
+
+```bash
+npx wrangler login
+npm run db:create                # creates the D1 db; paste the id into wrangler.toml
+npx wrangler kv namespace create SESSIONS   # paste the id into wrangler.toml
+npm run db:migrate:remote
+npx wrangler pages secret put ENCRYPTION_KEY
+# ... GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, POOLSIDE_API_KEY, ...
+npm run deploy                   # build + wrangler pages deploy dist
+```
+
+Then point `freellm.hasit.in` at the Pages project (CNAME to
+`<project>.pages.dev`) in the Cloudflare dashboard.
+
+## Scripts
+
+| Script | What it does |
+|---|---|
+| `npm run dev` | Vite dev server (frontend only) |
+| `npm run dev:pages` | Full stack: build + wrangler pages dev |
+| `npm run build` | Typecheck (app + functions) + production build |
+| `npm run lint` | oxlint |
+| `npm test` | Compiles the test project and runs unit + D1-backed integration tests on Node's built-in runner |
+| `npm run db:migrate:local` / `:remote` | Apply D1 migrations |
+| `npm run deploy` | Build + deploy to Cloudflare Pages |
+
+Tests need no extra install: the D1-backed metering suite runs against an
+in-process miniflare database (already in the tree via wrangler) with the real
+migrations applied.
+
+## Status
+
+Milestones 1–6 shipped: scaffold, auth, admin panel, promo codes, metering core,
+economy, the **M5 arena**, and the **M6 BYOK vault**.
+- Password auth (PBKDF2-SHA256), KV sessions, first account/ADMIN_EMAIL → admin role;
+  email verification gates earning (MailChannels in production, dev link locally)
+- Google OAuth sign-in (`/api/auth/google`, KV state, email verified by Google)
+- Admin panel (`/admin`): model aliases + grouped OpenAI-compatible provider configs
+  with live test-connection, plus promo codes (global or alias-scoped, limits/expiry/age gates)
+- **Chat proxy** (`/chat`): SSE passthrough, reserve-settle accounting, provider-reported
+  usage with flat-rate fallback, multiplexing across an alias's configs
+- **Economy** (`/earn`, `/dashboard`, `/usage`): daily check-in (+50K base, day-7 +500K,
+  day-30 +2M), one-time tasks, referrals paying +500K at 7-day tenure or 200K tokens
+- **Arena** (`/battle`): 2–4 models answer one prompt blinded as A/B/C…, one-shot vote
+  reveals identities + Elo (K=32 young / K=16 settled, pairwise), leaderboard, public
+  replays embedded on the landing page. Each model's stream is metered separately and
+  attributed via `usage_events.battle_id`
+- **BYOK vault** (`/keys`): Door 1 of the Two Doors model. Users store their own
+  OpenAI-compatible endpoints (base URL + upstream model + bearer, AES-256-GCM at
+  rest, validated on add). Chatting through your key is free and unmetered
+  (`key_mode=byok` on `/api/chat`). Admins can view/reveal vault keys for auditability
+  (`/admin/vault`)
+- **OpenAI-compatible API** (`/v1`, docs at `/developers`): `GET /v1/models` and
+  `POST /v1/chat/completions` speak the OpenAI wire format, so the OpenAI SDKs and
+  any OpenAI-compatible client work with `baseURL: https://freellm.hasit.in/v1`.
+  Auth is a session cookie **or** a personal `fl_…` API token (Bearer; hashed at rest,
+  created/managed on `/developers`, verified-email-gated like the rest of earning).
+  Pool billing, failover, and metering are the same code path as `/api/chat`
+
+Repo hygiene: unit + integration tests (`npm test`, Node's built-in runner with a
+miniflare D1 for the metering suite) and CI (`.github/workflows/ci.yml`) running
+lint → test → build on every push/PR.
+
+Next: the paid-tier migration path.
+
+### Local test accounts (from the E2E run)
+
+| Email | Password | Role |
+|---|---|---|
+| admin@freellm.local | supersecret123 | admin |
+| user1@example.com | password123 | user (has 100k global + 50k scoped to poolside-laguna) |
+
+### Admin bootstrap
+
+The first registered account becomes admin (as does `ADMIN_EMAIL`). In local dev,
+`ADMIN_EMAIL=admin@freellm.local` is preset in `.dev.vars`.
+
+```bash
+# 1. register the first account at /register — it gets role=admin
+# 2. open /admin, create an alias ("Poolside Laguna" -> slug poolside-laguna)
+# 3. add provider configs to it: base URL + upstream model + bearer
+# 4. hit Test — status/latency persist per config
+```
+
+An **alias** is what users chat with; each alias groups N **provider configs**
+(`model_providers`), and a request multiplexes across the group using the
+alias's routing strategy (`round_robin` | `random` | `failover`, priority-ordered
+for failover). Bearer keys are AES-256-GCM encrypted with `ENCRYPTION_KEY`.

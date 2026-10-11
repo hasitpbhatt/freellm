@@ -1,0 +1,164 @@
+import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { api } from '../lib/api'
+import { useAuth } from '../lib/auth'
+import { Button, Card, CardHeader } from '../components/ui'
+import { formatDelta } from '../lib/format'
+
+type LedgerEntry = { delta: number; reason: string; meta: Record<string, unknown> | null; created_at: number }
+
+type EarnState = {
+  verified: boolean
+  checkin: { checked_in_today: boolean; streak: number; today_reward: number }
+  referral: { code: string; pending: number; qualified: number }
+}
+
+const REASON_LABELS: Record<string, string> = {
+  daily_checkin: 'Daily check-in',
+  referral_reward: 'Referral reward',
+  task_reward: 'Task reward',
+  key_contribution: 'Key contribution',
+  key_upkeep: 'Key upkeep',
+  admin_grant: 'Admin grant',
+  chat_spend: 'Pool chat',
+  promo_code: 'Promo code',
+  refund: 'Refund',
+}
+
+export default function Dashboard() {
+  const { user, loading, refresh } = useAuth()
+  const [ledger, setLedger] = useState<LedgerEntry[] | null>(null)
+  const [earn, setEarn] = useState<EarnState | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(async () => {
+    try {
+      const [ledgerData, earnData] = await Promise.all([
+        api.get<{ entries: LedgerEntry[] }>('/ledger'),
+        api.get<EarnState>('/earn'),
+      ])
+      setLedger(ledgerData.entries)
+      setEarn(earnData)
+    } catch {
+      // if the session died mid-load the shell redirects to sign-in
+    }
+  }, [])
+
+  useEffect(() => {
+    if (user) void load()
+  }, [user, load])
+
+  if (loading) return <p className="py-12 text-center text-[13px] text-muted">Loading…</p>
+  if (!user) return null
+
+  const hasCheckedIn = earn?.checkin.checked_in_today ?? false
+  const hasBalance = user.balance_credits > 0
+  const checklist = [
+    { done: earn?.verified ?? false, label: 'Verify your email', detail: 'Unlocks earning', to: '/earn' },
+    { done: hasCheckedIn, label: 'Check in today', detail: '+50,000 cr', to: '/earn' },
+    { done: hasBalance, label: 'Earn your first credits', detail: 'Check-in, tasks, referrals', to: '/earn' },
+    { done: earn?.referral.qualified ?? 0 > 0, label: 'Invite a friend', detail: '+500,000 cr when they qualify', to: '/earn' },
+  ]
+  const completed = checklist.filter((item) => item.done).length
+
+  async function checkIn() {
+    setBusy(true)
+    try {
+      await api.post('/checkin')
+      await Promise.all([load(), refresh()])
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="grid gap-4 sm:grid-cols-3">
+        {/* Balance */}
+        <Card className="p-4">
+          <p className="text-[12px] uppercase tracking-wide text-muted">Balance</p>
+          <p className="num mt-1 text-2xl font-semibold">{user.balance_credits.toLocaleString('en-US')}</p>
+          <p className="text-[12px] text-muted">credits · any model</p>
+          <Link to="/usage" className="mt-2 inline-block text-[13px] text-accent hover:underline">Usage →</Link>
+        </Card>
+
+        {/* Streak */}
+        <Card className="p-4">
+          <p className="text-[12px] uppercase tracking-wide text-muted">Streak</p>
+          <p className="num mt-1 text-2xl font-semibold">🔥 {earn?.checkin.streak ?? 0}</p>
+          <p className="text-[12px] text-muted">days checked in</p>
+          {hasCheckedIn ? (
+            <p className="mt-2 text-[13px] text-muted">✓ Checked in today</p>
+          ) : (
+            <Button className="mt-2" variant="secondary" disabled={busy || !earn?.verified} onClick={() => void checkIn()}>
+              Check in
+            </Button>
+          )}
+        </Card>
+
+        {/* Referrals */}
+        <Card className="p-4">
+          <p className="text-[12px] uppercase tracking-wide text-muted">Referrals</p>
+          <p className="num mt-1 text-2xl font-semibold">
+            {earn?.referral.qualified ?? 0}
+            <span className="text-[13px] text-muted"> paid</span>
+          </p>
+          <p className="num text-[12px] text-muted">{earn?.referral.pending ?? 0} pending</p>
+          <Link to="/earn" className="mt-2 inline-block text-[13px] text-accent hover:underline">Invite →</Link>
+        </Card>
+      </div>
+
+      {/* First-run checklist — teaches the model through action */}
+      <Card>
+        <CardHeader title="Getting started" action={<span className="num text-[12px] text-muted">{completed}/4</span>} />
+        <div className="flex flex-col divide-y divide-line">
+          {checklist.map((item) => (
+            <div key={item.label} className="flex items-center gap-3 px-4 py-3">
+              <span className={item.done ? 'text-gain' : 'text-muted'}>{item.done ? '✅' : '○'}</span>
+              <div className="flex flex-col">
+                <span className="text-[13px] font-medium">{item.label}</span>
+                <span className="text-[12px] text-muted">{item.detail}</span>
+              </div>
+              {!item.done && (
+                <Link to={item.to} className="ml-auto">
+                  <Button variant="secondary">Go</Button>
+                </Link>
+              )}
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {/* Recent activity */}
+      <Card>
+        <CardHeader title="Recent activity" action={<Link to="/usage" className="text-[13px] text-accent hover:underline">All usage →</Link>} />
+        {ledger === null && <p className="p-4 text-[13px] text-muted">Loading…</p>}
+        {ledger?.length === 0 && <p className="p-4 text-[13px] text-muted">Nothing yet — check in to get started.</p>}
+        <div className="flex flex-col divide-y divide-line">
+          {ledger?.slice(0, 8).map((entry, index) => (
+            <div key={index} className="flex items-center gap-3 px-4 py-2.5">
+              <span className={`num w-24 text-right text-[13px] ${entry.delta > 0 ? 'text-gain' : 'text-content'}`}>
+                {formatDelta(entry.delta)}
+              </span>
+              <span className="text-[13px]">{REASON_LABELS[entry.reason] ?? entry.reason}</span>
+              {typeof entry.meta?.model === 'string' && (
+                <span className="text-[12px] text-muted">{entry.meta.model}</span>
+              )}
+              <span className="num ml-auto text-[12px] text-muted">{relativeTime(entry.created_at)}</span>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </div>
+  )
+}
+
+function relativeTime(timestamp: number): string {
+  const seconds = Math.floor((Date.now() - timestamp) / 1000)
+  if (seconds < 60) return 'just now'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.floor(hours / 24)}d ago`
+}
