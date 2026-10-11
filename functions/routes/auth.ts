@@ -26,6 +26,7 @@ type UserLike = {
   referral_code: string
   balance_credits: number
   role: 'user' | 'admin'
+  tier: 'free' | 'pro' | 'enterprise'
   email_verified: number
   referred_by: string | null
   created_at: number
@@ -41,6 +42,7 @@ const toPublicUser = (row: UserLike): PublicUser => ({
   referral_code: row.referral_code,
   balance_credits: row.balance_credits,
   role: row.role,
+  tier: row.tier ?? 'free',
   email_verified: row.email_verified,
   referred_by: row.referred_by,
   created_at: row.created_at,
@@ -79,6 +81,10 @@ app.get('/api/me', async (c) => {
 // -------------------------------------------------------------- register
 
 app.post('/api/auth/register', async (c) => {
+  const ip = c.req.header('cf-connecting-ip') ?? 'local'
+  if (!(await allowRequest(c.env.freellm_sessions, `rl:register:${ip}`, 10, 15 * 60))) {
+    return c.json({ error: 'rate_limited', message: 'Too many attempts. Try again in a few minutes.' }, 429)
+  }
   const body = await c.req.json<{ email?: unknown; username?: unknown; password?: unknown; referral_code?: unknown }>().catch(() => null)
   if (!body) return c.json({ error: 'invalid_body', message: 'Send JSON.' }, 400)
 
@@ -227,10 +233,16 @@ app.post('/api/auth/verify-email', async (c) => {
   }
 
   const now = Date.now()
+  // Conditional consume — concurrent double-use: only one wins.
+  const consumed = (await c.env.DB.prepare('UPDATE freellm_email_verifications SET consumed_at = ? WHERE token = ? AND consumed_at IS NULL')
+    .bind(now, token)
+    .run() as unknown as { meta?: { changes?: number } })
+  if (typeof consumed?.meta?.changes === 'number' && consumed.meta.changes === 0) {
+    return c.json({ error: 'already_used', message: 'That link was already used.' }, 409)
+  }
   await c.env.DB.batch([
     c.env.DB.prepare('UPDATE freellm_users SET email_verified = 1, updated_at = ? WHERE id = ?').bind(now, row.user_id),
     c.env.DB.prepare('UPDATE freellm_auth_identities SET email_verified = 1 WHERE user_id = ?').bind(row.user_id),
-    c.env.DB.prepare('UPDATE freellm_email_verifications SET consumed_at = ? WHERE token = ?').bind(now, token),
   ])
 
   return c.json({ ok: true })
@@ -257,7 +269,9 @@ app.post('/api/auth/resend-verification', async (c) => {
   }
 
   const { link, devLink } = await issueVerification(c, user.id, user.email)
-  return c.json({ ok: true, dev_link: devLink, link })
+  // Never leak the raw token in production responses.
+  const isProd = c.env.ENVIRONMENT === 'production'
+  return c.json({ ok: true, dev_link: isProd ? undefined : devLink, link: isProd ? undefined : link })
 })
 
 /** Creates a verification token, invalidates prior ones, sends the email. */
@@ -372,15 +386,26 @@ app.get('/api/auth/google/callback', async (c) => {
 
   const storedRaw = await c.env.freellm_sessions.get(`oauth:state:${state}`)
   await c.env.freellm_sessions.delete(`oauth:state:${state}`)
+  if (!storedRaw) {
+    return c.text('Invalid or expired OAuth state.', 400)
+  }
   // States are JSON {origin, next}; tolerate a legacy plain-origin state.
-  let redirectOrigin = c.env.PUBLIC_ORIGIN ?? new URL(c.req.url).origin
+  // Never trust stored origin for redirects — use server config only.
+  const redirectOrigin = c.env.PUBLIC_ORIGIN ?? new URL(c.req.url).origin
   let nextPath = '/dashboard'
   try {
-    const parsed = JSON.parse(storedRaw ?? '{}') as { origin?: string; next?: string | null }
-    if (typeof parsed?.origin === 'string' && parsed.origin) redirectOrigin = parsed.origin
-    if (typeof parsed?.next === 'string' && /^\/[^/\\]/.test(parsed.next)) nextPath = parsed.next
+    const parsed = JSON.parse(storedRaw) as { next?: string | null }
+    if (typeof parsed?.next === 'string') {
+      let decoded = parsed.next
+      try {
+        decoded = decodeURIComponent(parsed.next)
+      } catch {
+        decoded = parsed.next
+      }
+      if (/^\/[^/\\]/.test(decoded) && !decoded.startsWith('/%')) nextPath = parsed.next
+    }
   } catch {
-    if (storedRaw) redirectOrigin = storedRaw
+    // malformed state — keep default nextPath
   }
   const redirectUri = `${redirectOrigin}/api/auth/google/callback`
 
@@ -399,15 +424,24 @@ app.get('/api/auth/google/callback', async (c) => {
 
     if (!user) {
       // Create new user
-      const usernameBase = email.split('@')[0].toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 20)
+      const rawBase = email.split('@')[0].toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 20)
+      const usernameBase = rawBase.length >= 3 ? rawBase : `user${Date.now().toString(36).slice(-6)}`
       let username = usernameBase
       for (let i = 0; i < 10; i++) {
         const taken = await c.env.DB.prepare('SELECT 1 FROM freellm_users WHERE username = ?').bind(username).first()
         if (!taken) break
-        username = `${usernameBase}${i + 1}`
+        username = `${usernameBase.slice(0, 18)}${i + 1}`
+        if (i === 9) username = `${usernameBase.slice(0, 12)}${Date.now().toString(36).slice(-6)}`
       }
 
-      const referralCode = generateReferralCode()
+      let referralCode = generateReferralCode()
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const taken = await c.env.DB.prepare('SELECT 1 FROM freellm_users WHERE referral_code = ?')
+          .bind(referralCode)
+          .first()
+        if (!taken) break
+        referralCode = generateReferralCode()
+      }
       const userId = newId()
       const isFirstUser = (await c.env.DB.prepare('SELECT COUNT(*) AS n FROM freellm_users').first<{ n: number }>())?.n === 0
       const isAdminEmail = !!c.env.ADMIN_EMAIL && email === normalizeEmail(c.env.ADMIN_EMAIL)

@@ -18,7 +18,7 @@ const migrationsDir = join(__dirname, '..', '..', '..', 'migrations')
 
 /**
  * Boots a miniflare instance with an isolated D1 database pre-loaded with the
- * project migrations (0001…0008, in filename order — the same order
+ * project migrations (0001…0010, in filename order — the same order
  * `wrangler d1 migrations apply` uses). Caller owns disposal.
  */
 export async function createTestDb(): Promise<{ db: D1Database; dispose: () => Promise<void> }> {
@@ -74,6 +74,7 @@ export const testModel = {
   max_output_tokens: 4096,
   flat_rate_credits: 2000,
   routing: 'round_robin' as const,
+  access_tier: 'free' as const,
   active: 1,
   sort_order: 0,
   created_at: 0,

@@ -16,6 +16,7 @@ import { Hono } from 'hono'
 import { requireAuthOrToken } from '../lib/middleware'
 import { computeSpendable, estimateReserve, placeHold, settleRequest, type Usage } from '../lib/metering'
 import { loadAlias, openStreamingCall, recordOutcome } from '../lib/providers'
+import { canAccessModel, tierGatedMessage } from '../lib/tiers'
 import { newId } from '../lib/crypto'
 import type { Bindings, Variables } from '../lib/types'
 
@@ -50,8 +51,8 @@ function usageFromChunk(chunk: Record<string, unknown>): Usage | null {
 
 app.get('/v1/models', async (c) => {
   const rows = await c.env.DB.prepare(
-    'SELECT slug, label, description FROM freellm_models WHERE active = 1 ORDER BY sort_order, slug',
-  ).all<{ slug: string; label: string; description: string | null }>()
+    'SELECT slug, label, description, access_tier FROM freellm_models WHERE active = 1 ORDER BY sort_order, slug',
+  ).all<{ slug: string; label: string; description: string | null; access_tier: string }>()
 
   return c.json({
     object: 'list',
@@ -60,6 +61,7 @@ app.get('/v1/models', async (c) => {
       object: 'model' as const,
       created: 0,
       owned_by: 'freellm',
+      access_tier: row.access_tier,
       ...(row.description ? { description: row.description } : {}),
     })),
   })
@@ -111,6 +113,14 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
     return c.json(
       openAiBody('invalid_request_error', `"${slug}" is not in The Pool. Browse GET /v1/models.`, 'model_not_found'),
       404,
+    )
+  }
+
+  // Tier gate runs before any reserve/hold so a denied caller is never charged.
+  if (!canAccessModel(user, alias.model)) {
+    return c.json(
+      openAiBody('invalid_request_error', tierGatedMessage(alias.model), 'upgrade_required'),
+      403,
     )
   }
 
@@ -238,6 +248,7 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
         request_id: requestId,
         credits_charged: result ? result.creditsCharged : null,
         billed_source: result?.source ?? null,
+        provider: provider.label,
       },
     })
   }
@@ -245,7 +256,7 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
   // ---- streaming: reshape upstream chunks into OpenAI chunks ----
   const body = response.body
   if (!body) {
-    await settle('aborted', null, 'upstream returned no body')
+    await settle('failed', null, 'upstream returned no body')
     return c.json(openAiBody('server_error', 'Empty upstream response.', 'upstream_failed'), 502)
   }
 

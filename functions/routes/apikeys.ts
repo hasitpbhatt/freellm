@@ -28,13 +28,22 @@ const VERIFIED_REQUIRED = {
 async function rateLimited(kv: KVNamespace, userId: string): Promise<boolean> {
   const key = `ratelimit:tokens:${userId}`
   const raw = await kv.get(key)
-  const recent: number[] = raw ? JSON.parse(raw) : []
-  if (recent.filter((t) => t > now() - RATE_WINDOW_MS).length >= MAX_PER_HOUR) return true
+  let recent: number[] = []
+  try {
+    recent = raw ? (JSON.parse(raw) as number[]) : []
+    if (!Array.isArray(recent)) recent = []
+  } catch {
+    recent = []
+  }
+  const windowStart = now() - RATE_WINDOW_MS
+  recent = recent.filter((t) => typeof t === 'number' && t > windowStart)
+  if (recent.length >= MAX_PER_HOUR) return true
   recent.push(now())
   await kv.put(key, JSON.stringify(recent), { expirationTtl: 3600 })
   return false
 }
 
+app.use('/api/tokens', requireAuth)
 app.use('/api/tokens/*', requireAuth)
 
 app.get('/api/tokens', async (c) => {
@@ -89,7 +98,7 @@ app.delete('/api/tokens/:id', async (c) => {
     .bind(id, user.id)
     .first<{ id: string }>()
   if (!row) return c.json({ error: 'not_found', message: 'Token not found.' }, 404)
-  await c.env.DB.prepare('DELETE FROM freellm_api_tokens WHERE id = ?').bind(id).run()
+  await c.env.DB.prepare('DELETE FROM freellm_api_tokens WHERE id = ? AND user_id = ?').bind(id, user.id).run()
   return c.json({ ok: true })
 })
 

@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, ApiError } from '../lib/api'
+import { api, ApiError, normalizeCatalogModel, type CatalogModel } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { Button, Card, CardHeader, Input } from '../components/ui'
+
+/** Base URL follows the deployment — prod, preview, or local emulator. */
+const BASE_URL = typeof window !== 'undefined' ? `${window.location.origin}/v1` : 'https://freellm.hasit.in/v1'
 
 type ApiToken = {
   id: string
@@ -46,6 +49,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 export default function ApiDocs() {
   const { user, loading: authLoading } = useAuth()
   const [tokens, setTokens] = useState<ApiToken[]>([])
+  const [models, setModels] = useState<CatalogModel[]>([])
   const [newToken, setNewToken] = useState<string | null>(null)
   const [label, setLabel] = useState('')
   const [banner, setBanner] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
@@ -63,6 +67,15 @@ export default function ApiDocs() {
   useEffect(() => {
     if (!authLoading && user) void loadTokens()
   }, [authLoading, user, loadTokens])
+
+  useEffect(() => {
+    api
+      .get<{ models: unknown }>('/models')
+      .then((data) =>
+        setModels(Array.isArray(data?.models) ? data.models.map(normalizeCatalogModel) : []),
+      )
+      .catch(() => setModels([]))
+  }, [])
 
   async function createToken(event: React.FormEvent) {
     event.preventDefault()
@@ -126,7 +139,7 @@ export default function ApiDocs() {
           <div className="flex flex-col gap-4 p-4">
             <p className="text-[13px] text-muted">
               A key spends from your credit balance. It is shown once and stored hashed — losing it means
-              creating a new one.
+              creating a new one. Your email must be verified first.
             </p>
             <form className="flex flex-col gap-3 sm:flex-row sm:items-end" onSubmit={createToken}>
               <label className="flex flex-1 flex-col gap-1.5">
@@ -180,27 +193,27 @@ export default function ApiDocs() {
       {/* Step 2 — use it */}
       <Section title="2 · call it — OpenAI SDK">
         <p className="text-muted">
-          Any OpenAI-compatible client works. Point it at freellm with your{' '}
-          <code className="num">fl_…</code> key:
+          Any OpenAI-compatible client works. Point it at this deployment's gateway with your{' '}
+          <code className="num">fl_…</code> key as the Bearer token:
         </p>
         <CodeBlock
           lang="js"
           code={`import OpenAI from 'openai'
 
 const client = new OpenAI({
-  baseURL: 'https://freellm.hasit.in/v1',
-  apiKey: 'fl_…',   // from step 1
+  baseURL: '${BASE_URL}',
+  apiKey: 'fl_…',   // from step 1, sent as Authorization: Bearer
 })
 
 const res = await client.chat.completions.create({
-  model: 'stepfun-5',                          // see GET /v1/models
+  model: '${models[0]?.slug ?? 'stepfun-5'}',                          // any slug below
   messages: [{ role: 'user', content: 'Hello from curl-safe code' }],
 })
 console.log(res.choices[0].message.content)
 
 // streamed:
 const stream = await client.chat.completions.create({
-  model: 'stepfun-5',
+  model: '${models[0]?.slug ?? 'stepfun-5'}',
   messages: [{ role: 'user', content: 'stream it' }],
   stream: true,
   stream_options: { include_usage: true },     // get the token counts
@@ -209,28 +222,53 @@ for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.
         />
       </Section>
 
+      <Section title="Available models — slugs for the model field">
+        {models.length === 0 ? (
+          <p className="text-muted">Loading the pool catalog…</p>
+        ) : (
+          <div className="flex flex-col divide-y divide-line">
+            {models.map((m) => (
+              <div key={m.slug} className="flex flex-wrap items-center gap-2 py-2">
+                <code className="num text-[12px] text-accent">{m.slug}</code>
+                <span className="text-[13px] text-muted">{m.label}</span>
+                {m.access_tier !== 'free' && (
+                  <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent">
+                    🔒 {m.access_tier}
+                  </span>
+                )}
+                <span className="num ml-auto text-[12px] text-muted">{m.status}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="text-muted">
+          Locked slugs return <code className="num">403 upgrade_required</code> — no charge is made.
+        </p>
+      </Section>
+
       <Section title="2 · call it — curl">
         <CodeBlock
           lang="bash"
           code={`# what's in the pool (public)
-curl -s https://freellm.hasit.in/v1/models
+curl -s ${BASE_URL}/models
 
-# one completion
-curl -s https://freellm.hasit.in/v1/chat/completions \\
+# one completion — model is a slug from the list above,
+# key goes in the Authorization header as a Bearer token
+curl -s ${BASE_URL}/chat/completions \\
   -H "Authorization: Bearer fl_…" \\
   -H 'Content-Type: application/json' \\
   -d '{
-    "model": "stepfun-5",
+    "model": "${models[0]?.slug ?? 'stepfun-5'}",
     "messages": [{"role": "user", "content": "Explain your metering model."}],
     "temperature": 0.2
   }'
 
 # streamed
-curl -N https://freellm.hasit.in/v1/chat/completions \\
+curl -N ${BASE_URL}/chat/completions \\
   -H "Authorization: Bearer fl_…" \\
   -H 'Content-Type: application/json' \\
   -d '{
-    "model": "stepfun-5",
+    "model": "${models[0]?.slug ?? 'stepfun-5'}",
     "messages": [{"role": "user", "content": "hi"}],
     "stream": true,
     "stream_options": {"include_usage": true}
@@ -279,7 +317,8 @@ curl -N https://freellm.hasit.in/v1/chat/completions \\
           provider reports no usage, the model's flat rate applies (shown per model in{' '}
           <Link to="/models" className="text-accent hover:underline">/models</Link> and in the{' '}
           <code className="num">freellm.credits_charged</code> field). A failed upstream call costs nothing.
-          Insufficient balance → <code className="num">402</code>; failed upstream →{' '}
+          Insufficient balance → <code className="num">402</code>; locked tier →{' '}
+          <code className="num">403 upgrade_required</code> (no charge); failed upstream →{' '}
           <code className="num">502</code>; unknown model → <code className="num">404</code>. Errors follow
           OpenAI's <code className="num">{'{ error: { message, type, code } }'}</code> envelope.
         </p>

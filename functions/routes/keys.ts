@@ -45,7 +45,13 @@ async function checkRateLimit(
 
   // Sliding window: store timestamps in a sorted set (using JSON array in KV)
   const raw = await kv.get(key)
-  let timestamps: number[] = raw ? JSON.parse(raw) : []
+  let timestamps: number[] = []
+  try {
+    const parsed = raw ? JSON.parse(raw) : []
+    timestamps = Array.isArray(parsed) ? parsed.filter((t) => typeof t === 'number') : []
+  } catch {
+    timestamps = []
+  }
   timestamps = timestamps.filter((t) => t > windowStart)
 
   const max = action === 'add' ? MAX_ADDS_PER_WINDOW : MAX_TESTS_PER_WINDOW
@@ -215,7 +221,17 @@ app.post('/api/keys/:id/test', async (c) => {
          updated_at = ?
      WHERE id = ?`,
   )
-    .bind(ping.ok ? ping.status : 'down', timestamp, ping.error ?? null, ROLLING_AVG_BETA, ping.latencyMs, ROLLING_AVG_ALPHA, ping.latencyMs, timestamp, id)
+    .bind(
+      ping.ok ? ping.status : 'down',
+      timestamp,
+      ping.error ?? null,
+      ping.latencyMs,
+      ROLLING_AVG_BETA,
+      ping.latencyMs,
+      ROLLING_AVG_ALPHA,
+      timestamp,
+      id,
+    )
     .run()
 
   return c.json({ test: ping })

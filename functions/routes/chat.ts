@@ -15,6 +15,7 @@ import { Hono } from 'hono'
 import { requireAuth } from '../lib/middleware'
 import { estimateReserve, computeSpendable, placeHold, settleRequest } from '../lib/metering'
 import { callProvider, loadAlias, providerApiKey, recordOutcome, resolveCandidates, type UpstreamConfig } from '../lib/providers'
+import { canAccessModel, tierGatedMessage } from '../lib/tiers'
 import { decryptSecret } from '../lib/crypto'
 import type { Bindings, ApiKeyRow, Variables } from '../lib/types'
 
@@ -77,27 +78,47 @@ app.post('/api/chat', requireAuth, async (c) => {
     return c.json({ error: 'invalid_input', message: 'A single message is too long.' }, 400)
   }
 
-  // Idempotency
-  const priorEvent = await c.env.DB.prepare(
-    'SELECT credits_charged, source, status FROM freellm_usage_events WHERE request_id = ?',
-  )
-    .bind(requestId)
-    .first<{ credits_charged: number; source: string; status: string }>()
-  if (priorEvent) {
-    return c.json(
-      {
-        error: 'already_settled',
-        message: 'This request was already billed.',
-        credits_charged: priorEvent.credits_charged,
-        retryable: priorEvent.status === 'failed',
-      },
-      409,
+  // Idempotency + alias load are independent: run them together so a
+  // cache-cold request pays one round trip instead of two.
+  const [priorEvent, alias] = await Promise.all([
+    c.env.DB.prepare(
+      'SELECT credits_charged, source, status FROM freellm_usage_events WHERE request_id = ? AND user_id = ?',
     )
+      .bind(requestId, user.id)
+      .first<{ credits_charged: number; source: string; status: string }>(),
+    loadAlias(c.env, slug),
+  ])
+  if (priorEvent) {
+    // Failed requests cost nothing — allow the same request_id to retry by
+    // clearing the failed marker instead of dead-ending with 409.
+    if (priorEvent.status === 'failed') {
+      await c.env.DB.prepare('DELETE FROM freellm_usage_events WHERE request_id = ? AND user_id = ?')
+        .bind(requestId, user.id)
+        .run()
+        .catch(() => {})
+    } else {
+      return c.json(
+        {
+          error: 'already_settled',
+          message: 'This request was already billed.',
+          credits_charged: priorEvent.credits_charged,
+          retryable: false,
+        },
+        409,
+      )
+    }
   }
 
-  const alias = await loadAlias(c.env, slug)
   if (!alias || alias.providers.length === 0) {
     return c.json({ error: 'model_unavailable', message: `"${slug}" is not in The Pool right now.` }, 404)
+  }
+
+  // Tier gate runs before any reserve/hold so a denied caller is never charged.
+  if (!canAccessModel(user, alias.model)) {
+    return c.json(
+      { error: 'upgrade_required', message: tierGatedMessage(alias.model), required_tier: alias.model.access_tier },
+      403,
+    )
   }
 
   const maxTokens = Math.min(
@@ -156,6 +177,7 @@ app.post('/api/chat', requireAuth, async (c) => {
           providerLabel: row.label,
           settlement: { kind: 'failed', reason: `${call.response.status} ${errText}` },
           latencyMs: Date.now() - startedAt,
+          free: true,
         })
         return c.json({ error: 'upstream_failed', message: `Your key (${row.label}) returned ${call.response.status}: ${errText}` }, 502)
       }
@@ -167,6 +189,7 @@ app.post('/api/chat', requireAuth, async (c) => {
         providerLabel: row.label,
         settlement: { kind: 'failed', reason: err instanceof Error ? err.message : 'network error' },
         latencyMs: Date.now() - startedAt,
+        free: true,
       })
       return c.json({ error: 'upstream_failed', message: `Your key (${row.label}) is unreachable: ${err instanceof Error ? err.message : 'network error'}` }, 502)
     }
@@ -185,9 +208,12 @@ app.post('/api/chat', requireAuth, async (c) => {
         402,
       )
     }
-    await placeHold(c.env.DB, user.id, requestId, reserve)
-
-    const candidates = await resolveCandidates(c.env, alias)
+    // The hold write and the routing-counter read/write are independent:
+    // overlap them so candidate selection costs no extra round trip.
+    const [candidates] = await Promise.all([
+      resolveCandidates(c.env, alias),
+      placeHold(c.env.DB, user.id, requestId, reserve),
+    ])
     if (candidates.length === 0) {
       await settleRequest(c.env.DB, {
         userId: user.id,
@@ -205,6 +231,7 @@ app.post('/api/chat', requireAuth, async (c) => {
 
     for (const candidate of candidates) {
       if (clientGone()) break
+      const attemptStart = Date.now()
       try {
         const apiKey = await providerApiKey(c.env, candidate)
         call = await callProvider(candidate, apiKey, messages, { maxTokens, stream: true })
@@ -214,11 +241,11 @@ app.post('/api/chat', requireAuth, async (c) => {
         }
         lastError = `${call.response.status} ${call.response.statusText}`
         const detail = (await call.response.text().catch(() => '')).slice(0, 200)
-        await recordOutcome(c.env, candidate.id, { ok: false, latencyMs: Date.now() - startedAt, error: `${lastError} ${detail}` })
+        await recordOutcome(c.env, candidate.id, { ok: false, latencyMs: Date.now() - attemptStart, error: `${lastError} ${detail}` })
         call = null
       } catch (err) {
         lastError = err instanceof Error ? err.message : 'network error'
-        await recordOutcome(c.env, candidate.id, { ok: false, latencyMs: Date.now() - startedAt, error: lastError })
+        await recordOutcome(c.env, candidate.id, { ok: false, latencyMs: Date.now() - attemptStart, error: lastError })
         call = null
       }
     }
@@ -248,7 +275,10 @@ app.post('/api/chat', requireAuth, async (c) => {
         latencyMs: Date.now() - startedAt,
       })
       return c.json(
-        { error: 'upstream_failed', message: `${alias.model.label} is unavailable right now — no charge. Try again shortly.` },
+        {
+          error: 'upstream_failed',
+          message: `${alias.model.label} is unavailable right now${lastError ? ` (upstream ${lastError})` : ''} — no charge. Try again shortly.`,
+        },
         502,
       )
     }
@@ -269,10 +299,9 @@ app.post('/api/chat', requireAuth, async (c) => {
     if (settled) return
     settled = true
     try {
-      if (kind === 'completed' && !isByok) {
-        await recordOutcome(c.env, provider.id, { ok: true, latencyMs: Date.now() - streamStart })
-      }
-      return await settleRequest(c.env.DB, {
+      // Health bookkeeping must never block or break billing: settle the
+      // credits first-class, and record the outcome alongside it.
+      const settlePromise = settleRequest(c.env.DB, {
         userId: user.id,
         requestId,
         model: alias.model,
@@ -282,6 +311,14 @@ app.post('/api/chat', requireAuth, async (c) => {
         usage,
         free: isByok,
       })
+      const outcomePromise =
+        kind === 'completed' && !isByok
+          ? recordOutcome(c.env, provider.id, { ok: true, latencyMs: Date.now() - streamStart }).catch((err) => {
+              console.error('[chat] recordOutcome failed', requestId, err)
+            })
+          : Promise.resolve()
+      const [result] = await Promise.all([settlePromise, outcomePromise])
+      return result
     } catch (err) {
       console.error('[chat] settle failed', requestId, err)
       return null
@@ -290,18 +327,36 @@ app.post('/api/chat', requireAuth, async (c) => {
 
   const transform = new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
-      controller.enqueue(chunk)
-      buffer += decoder.decode(chunk, { stream: true })
-      const lines = buffer.split('\n')
+      // Strip upstream terminators — billing events are appended at flush
+      // followed by a single [DONE], so generic clients see one terminator.
+      const text = decoder.decode(chunk, { stream: true })
+      const lines = (buffer + text).split('\n')
       buffer = lines.pop() ?? ''
+      const passthrough: string[] = []
       for (const line of lines) {
-        const parsed = parseSseLine(line)
+        const trimmed = line.trim()
+        if (trimmed === 'data: [DONE]' || trimmed === '[DONE]') continue
+        passthrough.push(line)
+        // Parse every data line for usage — pretty-printed blocks span lines.
+        if (!line.startsWith('data:') && !line.includes('"usage"')) continue
+        const parsed = parseSseLine(trimmed.startsWith('data:') ? trimmed : line)
         if (!parsed) continue
         const found = usageFromChunk(parsed)
         if (found) usage = found
       }
+      if (passthrough.length > 0) controller.enqueue(encoder.encode(passthrough.join('\n') + '\n'))
     },
     async flush(controller) {
+      buffer += decoder.decode()
+      if (buffer.trim()) {
+        for (const line of buffer.split('\n')) {
+          const parsed = parseSseLine(line.trim())
+          if (!parsed) continue
+          const found = usageFromChunk(parsed)
+          if (found) usage = found
+        }
+      }
+      buffer = ''
       const result = await settle('completed', usage ? undefined : 'no usage block in stream')
       const status = result?.status ?? (usage ? 'completed' : 'aborted')
       controller.enqueue(
@@ -322,6 +377,10 @@ app.post('/api/chat', requireAuth, async (c) => {
             credits_charged: result?.creditsCharged ?? alias.model.flat_rate_credits,
             balance: result?.balance ?? { global: user.balance_credits, scoped: 0 },
             status,
+            model: alias.model.slug,
+            provider: providerLabel,
+            latency_ms: Date.now() - startedAt,
+            request_id: requestId,
           }),
         ),
       )
@@ -334,7 +393,7 @@ app.post('/api/chat', requireAuth, async (c) => {
 
   const body = upstream.body
   if (!body) {
-    await settle('aborted', 'upstream returned no body')
+    await settle('failed', 'upstream returned no body')
     return c.json({ error: 'upstream_failed', message: 'Empty upstream response.' }, 502)
   }
 
@@ -359,7 +418,7 @@ app.post('/api/chat', requireAuth, async (c) => {
 app.get('/api/models', async (c) => {
   const rows = await c.env.DB.prepare(
     `SELECT m.slug, m.label, m.description, m.capabilities, m.context_window,
-            m.max_output_tokens, m.flat_rate_credits, m.routing,
+            m.max_output_tokens, m.flat_rate_credits, m.routing, m.access_tier,
             p.status AS provider_status
      FROM freellm_models m
      LEFT JOIN freellm_model_providers p ON p.model_id = m.id AND p.active = 1
@@ -374,6 +433,7 @@ app.get('/api/models', async (c) => {
     max_output_tokens: number
     flat_rate_credits: number
     routing: string
+    access_tier: string
     provider_status: 'unknown' | 'live' | 'slow' | 'down' | null
   }>()
 
@@ -386,6 +446,7 @@ app.get('/api/models', async (c) => {
     max_output_tokens: number
     flat_rate_credits: number
     routing: string
+    access_tier: string
     status: 'live' | 'slow' | 'down' | 'unknown'
     provider_count: number
   }
@@ -403,6 +464,7 @@ app.get('/api/models', async (c) => {
         max_output_tokens: row.max_output_tokens,
         flat_rate_credits: row.flat_rate_credits,
         routing: row.routing,
+        access_tier: row.access_tier,
         status: 'unknown',
         provider_count: 0,
         statuses: [],

@@ -29,12 +29,15 @@ export async function computeSpendable(
   modelId: string,
   excludeRequestId?: string,
 ): Promise<Spendable> {
-  await db.prepare('DELETE FROM freellm_credit_holds WHERE created_at <= ?').bind(Date.now() - HOLD_STALE_MS).run()
-
-  const grant = await db
-    .prepare('SELECT credits FROM freellm_model_credit_grants WHERE user_id = ? AND model_id = ?')
-    .bind(userId, modelId)
-    .first<{ credits: number }>()
+  // The stale-hold sweep and the grant read are independent; the held-sum
+  // read must follow the sweep, so only those two are overlapped.
+  const [, grant] = await Promise.all([
+    db.prepare('DELETE FROM freellm_credit_holds WHERE created_at <= ?').bind(Date.now() - HOLD_STALE_MS).run(),
+    db
+      .prepare('SELECT credits FROM freellm_model_credit_grants WHERE user_id = ? AND model_id = ?')
+      .bind(userId, modelId)
+      .first<{ credits: number }>(),
+  ])
 
   const held = await db
     .prepare(
@@ -62,6 +65,18 @@ export async function releaseHold(db: D1Database, requestId: string): Promise<vo
 }
 
 export type Usage = { input: number; output: number; total: number }
+
+/** Provider-reported counts are untrusted input — reject garbage before billing. */
+export function sanitizeUsage(usage: Usage | null | undefined): Usage | null {
+  if (!usage) return null
+  const { input, output, total } = usage
+  for (const n of [input, output, total]) {
+    if (typeof n !== 'number' || !Number.isFinite(n) || n < 0 || !Number.isInteger(n)) return null
+  }
+  if (total > input + output + 1000) return null
+  if (total === 0 && (input > 0 || output > 0)) return null
+  return { input, output, total }
+}
 
 export type Settlement =
   | { kind: 'completed'; usage: Usage | null }
@@ -123,20 +138,22 @@ export async function settleRequest(
   let charge: number
 
   if (isFree) {
-    status = settlement.kind === 'failed' ? 'failed' : 'completed'
-    source = usage ? 'reported' : 'flat_rate'
-    inputTokens = usage?.input ?? null
-    outputTokens = usage?.output ?? null
-    totalTokens = usage?.total ?? null
+    status = settlement.kind === 'failed' ? 'failed' : settlement.kind === 'aborted' ? 'aborted' : 'completed'
+    const clean = sanitizeUsage(usage ?? null)
+    source = clean ? 'reported' : 'flat_rate'
+    inputTokens = clean?.input ?? null
+    outputTokens = clean?.output ?? null
+    totalTokens = clean?.total ?? null
     charge = 0
   } else if (settlement.kind === 'completed') {
     status = 'completed'
-    if (settlement.usage) {
+    const clean = sanitizeUsage(settlement.usage)
+    if (clean) {
       source = 'reported'
-      inputTokens = settlement.usage.input
-      outputTokens = settlement.usage.output
-      totalTokens = settlement.usage.total
-      charge = totalTokens
+      inputTokens = clean.input
+      outputTokens = clean.output
+      totalTokens = clean.total
+      charge = clean.total
     } else {
       source = 'flat_rate'
       charge = model.flat_rate_credits
@@ -156,6 +173,7 @@ export async function settleRequest(
   const fromGlobal = charge - fromScoped
 
   if (fromGlobal > user.balance_credits) {
+    await releaseHold(db, requestId).catch(() => {})
     throw new Error('insufficient credits at settlement')
   }
 
@@ -226,7 +244,29 @@ export async function settleRequest(
     )
   }
 
-  await db.batch(statements)
+  try {
+    await db.batch(statements)
+  } catch (err) {
+    // Concurrent retry with the same request_id won the race — replay the
+    // original instead of throwing UNIQUE.
+    if (err instanceof Error && err.message.includes('UNIQUE constraint failed: freellm_usage_events.request_id')) {
+      const winner = await db
+        .prepare('SELECT credits_charged, source, status FROM freellm_usage_events WHERE request_id = ?')
+        .bind(requestId)
+        .first<{ credits_charged: number; source: 'reported' | 'flat_rate'; status: string }>()
+      if (winner) {
+        const balances = await readBalances(db, userId, model.id)
+        return {
+          creditsCharged: winner.credits_charged,
+          source: winner.source,
+          status: winner.status,
+          balance: balances,
+          alreadySettled: true,
+        }
+      }
+    }
+    throw err
+  }
 
   const balances = await readBalances(db, userId, model.id)
   return { creditsCharged: charge, source, status, balance: balances, alreadySettled: false }

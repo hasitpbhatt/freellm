@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { Button, Card } from '../components/ui'
 import { useEffect, useState } from 'react'
 import { api } from '../lib/api'
+import { useAuth } from '../lib/auth'
 
 const doors = [
   {
@@ -44,6 +45,7 @@ type Replay = {
 }
 
 export default function Landing() {
+  const { user, loading } = useAuth()
   const [replays, setReplays] = useState<Replay[]>([])
 
   // Public battle replays — the no-account surface
@@ -66,12 +68,25 @@ export default function Landing() {
           the models our contributors keep alive. No upfront tokens. Earn what you spend.
         </p>
         <div className="flex gap-3">
-          <Link to="/register">
-            <Button>Create account</Button>
-          </Link>
-          <Link to="/battle">
-            <Button variant="secondary">Watch a battle — no account</Button>
-          </Link>
+          {loading ? null : user ? (
+            <>
+              <Link to="/chat">
+                <Button>Start chatting</Button>
+              </Link>
+              <Link to="/dashboard">
+                <Button variant="secondary">Open dashboard</Button>
+              </Link>
+            </>
+          ) : (
+            <>
+              <Link to="/register">
+                <Button>Create account</Button>
+              </Link>
+              <Link to="/battle">
+                <Button variant="secondary">Watch a battle — no account</Button>
+              </Link>
+            </>
+          )}
         </div>
         <Link to="/developers" className="text-[13px] text-muted hover:text-content">
           …or use it from your code →

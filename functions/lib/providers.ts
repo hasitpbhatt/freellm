@@ -3,12 +3,17 @@
 //
 // An alias (freellm_models row) groups N provider configs (freellm_model_providers rows).
 // The alias's routing strategy picks among them:
-//   round_robin — rotating counter in KV, even spread
-//   random      — uniform pick
-//   failover    — priority order (lower first)
+//   round_robin      — rotating counter in KV, even spread
+//   random           — uniform pick
+//   failover         — priority order (lower first)
+//   latency_weighted — epsilon-greedy: exploit lowest EWMA latency, explore
+//                      via round-robin rotation with probability
+//                      LATENCY_WEIGHTED_EXPLORATION_RATE so new/unknown
+//                      configs still get traffic and EWMAs stay fresh
 // Any strategy falls through to the next candidate when the upstream
 // refuses the request (5xx/429), which is what makes a degraded pool
-// survivable.
+// survivable. A failed config then cools down for 30 minutes before it can
+// be selected again.
 //
 // Minimal interface for any upstream caller — pool configs or BYOK keys.
 
@@ -17,6 +22,28 @@ import type { Bindings, ModelProviderRow, ModelRow } from './types'
 
 const ROLLING_AVG_ALPHA = 0.3
 const ROLLING_AVG_BETA = 0.7
+
+export const EWMA_ALPHA = ROLLING_AVG_ALPHA
+export const EWMA_BETA = ROLLING_AVG_BETA
+
+/** Above this stream latency a healthy config is marked 'slow'. */
+export const SLOW_THRESHOLD_MS = 8000
+
+/** Base cooldown after a failure; grows exponentially with consecutive failures. */
+export const FAILED_PROVIDER_COOLDOWN_MS = 30 * 60 * 1000
+
+/** Upper bound for exponential backoff. */
+export const MAX_PROVIDER_COOLDOWN_MS = 4 * 60 * 60 * 1000
+
+/** Per-attempt upstream timeout so a hung provider fails over instead of blocking. */
+export const UPSTREAM_TIMEOUT_MS = 30_000
+
+/**
+ * Exploration probability for latency_weighted routing. With this
+ * probability a request rotates round-robin across the rested pool
+ * instead of exploiting the lowest EWMA — epsilon-greedy.
+ */
+export const LATENCY_WEIGHTED_EXPLORATION_RATE = 0.15
 
 export type UpstreamConfig = {
   id: string
@@ -41,38 +68,81 @@ export async function loadAlias(env: Bindings, slug: string): Promise<AliasWithP
 }
 
 /** Active configs ordered by the alias's routing strategy. */
-export async function resolveCandidates(env: Bindings, alias: AliasWithProviders): Promise<ModelProviderRow[]> {
-  const usable = alias.providers.filter((p) => p.status !== 'disabled')
+export async function resolveCandidates(
+  env: Bindings,
+  alias: AliasWithProviders,
+  now: number = Date.now(),
+  opts: { random?: () => number } = {},
+): Promise<ModelProviderRow[]> {
+  // loadAlias filters active=1, but callers may pass rows directly —
+  // belt-and-braces so a disabled config can never be selected.
+  const usable = alias.providers.filter((p) => p.status !== 'disabled' && p.active !== 0)
   if (usable.length === 0) return []
 
-  // Prefer healthy configs; a 'down' config is only used when it's all we have.
-  const healthy = usable.filter((p) => p.status !== 'down')
-  const pool = healthy.length > 0 ? healthy : usable
+  // Recently failed configs cool down before they can be selected again. If
+  // every config is cooling down, fail without calling a known-bad upstream.
+  const rested = usable.filter((p) => p.cooldown_until == null || p.cooldown_until <= now)
+  if (rested.length === 0) return []
+
+  // Prefer live/unknown, then slow, then down — a degraded config is only
+  // used when nothing better is rested.
+  const healthy = rested.filter((p) => p.status !== 'down')
+  const fresh = healthy.filter((p) => p.status !== 'slow')
+  const pool = fresh.length > 0 ? fresh : healthy.length > 0 ? healthy : rested
 
   switch (alias.model.routing) {
     case 'random':
       return shuffle(pool)
     case 'failover':
       return [...pool].sort((a, b) => a.priority - b.priority)
+    case 'latency_weighted': {
+      const random = opts.random ?? Math.random
+      if (random() < LATENCY_WEIGHTED_EXPLORATION_RATE) {
+        // Explore: round-robin rotation over the rested (non-cooldown) pool
+        // so unknown/slow configs are still probed and EWMAs stay fresh.
+        return rotateRoundRobin(env, alias.model.id, pool)
+      }
+      // Exploit: lowest EWMA first, unknown (NULL) last, priority breaks ties.
+      return sortByLatency(pool)
+    }
     case 'round_robin':
     default: {
-      // KV counter per alias; a counter miss just falls back to a random order.
-      try {
-        const key = `rr:${alias.model.id}`
-        const raw = await env.freellm_sessions.get(key)
-        const next = (raw ? Number.parseInt(raw, 10) : 0) + 1
-        await env.freellm_sessions.put(key, String(next), { expirationTtl: 86400 })
-        const rotated = [...pool]
-        const offset = next % rotated.length
-        return [...rotated.slice(offset), ...rotated.slice(0, offset)]
-      } catch {
-        return shuffle(pool)
-      }
+      return rotateRoundRobin(env, alias.model.id, pool)
     }
   }
 }
 
-function shuffle<T>(items: T[]): T[] {
+/** Lowest avg_latency_ms first; NULL (never measured) last. */
+export function sortByLatency(pool: ModelProviderRow[]): ModelProviderRow[] {
+  return [...pool].sort((a, b) => {
+    const la = a.avg_latency_ms ?? Number.MAX_SAFE_INTEGER
+    const lb = b.avg_latency_ms ?? Number.MAX_SAFE_INTEGER
+    if (la !== lb) return la - lb
+    if (a.priority !== b.priority) return a.priority - b.priority
+    return a.label < b.label ? -1 : a.label > b.label ? 1 : 0
+  })
+}
+
+/** KV counter per alias; a counter miss just falls back to a random order. */
+async function rotateRoundRobin(
+  env: Bindings,
+  modelId: string,
+  pool: ModelProviderRow[],
+): Promise<ModelProviderRow[]> {
+  try {
+    const key = `rr:${modelId}`
+    const raw = await env.freellm_sessions.get(key)
+    const next = (raw ? Number.parseInt(raw, 10) : 0) + 1
+    await env.freellm_sessions.put(key, String(next), { expirationTtl: 86400 })
+    const rotated = [...pool]
+    const offset = next % rotated.length
+    return [...rotated.slice(offset), ...rotated.slice(0, offset)]
+  } catch {
+    return shuffle(pool)
+  }
+}
+
+export function shuffle<T>(items: T[]): T[] {
   const copy = [...items]
   for (let i = copy.length - 1; i > 0; i -= 1) {
     const j = Math.floor(Math.random() * (i + 1))
@@ -90,21 +160,32 @@ export type UpstreamCall = {
 
 /**
  * Calls one config's /chat/completions. Returns the raw streaming Response;
- * the caller owns parsing and settlement.
+ * the caller owns parsing and settlement. Aborts a hung upstream after
+ * UPSTREAM_TIMEOUT_MS so failover can try the next candidate.
  */
 export async function callProvider(
   provider: UpstreamConfig,
   apiKey: string,
   messages: ChatMessage[],
-  options: { maxTokens: number; stream: boolean; sampling?: { temperature?: number; top_p?: number } },
+  options: {
+    maxTokens: number
+    stream: boolean
+    sampling?: { temperature?: number; top_p?: number }
+    timeoutMs?: number
+    signal?: AbortSignal
+  },
 ): Promise<UpstreamCall> {
   const base = provider.base_url.replace(/\/+$/, '')
+  const signal =
+    options.signal ??
+    (typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(options.timeoutMs ?? UPSTREAM_TIMEOUT_MS) : undefined)
   const response = await fetch(`${base}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },
+    ...(signal ? { signal } : {}),
     body: JSON.stringify({
       model: provider.upstream_model,
       messages,
@@ -131,13 +212,14 @@ export async function recordOutcome(
     await env.DB.prepare(
       `UPDATE freellm_model_providers
        SET status = ?, last_checked_at = ?, last_error = NULL, consecutive_failures = 0,
+           cooldown_until = NULL,
            avg_latency_ms = CASE WHEN avg_latency_ms IS NULL THEN ?
                                  ELSE CAST(avg_latency_ms * ? + ? * ? AS INTEGER) END,
            messages_served = messages_served + 1, updated_at = ?
        WHERE id = ?`,
     )
       .bind(
-        outcome.latencyMs > 8000 ? 'slow' : 'live',
+        outcome.latencyMs > SLOW_THRESHOLD_MS ? 'slow' : 'live',
         Date.now(),
         outcome.latencyMs,
         ROLLING_AVG_BETA,
@@ -148,12 +230,23 @@ export async function recordOutcome(
       )
       .run()
   } else {
+    // Exponential backoff on consecutive failures: 30m, 1h, 2h, 4h cap.
+    // Read-then-write is fine here — worst case of a race is a shorter cooldown.
+    const row = await env.DB.prepare('SELECT consecutive_failures FROM freellm_model_providers WHERE id = ?')
+      .bind(providerId)
+      .first<{ consecutive_failures: number }>()
+    const failures = (row?.consecutive_failures ?? 0) + 1
+    const backoff = Math.min(
+      FAILED_PROVIDER_COOLDOWN_MS * 2 ** Math.min(failures - 1, 3),
+      MAX_PROVIDER_COOLDOWN_MS,
+    )
     await env.DB.prepare(
       `UPDATE freellm_model_providers
-       SET status = 'down', last_checked_at = ?, last_error = ?, consecutive_failures = consecutive_failures + 1, updated_at = ?
+       SET status = 'down', last_checked_at = ?, last_error = ?, consecutive_failures = consecutive_failures + 1,
+           cooldown_until = ?, updated_at = ?
        WHERE id = ?`,
     )
-      .bind(Date.now(), outcome.error?.slice(0, 300) ?? 'unknown error', Date.now(), providerId)
+      .bind(Date.now(), outcome.error?.slice(0, 300) ?? 'unknown error', Date.now() + backoff, Date.now(), providerId)
       .run()
   }
 }

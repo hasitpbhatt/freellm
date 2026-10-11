@@ -128,5 +128,17 @@ The first registered account becomes admin (as does `ADMIN_EMAIL`). In local dev
 
 An **alias** is what users chat with; each alias groups N **provider configs**
 (`model_providers`), and a request multiplexes across the group using the
-alias's routing strategy (`round_robin` | `random` | `failover`, priority-ordered
-for failover). Bearer keys are AES-256-GCM encrypted with `ENCRYPTION_KEY`.
+alias's routing strategy (`round_robin` | `random` | `failover` | `latency_weighted`,
+priority-ordered for failover, lowest-latency-first with ~15% round-robin
+exploration for latency_weighted). Bearer keys are AES-256-GCM encrypted with `ENCRYPTION_KEY`.
+
+### Access tiers
+
+Aliases carry an `access_tier` (`free` | `pro` | `enterprise`, default `free`);
+users carry a `tier` (default `free`, admins bypass all gates). A caller may use
+an alias when their tier rank >= the alias's tier rank — e.g. set `gpt-luna` to
+`pro` and free-tier callers get `403 upgrade_required` on `/api/chat`,
+`/v1/chat/completions`, and `/battle` before any reserve or hold is placed, so a
+denied call is never charged. Catalogs (`GET /api/models`, `GET /v1/models`)
+expose `access_tier` so clients can show locked state up front. Grant a tier
+with: `UPDATE freellm_users SET tier = 'pro' WHERE email = '…'`.

@@ -14,7 +14,8 @@ import { requireAuth } from '../lib/middleware'
 import { newId } from '../lib/crypto'
 import { getSession } from '../lib/session'
 import { computeSpendable, estimateReserve, placeHold, settleRequest } from '../lib/metering'
-import { loadAlias, openStreamingCall, recordOutcome, type AliasWithProviders, type ChatMessage } from '../lib/providers'
+import { loadAlias, openStreamingCall, recordOutcome, shuffle, type AliasWithProviders, type ChatMessage } from '../lib/providers'
+import { canAccessModel, tierGatedMessage } from '../lib/tiers'
 import { eloBattle } from '../lib/elo'
 import type { Bindings, Variables } from '../lib/types'
 
@@ -54,6 +55,12 @@ app.post('/api/battles', requireAuth, async (c) => {
     if (!alias || alias.providers.length === 0) {
       return c.json({ error: 'model_unavailable', message: `"${slug}" is not in The Pool right now.` }, 404)
     }
+    if (!canAccessModel(user, alias.model)) {
+      return c.json(
+        { error: 'upgrade_required', message: tierGatedMessage(alias.model), required_tier: alias.model.access_tier, model: slug },
+        403,
+      )
+    }
     aliases.push({ slug, alias })
   }
 
@@ -82,7 +89,7 @@ app.post('/api/battles', requireAuth, async (c) => {
   }
 
   // Blind labels: shuffle so A is not always the first model.
-  const shuffled = [...reserves].sort(() => Math.random() - 0.5)
+  const shuffled = shuffle(reserves)
   const battleId = newId()
   const entries = shuffled.map((entry, index) => ({
     ...entry,

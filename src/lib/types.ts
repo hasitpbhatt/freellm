@@ -7,6 +7,7 @@ export type User = {
   referral_code: string
   balance_credits: number
   role: 'user' | 'admin'
+  tier: 'free' | 'pro' | 'enterprise'
   email_verified: number
   referred_by: string | null
   created_at: number
@@ -35,8 +36,10 @@ export type ModelAlias = {
   description: string | null
   capabilities: string[]
   context_window: number | null
+  max_output_tokens: number
   flat_rate_credits: number
-  routing: 'round_robin' | 'random' | 'failover'
+  routing: 'round_robin' | 'random' | 'failover' | 'latency_weighted'
+  access_tier: 'free' | 'pro' | 'enterprise'
   active: number
   sort_order: number
   created_at: number

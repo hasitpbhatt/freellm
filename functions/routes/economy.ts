@@ -67,7 +67,7 @@ export async function qualifyReferrals(db: D1Database, referrerId: string): Prom
     const tenureDays = (now() - row.created_at) / 86_400_000
     const usage = await db
       .prepare(
-        "SELECT COALESCE(SUM(total_tokens), 0) AS tokens FROM freellm_usage_events WHERE user_id = ? AND total_tokens IS NOT NULL AND status = 'completed'",
+        "SELECT COALESCE(SUM(total_tokens), 0) AS tokens FROM freellm_usage_events WHERE user_id = ? AND total_tokens IS NOT NULL AND status = 'completed' AND key_mode = 'pool'",
       )
       .bind(row.referred_id)
       .first<{ tokens: number }>()
@@ -75,10 +75,15 @@ export async function qualifyReferrals(db: D1Database, referrerId: string): Prom
     if (tenureDays < REFERRAL_TENURE_DAYS && tokensUsed < REFERRAL_TOKENS) continue
 
     const timestamp = now()
+    // Conditional claim: only the winner of the race updates a row from
+    // 'waiting'. Losers update 0 rows and must not mint ledger/balance.
+    const claim = (await db
+      .prepare("UPDATE freellm_referrals SET status = 'paid', qualified_at = ?, paid_at = ?, reward = ? WHERE id = ? AND status = 'waiting'")
+      .bind(timestamp, timestamp, REFERRAL_REWARD, row.id)
+      .run() as unknown as { meta?: { changes?: number }; success?: boolean })
+    const claimed = typeof claim?.meta?.changes === 'number' ? claim.meta.changes > 0 : true
+    if (!claimed) continue
     await db.batch([
-      db
-        .prepare("UPDATE freellm_referrals SET status = 'paid', qualified_at = ?, paid_at = ?, reward = ? WHERE id = ? AND status = 'waiting'")
-        .bind(timestamp, timestamp, REFERRAL_REWARD, row.id),
       db
         .prepare(
           "INSERT INTO freellm_credit_ledger (id, user_id, delta, reason, meta, created_at) VALUES (?, ?, ?, 'referral_reward', ?, ?)",
@@ -145,25 +150,38 @@ app.post('/api/checkin', requireAuth, async (c) => {
   const reward = CHECKIN_BASE_REWARD + (milestone?.bonus ?? 0)
 
   const timestamp = now()
-  await c.env.DB.batch([
-    c.env.DB.prepare(
-      'INSERT INTO freellm_checkins (user_id, checkin_date, streak, reward, created_at) VALUES (?, ?, ?, ?, ?)',
-    ).bind(user.id, today, streak, reward, timestamp),
-    c.env.DB.prepare(
-      "INSERT INTO freellm_credit_ledger (id, user_id, delta, reason, meta, created_at) VALUES (?, ?, ?, 'daily_checkin', ?, ?)",
-    ).bind(
-      newId(),
-      user.id,
-      reward,
-      JSON.stringify({ streak, day_reward: CHECKIN_BASE_REWARD, milestone_bonus: milestone?.bonus ?? 0 }),
-      timestamp,
-    ),
-    c.env.DB.prepare('UPDATE freellm_users SET balance_credits = balance_credits + ?, updated_at = ? WHERE id = ?').bind(
-      reward,
-      timestamp,
-      user.id,
-    ),
-  ])
+  try {
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        'INSERT INTO freellm_checkins (user_id, checkin_date, streak, reward, created_at) VALUES (?, ?, ?, ?, ?)',
+      ).bind(user.id, today, streak, reward, timestamp),
+      c.env.DB.prepare(
+        "INSERT INTO freellm_credit_ledger (id, user_id, delta, reason, meta, created_at) VALUES (?, ?, ?, 'daily_checkin', ?, ?)",
+      ).bind(
+        newId(),
+        user.id,
+        reward,
+        JSON.stringify({ streak, day_reward: CHECKIN_BASE_REWARD, milestone_bonus: milestone?.bonus ?? 0 }),
+        timestamp,
+      ),
+      c.env.DB.prepare('UPDATE freellm_users SET balance_credits = balance_credits + ?, updated_at = ? WHERE id = ?').bind(
+        reward,
+        timestamp,
+        user.id,
+      ),
+    ])
+  } catch (err) {
+    // Concurrent double check-in won the PK race — replay as idempotent.
+    if (err instanceof Error && err.message.includes('UNIQUE constraint failed: freellm_checkins')) {
+      const winner = await c.env.DB.prepare('SELECT streak, reward FROM freellm_checkins WHERE user_id = ? AND checkin_date = ?')
+        .bind(user.id, today)
+        .first<{ streak: number; reward: number }>()
+      if (winner) {
+        return c.json({ already_checked_in: true, streak: winner.streak, reward: winner.reward, balance: user.balance_credits })
+      }
+    }
+    throw err
+  }
 
   // A day-1 check-in can push the referred user past the tenure milestone.
   await qualifyForReferredUser(c.env.DB, user.id)
@@ -254,7 +272,7 @@ app.get('/api/earn', requireAuth, async (c) => {
   const rows = await Promise.all(
     referralRows.results.map(async (row) => {
       const usage = await c.env.DB.prepare(
-        "SELECT COALESCE(SUM(total_tokens), 0) AS tokens FROM freellm_usage_events WHERE user_id = ? AND status = 'completed'",
+        "SELECT COALESCE(SUM(total_tokens), 0) AS tokens FROM freellm_usage_events WHERE user_id = ? AND status = 'completed' AND key_mode = 'pool'",
       )
         .bind(row.referred_id)
         .first<{ tokens: number }>()
@@ -353,22 +371,29 @@ app.post('/api/tasks/:slug/complete', requireAuth, async (c) => {
   if (already) return c.json({ error: 'already_completed', message: 'Task already claimed.' }, 409)
 
   const timestamp = now()
-  await c.env.DB.batch([
-    c.env.DB.prepare('INSERT INTO freellm_task_completions (user_id, task_id, reward, created_at) VALUES (?, ?, ?, ?)').bind(
-      user.id,
-      task.id,
-      task.reward,
-      timestamp,
-    ),
-    c.env.DB.prepare(
-      "INSERT INTO freellm_credit_ledger (id, user_id, delta, reason, meta, created_at) VALUES (?, ?, ?, 'task_reward', ?, ?)",
-    ).bind(newId(), user.id, task.reward, JSON.stringify({ task_id: task.id, slug: task.slug }), timestamp),
-    c.env.DB.prepare('UPDATE freellm_users SET balance_credits = balance_credits + ?, updated_at = ? WHERE id = ?').bind(
-      task.reward,
-      timestamp,
-      user.id,
-    ),
-  ])
+  try {
+    await c.env.DB.batch([
+      c.env.DB.prepare('INSERT INTO freellm_task_completions (user_id, task_id, reward, created_at) VALUES (?, ?, ?, ?)').bind(
+        user.id,
+        task.id,
+        task.reward,
+        timestamp,
+      ),
+      c.env.DB.prepare(
+        "INSERT INTO freellm_credit_ledger (id, user_id, delta, reason, meta, created_at) VALUES (?, ?, ?, 'task_reward', ?, ?)",
+      ).bind(newId(), user.id, task.reward, JSON.stringify({ task_id: task.id, slug: task.slug }), timestamp),
+      c.env.DB.prepare('UPDATE freellm_users SET balance_credits = balance_credits + ?, updated_at = ? WHERE id = ?').bind(
+        task.reward,
+        timestamp,
+        user.id,
+      ),
+    ])
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('UNIQUE constraint failed: freellm_task_completions')) {
+      return c.json({ error: 'already_completed', message: 'Task already claimed.' }, 409)
+    }
+    throw err
+  }
 
   return c.json({ ok: true, reward: task.reward, balance: user.balance_credits + task.reward })
 })

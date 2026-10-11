@@ -3,7 +3,7 @@
 //   models           — aliases freellm_users chat with ("poolside-laguna")
 //   model_providers  — the upstream configs grouped under an alias. A request
 //                      to an alias multiplexes across its configs via the
-//                      alias's routing strategy (round_robin | random | failover).
+//                      alias's routing strategy (round_robin | random | failover | latency_weighted).
 //
 // Every route here is behind requireAuth + requireAdmin.
 
@@ -11,6 +11,7 @@ import { Hono } from 'hono'
 import { requireAdmin, requireAuth } from '../lib/middleware'
 import { decryptSecret, encryptSecret, maskSecret, newId } from '../lib/crypto'
 import { pingProvider } from '../lib/ping'
+import { EWMA_ALPHA, EWMA_BETA } from '../lib/providers'
 import {
   slugify,
   validateBaseUrl,
@@ -126,8 +127,13 @@ app.post('/api/admin/models', async (c) => {
   }
 
   const routing = String(body.routing ?? 'round_robin')
-  if (!['round_robin', 'random', 'failover'].includes(routing)) {
-    return c.json({ error: 'invalid_input', message: 'Routing must be round_robin, random, or failover.' }, 400)
+  if (!['round_robin', 'random', 'failover', 'latency_weighted'].includes(routing)) {
+    return c.json({ error: 'invalid_input', message: 'Routing must be round_robin, random, failover, or latency_weighted.' }, 400)
+  }
+
+  const accessTier = String(body.access_tier ?? 'free')
+  if (!['free', 'pro', 'enterprise'].includes(accessTier)) {
+    return c.json({ error: 'invalid_input', message: 'Access tier must be free, pro, or enterprise.' }, 400)
   }
 
   const contextWindow = body.context_window == null ? null : Number(body.context_window)
@@ -135,12 +141,17 @@ app.post('/api/admin/models', async (c) => {
     return c.json({ error: 'invalid_input', message: 'Context window must be a positive integer.' }, 400)
   }
 
+  const maxOutput = body.max_output_tokens == null ? 4096 : Number(body.max_output_tokens)
+  if (!Number.isInteger(maxOutput) || maxOutput < 256 || maxOutput > 200_000) {
+    return c.json({ error: 'invalid_input', message: 'Max output tokens must be an integer 256–200,000.' }, 400)
+  }
+
   const id = newId()
   const timestamp = now()
   try {
     await c.env.DB.prepare(
-      `INSERT INTO freellm_models (id, slug, label, description, capabilities, context_window, flat_rate_credits, routing, active, sort_order, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+      `INSERT INTO freellm_models (id, slug, label, description, capabilities, context_window, max_output_tokens, flat_rate_credits, routing, access_tier, active, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
     )
       .bind(
         id,
@@ -149,8 +160,10 @@ app.post('/api/admin/models', async (c) => {
         body.description ? String(body.description).slice(0, 500) : null,
         JSON.stringify(Array.isArray(body.capabilities) ? body.capabilities : []),
         contextWindow,
+        maxOutput,
         flatRate,
         routing,
+        accessTier,
         Number(body.sort_order ?? 0),
         timestamp,
         timestamp,
@@ -189,7 +202,10 @@ app.patch('/api/admin/models/:id', async (c) => {
     if (slug.length < 2) return c.json({ error: 'invalid_input', message: 'Slug must contain at least 2 [a-z0-9] characters.' }, 400)
     updates.slug = slug
   }
-  if (body.description !== undefined) updates.description = String(body.description).slice(0, 500)
+  if (body.description !== undefined) {
+    const description = body.description == null ? '' : String(body.description).trim()
+    updates.description = description ? description.slice(0, 500) : null
+  }
   if (body.capabilities !== undefined) {
     const err = validateCapabilities(body.capabilities)
     if (err) return c.json({ error: 'invalid_input', message: err }, 400)
@@ -203,10 +219,16 @@ app.patch('/api/admin/models/:id', async (c) => {
     updates.flat_rate_credits = flatRate
   }
   if (body.routing !== undefined) {
-    if (!['round_robin', 'random', 'failover'].includes(String(body.routing))) {
-      return c.json({ error: 'invalid_input', message: 'Routing must be round_robin, random, or failover.' }, 400)
+    if (!['round_robin', 'random', 'failover', 'latency_weighted'].includes(String(body.routing))) {
+      return c.json({ error: 'invalid_input', message: 'Routing must be round_robin, random, failover, or latency_weighted.' }, 400)
     }
     updates.routing = String(body.routing)
+  }
+  if (body.access_tier !== undefined) {
+    if (!['free', 'pro', 'enterprise'].includes(String(body.access_tier))) {
+      return c.json({ error: 'invalid_input', message: 'Access tier must be free, pro, or enterprise.' }, 400)
+    }
+    updates.access_tier = String(body.access_tier)
   }
   if (body.context_window !== undefined) {
     const contextWindow = body.context_window == null ? null : Number(body.context_window)
@@ -394,9 +416,13 @@ app.post('/api/admin/models/:id/providers/:providerId/test', async (c) => {
   const result = await pingProvider(provider.base_url, provider.upstream_model, apiKey)
 
   const timestamp = now()
+  // Same EWMA as pool configs — a single probe must not wipe stream history.
   await c.env.DB.prepare(
     `UPDATE freellm_model_providers
-     SET status = ?, last_checked_at = ?, last_error = ?, avg_latency_ms = ?, consecutive_failures = ?, updated_at = ?
+     SET status = ?, last_checked_at = ?, last_error = ?,
+         avg_latency_ms = CASE WHEN avg_latency_ms IS NULL THEN ?
+                               ELSE CAST(avg_latency_ms * ? + ? * ? AS INTEGER) END,
+         consecutive_failures = ?, cooldown_until = NULL, updated_at = ?
      WHERE id = ?`,
   )
     .bind(
@@ -404,6 +430,9 @@ app.post('/api/admin/models/:id/providers/:providerId/test', async (c) => {
       timestamp,
       result.error ?? null,
       result.latencyMs,
+      EWMA_BETA,
+      result.latencyMs,
+      EWMA_ALPHA,
       result.ok ? 0 : provider.consecutive_failures + 1,
       timestamp,
       providerId,

@@ -1,20 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api } from '../lib/api'
+import { api, normalizeCatalogModel, type CatalogModel } from '../lib/api'
 import { Card, Credits } from '../components/ui'
 
-type Model = {
-  slug: string
-  label: string
-  description: string | null
-  capabilities: string[]
-  context_window: number | null
-  max_output_tokens: number
-  flat_rate_credits: number
-  routing: string
-  status: 'live' | 'slow' | 'down' | 'unknown'
-  provider_count: number
-}
+type Model = CatalogModel
 
 const statusDot: Record<string, string> = {
   live: 'bg-gain',
@@ -29,8 +18,10 @@ export default function Models() {
 
   useEffect(() => {
     api
-      .get<{ models: Model[] }>('/models')
-      .then((data) => setModels(data.models))
+      .get<{ models: unknown }>('/models')
+      .then((data) =>
+        setModels(Array.isArray(data?.models) ? data.models.map(normalizeCatalogModel) : []),
+      )
       .catch(() => setError('Could not load the catalog.'))
   }, [])
 
@@ -59,6 +50,11 @@ export default function Models() {
             <div className="flex items-center gap-2">
               <span className={`h-2 w-2 rounded-full ${statusDot[model.status]}`} />
               <h2 className="text-[15px] font-semibold">{model.label}</h2>
+              {model.access_tier !== 'free' && (
+                <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent">
+                  🔒 {model.access_tier}
+                </span>
+              )}
               <span className="ml-auto text-[12px] capitalize text-muted">{model.status}</span>
             </div>
             {model.description && <p className="text-[13px] text-muted">{model.description}</p>}
@@ -77,7 +73,7 @@ export default function Models() {
               <dt>Configs</dt>
               <dd className="text-right text-content">{model.provider_count}</dd>
               <dt>Routing</dt>
-              <dd className="text-right text-content">{model.routing.replace('_', ' ')}</dd>
+              <dd className="text-right text-content">{model.routing.replaceAll('_', ' ')}</dd>
               {model.context_window && (
                 <>
                   <dt>Context</dt>

@@ -30,28 +30,52 @@ async function loadUserByApiToken(db: D1Database, token: string): Promise<UserRo
 
 /** Resolves the session when present; attaches `user` or null. Never blocks. */
 export const resolveUser = createMiddleware<Env>(async (c, next) => {
-  const session = await getSession(c.env.freellm_sessions, c.req.header('cookie'))
+  const cookieHeader = c.req.header('cookie')
+  const session = await getSession(c.env.freellm_sessions, cookieHeader)
   const user = session ? await loadUser(c.env.DB, session.userId) : null
+  if (session && !user) {
+    // Orphaned KV entry (user deleted) — purge so it can't linger 30 days.
+    const { sessionTokenFromCookies } = await import('./session')
+    const token = sessionTokenFromCookies(cookieHeader)
+    if (token) {
+      const { sha256Hex: hash } = await import('./crypto')
+      await c.env.freellm_sessions.delete(`sess:${await hash(token)}`).catch(() => {})
+    }
+  }
   c.set('user', (user ?? undefined) as Variables['user'])
   await next()
 })
 
 /** 401s unless a valid session exists. */
 export const requireAuth = createMiddleware<Env>(async (c, next) => {
-  const session = await getSession(c.env.freellm_sessions, c.req.header('cookie'))
+  const cookieHeader = c.req.header('cookie')
+  const session = await getSession(c.env.freellm_sessions, cookieHeader)
   const user = session ? await loadUser(c.env.DB, session.userId) : null
-  if (!user) return c.json({ error: 'unauthorized', message: 'Sign in to continue.' }, 401)
+  if (!user) {
+    if (session) {
+      const { sessionTokenFromCookies } = await import('./session')
+      const token = sessionTokenFromCookies(cookieHeader)
+      if (token) {
+        const { sha256Hex: hash } = await import('./crypto')
+        await c.env.freellm_sessions.delete(`sess:${await hash(token)}`).catch(() => {})
+      }
+    }
+    return c.json({ error: 'unauthorized', message: 'Sign in to continue.' }, 401)
+  }
   c.set('user', user)
   await next()
 })
 
-/** 403s unless the session user has the admin role (assumes requireAuth ran first). */
+/** 403s unless the session user has the admin role (re-fetched, never stale). */
 export const requireAdmin = createMiddleware<Env>(async (c, next) => {
-  const user = c.get('user')
-  if (!user) return c.json({ error: 'unauthorized', message: 'Sign in to continue.' }, 401)
-  if (user.role !== 'admin') {
+  const cached = c.get('user')
+  if (!cached) return c.json({ error: 'unauthorized', message: 'Sign in to continue.' }, 401)
+  const fresh = await loadUser(c.env.DB, cached.id)
+  if (!fresh) return c.json({ error: 'unauthorized', message: 'Sign in to continue.' }, 401)
+  if (fresh.role !== 'admin') {
     return c.json({ error: 'forbidden', message: 'Admin access required.' }, 403)
   }
+  c.set('user', fresh)
   await next()
 })
 
@@ -63,7 +87,10 @@ export const requireAdmin = createMiddleware<Env>(async (c, next) => {
 export const requireAuthOrToken = createMiddleware<Env>(async (c, next) => {
   const auth = c.req.header('Authorization') ?? ''
   const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
-  if (bearer.startsWith('fl_')) {
+  if (bearer) {
+    if (!bearer.startsWith('fl_')) {
+      return c.json({ error: 'unauthorized', message: 'That API token is not valid. Create one on /developers.' }, 401)
+    }
     const user = await loadUserByApiToken(c.env.DB, bearer)
     if (!user) {
       return c.json({ error: 'unauthorized', message: 'That API token is not valid. Create one on /developers.' }, 401)

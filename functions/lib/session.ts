@@ -37,7 +37,12 @@ export function parseCookies(header: string | null | undefined): Record<string, 
     if (eq < 0) continue
     const name = part.slice(0, eq).trim()
     const value = part.slice(eq + 1).trim()
-    if (name) cookies[name] = decodeURIComponent(value)
+    if (!name) continue
+    try {
+      cookies[name] = decodeURIComponent(value)
+    } catch {
+      cookies[name] = value
+    }
   }
   return cookies
 }

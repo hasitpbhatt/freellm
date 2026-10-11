@@ -13,6 +13,8 @@ export type Bindings = {
   PUBLIC_ORIGIN?: string
 }
 
+import type { ModelTier } from './tiers'
+
 export type UserRow = {
   id: string
   email: string
@@ -23,6 +25,7 @@ export type UserRow = {
   referral_code: string
   balance_credits: number
   role: 'user' | 'admin'
+  tier: ModelTier
   email_verified: number
   referred_by: string | null
   created_at: number
@@ -40,7 +43,8 @@ export type ModelRow = {
   context_window: number | null
   max_output_tokens: number
   flat_rate_credits: number
-  routing: 'round_robin' | 'random' | 'failover'
+  routing: 'round_robin' | 'random' | 'failover' | 'latency_weighted'
+  access_tier: ModelTier
   active: number
   sort_order: number
   created_at: number
@@ -59,6 +63,7 @@ export type ModelProviderRow = {
   last_checked_at: number | null
   last_error: string | null
   avg_latency_ms: number | null
+  cooldown_until: number | null
   priority: number
   active: number
   messages_served: number

@@ -49,7 +49,8 @@ export default function AdminModels() {
         <h1 className="text-xl font-semibold">Model catalog</h1>
         <p className="mt-1 text-[13px] text-muted">
           Aliases group multiple upstream configs. A request to an alias multiplexes across its configs
-          using the routing strategy.
+          using the routing strategy. latency_weighted prefers the lowest average latency and explores
+          round-robin ~15% of the time.
         </p>
       </div>
 
@@ -70,6 +71,9 @@ export default function AdminModels() {
 
 function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => void }) {
   const [busyId, setBusyId] = useState('')
+  const [editingAlias, setEditingAlias] = useState(false)
+  const [editingProviderId, setEditingProviderId] = useState<string | null>(null)
+  const [actionError, setActionError] = useState('')
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({})
 
   async function testProvider(providerId: string) {
@@ -107,17 +111,53 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
     }
   }
 
+  async function deleteAlias() {
+    if (
+      !confirm(
+        `Delete alias "${model.label}"? This also deletes its ${model.providers.length} provider config${model.providers.length === 1 ? '' : 's'}.`,
+      )
+    ) {
+      return
+    }
+    setBusyId(model.id)
+    setActionError('')
+    try {
+      await api.del(`/admin/models/${model.id}`)
+      setEditingAlias(false)
+      onChanged()
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : 'Failed to delete alias.')
+    } finally {
+      setBusyId('')
+    }
+  }
+
   async function deleteProvider(providerId: string) {
     if (!confirm('Delete this provider config?')) return
-    await api.del(`/admin/models/${model.id}/providers/${providerId}`)
-    onChanged()
+    setBusyId(providerId)
+    setActionError('')
+    try {
+      await api.del(`/admin/models/${model.id}/providers/${providerId}`)
+      if (editingProviderId === providerId) setEditingProviderId(null)
+      onChanged()
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : 'Failed to delete provider config.')
+    } finally {
+      setBusyId('')
+    }
   }
 
   async function toggleProvider(provider: ModelProvider) {
     setBusyId(provider.id)
-    await api.patch(`/admin/models/${model.id}/providers/${provider.id}`, { active: provider.active === 0 })
-    onChanged()
-    setBusyId('')
+    setActionError('')
+    try {
+      await api.patch(`/admin/models/${model.id}/providers/${provider.id}`, { active: provider.active === 0 })
+      onChanged()
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : 'Failed to update provider config.')
+    } finally {
+      setBusyId('')
+    }
   }
 
   return (
@@ -127,7 +167,10 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
         <h2 className="text-[15px] font-semibold">{model.label}</h2>
         <code className="num rounded bg-surface-2 px-1.5 py-0.5 text-[12px] text-muted">{model.slug}</code>
         <span className="num rounded bg-surface-2 px-1.5 py-0.5 text-[12px] text-muted">
-          {model.routing.replace('_', ' ')}
+          {model.routing.replaceAll('_', ' ')}
+        </span>
+        <span className={`num rounded px-1.5 py-0.5 text-[12px] ${model.access_tier === 'free' ? 'bg-surface-2 text-muted' : 'bg-accent/10 text-accent'}`}>
+          {model.access_tier === 'free' ? 'free' : `🔒 ${model.access_tier}`}
         </span>
         <span className="num text-[12px] text-muted">flat {model.flat_rate_credits.toLocaleString('en-US')} cr</span>
         {model.capabilities.map((tag) => (
@@ -141,6 +184,35 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
       </div>
 
       {model.description && <p className="px-4 pt-3 text-[13px] text-muted">{model.description}</p>}
+
+      <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
+        <Button variant="secondary" size="sm" onClick={() => setEditingAlias((open) => !open)}>
+          {editingAlias ? 'Cancel alias edit' : 'Edit alias'}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-loss"
+          onClick={() => void deleteAlias()}
+          disabled={busyId === model.id}
+        >
+          {busyId === model.id ? 'Deleting…' : 'Delete alias'}
+        </Button>
+        <span className="num ml-auto text-[12px] text-muted">
+          context {model.context_window?.toLocaleString('en-US') ?? '—'} · max out {model.max_output_tokens.toLocaleString('en-US')}
+        </span>
+      </div>
+      {actionError && <p className="px-4 pt-2 text-[12px] text-loss">{actionError}</p>}
+      {editingAlias && (
+        <EditAliasForm
+          model={model}
+          onDone={() => setEditingAlias(false)}
+          onChanged={() => {
+            setEditingAlias(false)
+            onChanged()
+          }}
+        />
+      )}
 
       <div className="flex flex-col divide-y divide-line">
         {model.providers.map((provider) => {
@@ -159,6 +231,12 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
                 <span className="num text-[12px] text-muted">{provider.avg_latency_ms}ms</span>
               )}
               <div className="flex gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={() => setEditingProviderId(editingProviderId === provider.id ? null : provider.id)}
+                >
+                  {editingProviderId === provider.id ? 'Cancel edit' : 'Edit'}
+                </Button>
                 <Button variant="secondary" onClick={() => testProvider(provider.id)} disabled={busyId === provider.id}>
                   {busyId === provider.id ? 'Testing…' : 'Test'}
                 </Button>
@@ -172,6 +250,17 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
                   Delete
                 </Button>
               </div>
+              {editingProviderId === provider.id && (
+                <EditProviderForm
+                  modelId={model.id}
+                  provider={provider}
+                  onDone={() => setEditingProviderId(null)}
+                  onChanged={() => {
+                    setEditingProviderId(null)
+                    onChanged()
+                  }}
+                />
+              )}
               {test && (
                 <p className={`w-full text-[12px] ${test.ok ? 'text-gain' : 'text-loss'}`}>
                   {test.ok ? `OK via /${test.mode}` : 'Failed'} · {test.latencyMs ?? '—'}ms
@@ -194,6 +283,235 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
   )
 }
 
+function EditAliasForm({
+  model,
+  onDone,
+  onChanged,
+}: {
+  model: ModelAlias
+  onDone: () => void
+  onChanged: () => void
+}) {
+  const [label, setLabel] = useState(model.label)
+  const [slug, setSlug] = useState(model.slug)
+  const [description, setDescription] = useState(model.description ?? '')
+  const [capabilities, setCapabilities] = useState(model.capabilities.join(', '))
+  const [contextWindow, setContextWindow] = useState(model.context_window?.toString() ?? '')
+  const [maxOutput, setMaxOutput] = useState(model.max_output_tokens.toString())
+  const [flatRate, setFlatRate] = useState(model.flat_rate_credits.toString())
+  const [routing, setRouting] = useState(model.routing)
+  const [accessTier, setAccessTier] = useState(model.access_tier)
+  const [active, setActive] = useState(model.active === 1)
+  const [sortOrder, setSortOrder] = useState(model.sort_order.toString())
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    const trimmedLabel = label.trim()
+    if (!trimmedLabel || trimmedLabel.length > 80) {
+      setError('Label must be 1–80 characters.')
+      return
+    }
+    const context = contextWindow.trim() === '' ? null : Number(contextWindow)
+    if (context !== null && (!Number.isInteger(context) || context <= 0)) {
+      setError('Context window must be empty or a positive integer.')
+      return
+    }
+    const maxOutputTokens = Number(maxOutput)
+    if (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 256 || maxOutputTokens > 200_000) {
+      setError('Max output tokens must be an integer 256–200,000.')
+      return
+    }
+    const flatRateCredits = Number(flatRate)
+    if (!Number.isInteger(flatRateCredits) || flatRateCredits < 0 || flatRateCredits > 1_000_000) {
+      setError('Flat rate must be an integer 0–1,000,000 credits.')
+      return
+    }
+    const sort = Number(sortOrder)
+    if (!Number.isInteger(sort)) {
+      setError('Sort order must be an integer.')
+      return
+    }
+
+    setBusy(true)
+    setError('')
+    try {
+      await api.patch(`/admin/models/${model.id}`, {
+        label: trimmedLabel,
+        ...(slug.trim() ? { slug: slug.trim() } : {}),
+        description: description.trim() ? description.trim() : null,
+        capabilities: capabilities
+          .split(',')
+          .map((tag) => tag.trim().toLowerCase())
+          .filter(Boolean),
+        context_window: context,
+        max_output_tokens: maxOutputTokens,
+        flat_rate_credits: flatRateCredits,
+        routing,
+        access_tier: accessTier,
+        active,
+        sort_order: sort,
+      })
+      onChanged()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to update alias.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form className="grid gap-3 border-t border-line p-4 sm:grid-cols-2" onSubmit={submit}>
+      <Field label="Label">
+        <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} required />
+      </Field>
+      <Field label="Slug (changing this changes API clients)">
+        <input className="input" value={slug} onChange={(e) => setSlug(e.target.value)} required />
+      </Field>
+      <Field label="Description">
+        <input
+          className="input"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          maxLength={500}
+          placeholder="Empty removes the description"
+        />
+      </Field>
+      <Field label="Capabilities (comma separated)">
+        <input className="input" value={capabilities} onChange={(e) => setCapabilities(e.target.value)} />
+      </Field>
+      <Field label="Context window (tokens, empty = unknown)">
+        <input className="input" value={contextWindow} onChange={(e) => setContextWindow(e.target.value)} inputMode="numeric" />
+      </Field>
+      <Field label="Max output tokens">
+        <input className="input" value={maxOutput} onChange={(e) => setMaxOutput(e.target.value)} inputMode="numeric" />
+      </Field>
+      <Field label="Flat rate when provider omits usage">
+        <input className="input" value={flatRate} onChange={(e) => setFlatRate(e.target.value)} inputMode="numeric" />
+      </Field>
+      <Field label="Routing">
+        <select className="input" value={routing} onChange={(e) => setRouting(e.target.value as ModelAlias['routing'])}>
+          <option value="round_robin">round_robin</option>
+          <option value="random">random</option>
+          <option value="failover">failover</option>
+          <option value="latency_weighted">latency_weighted</option>
+        </select>
+      </Field>
+      <Field label="Access tier (who can use this alias)">
+        <select className="input" value={accessTier} onChange={(e) => setAccessTier(e.target.value as ModelAlias['access_tier'])}>
+          <option value="free">free — everyone</option>
+          <option value="pro">pro — locked</option>
+          <option value="enterprise">enterprise — locked</option>
+        </select>
+      </Field>
+      <Field label="Sort order">
+        <input className="input" value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} inputMode="numeric" />
+      </Field>
+      <label className="flex items-center gap-2 text-[13px]">
+        <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
+        Active in The Pool
+      </label>
+      {error && <p className="text-[13px] text-loss sm:col-span-2">{error}</p>}
+      <div className="flex gap-2 sm:col-span-2">
+        <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save alias'}</Button>
+        <Button type="button" variant="ghost" onClick={onDone}>Cancel</Button>
+      </div>
+    </form>
+  )
+}
+
+function EditProviderForm({
+  modelId,
+  provider,
+  onDone,
+  onChanged,
+}: {
+  modelId: string
+  provider: ModelProvider
+  onDone: () => void
+  onChanged: () => void
+}) {
+  const [label, setLabel] = useState(provider.label)
+  const [baseUrl, setBaseUrl] = useState(provider.base_url)
+  const [upstreamModel, setUpstreamModel] = useState(provider.upstream_model)
+  const [apiKey, setApiKey] = useState('')
+  const [priority, setPriority] = useState(provider.priority.toString())
+  const [active, setActive] = useState(provider.active === 1)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    const trimmedLabel = label.trim()
+    if (!trimmedLabel || trimmedLabel.length > 80) {
+      setError('Config label must be 1–80 characters.')
+      return
+    }
+    if (!baseUrl.trim() || !upstreamModel.trim()) {
+      setError('Base URL and upstream model are required.')
+      return
+    }
+    const priorityValue = Number(priority)
+    if (!Number.isInteger(priorityValue)) {
+      setError('Priority must be an integer.')
+      return
+    }
+
+    setBusy(true)
+    setError('')
+    try {
+      await api.patch(`/admin/models/${modelId}/providers/${provider.id}`, {
+        label: trimmedLabel,
+        base_url: baseUrl.trim(),
+        upstream_model: upstreamModel.trim(),
+        priority: priorityValue,
+        active,
+        ...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
+      })
+      onChanged()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to update config.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form className="grid w-full gap-3 rounded-lg border border-line bg-surface-2 p-4 sm:grid-cols-2" onSubmit={submit}>
+      <Field label="Config label">
+        <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} required />
+      </Field>
+      <Field label="OpenAI-compatible base URL">
+        <input className="input" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} required />
+      </Field>
+      <Field label="Upstream model name">
+        <input className="input" value={upstreamModel} onChange={(e) => setUpstreamModel(e.target.value)} required />
+      </Field>
+      <Field label={`Rotate bearer key (current: ${provider.key_masked})`}>
+        <input
+          className="input"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          placeholder="Leave blank to keep the current key"
+        />
+      </Field>
+      <Field label="Priority (failover order, lower first)">
+        <input className="input" value={priority} onChange={(e) => setPriority(e.target.value)} inputMode="numeric" />
+      </Field>
+      <label className="flex items-center gap-2 text-[13px]">
+        <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
+        Active config
+      </label>
+      {error && <p className="text-[13px] text-loss sm:col-span-2">{error}</p>}
+      <div className="flex gap-2 sm:col-span-2">
+        <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save config'}</Button>
+        <Button type="button" variant="ghost" onClick={onDone}>Cancel</Button>
+      </div>
+    </form>
+  )
+}
+
 function NewAliasForm({ onCreated }: { onCreated: () => void }) {
   const [open, setOpen] = useState(false)
   const [label, setLabel] = useState('')
@@ -201,13 +519,20 @@ function NewAliasForm({ onCreated }: { onCreated: () => void }) {
   const [description, setDescription] = useState('')
   const [capabilities, setCapabilities] = useState('')
   const [contextWindow, setContextWindow] = useState('')
+  const [maxOutput, setMaxOutput] = useState('4096')
   const [flatRate, setFlatRate] = useState('2000')
   const [routing, setRouting] = useState('round_robin')
+  const [accessTier, setAccessTier] = useState('free')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
   async function submit(event: FormEvent) {
     event.preventDefault()
+    const maxOutputTokens = Number(maxOutput)
+    if (!Number.isInteger(maxOutputTokens) || maxOutputTokens < 256 || maxOutputTokens > 200_000) {
+      setError('Max output tokens must be an integer 256–200,000.')
+      return
+    }
     setBusy(true)
     setError('')
     try {
@@ -220,14 +545,20 @@ function NewAliasForm({ onCreated }: { onCreated: () => void }) {
           .map((t) => t.trim().toLowerCase())
           .filter(Boolean),
         context_window: contextWindow ? Number(contextWindow) : null,
+        max_output_tokens: maxOutputTokens,
         flat_rate_credits: Number(flatRate),
         routing,
+        access_tier: accessTier,
       })
       setLabel('')
       setSlug('')
       setDescription('')
       setCapabilities('')
       setContextWindow('')
+      setMaxOutput('4096')
+      setFlatRate('2000')
+      setRouting('round_robin')
+      setAccessTier('free')
       setOpen(false)
       onCreated()
     } catch (err) {
@@ -263,6 +594,9 @@ function NewAliasForm({ onCreated }: { onCreated: () => void }) {
         <Field label="Context window (tokens, optional)">
           <input className="input" value={contextWindow} onChange={(e) => setContextWindow(e.target.value)} placeholder="128000" inputMode="numeric" />
         </Field>
+        <Field label="Max output tokens">
+          <input className="input" value={maxOutput} onChange={(e) => setMaxOutput(e.target.value)} placeholder="4096" inputMode="numeric" />
+        </Field>
         <Field label="Flat rate when provider omits usage">
           <input className="input" value={flatRate} onChange={(e) => setFlatRate(e.target.value)} inputMode="numeric" />
         </Field>
@@ -271,6 +605,14 @@ function NewAliasForm({ onCreated }: { onCreated: () => void }) {
             <option value="round_robin">round_robin</option>
             <option value="random">random</option>
             <option value="failover">failover</option>
+            <option value="latency_weighted">latency_weighted</option>
+          </select>
+        </Field>
+        <Field label="Access tier">
+          <select className="input" value={accessTier} onChange={(e) => setAccessTier(e.target.value)}>
+            <option value="free">free — everyone</option>
+            <option value="pro">pro — locked</option>
+            <option value="enterprise">enterprise — locked</option>
           </select>
         </Field>
         {error && <p className="text-[13px] text-loss sm:col-span-2">{error}</p>}

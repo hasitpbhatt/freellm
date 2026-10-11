@@ -1,6 +1,8 @@
 // Live connectivity probe for any OpenAI-compatible endpoint — used by admin
 // config tests and BYOK key validation.
 
+import { SLOW_THRESHOLD_MS } from './providers'
+
 export type PingResult = {
   ok: boolean
   status: 'live' | 'slow' | 'down'
@@ -31,7 +33,7 @@ export async function pingProvider(
     }
     const latencyMs = Date.now() - started
     if (response.ok) {
-      return { ok: true, status: latencyMs > 8000 ? 'slow' : 'live', latencyMs, mode }
+      return { ok: true, status: latencyMs > SLOW_THRESHOLD_MS ? 'slow' : 'live', latencyMs, mode }
     }
     const detail = (await response.text().catch(() => '')).slice(0, 300)
     return {

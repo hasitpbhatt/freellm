@@ -1,22 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { streamChat, type ChatSseEvent } from '../lib/chat'
-import { api } from '../lib/api'
+import { api, normalizeCatalogModel, type CatalogModel } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { Button, Card, Credits } from '../components/ui'
 
-type Model = {
-  slug: string
-  label: string
-  description: string | null
-  capabilities: string[]
-  context_window: number | null
-  max_output_tokens: number
-  flat_rate_credits: number
-  routing: string
-  status: 'live' | 'slow' | 'down' | 'unknown'
-  provider_count: number
-}
+type Model = CatalogModel
 
 type ByokKey = {
   id: string
@@ -34,7 +23,19 @@ type Message = {
   content: string
   streaming?: boolean
   error?: string
-  cost?: { credits: number; input: number | null; output: number | null; total: number | null; source: string; status: string }
+  model?: string | null
+  cost?: {
+    credits: number
+    input: number | null
+    output: number | null
+    total: number | null
+    source: string
+    status: string
+    model: string | null
+    latencyMs: number | null
+    firstTokenMs: number | null
+    tokensPerSec: number | null
+  }
 }
 
 const statusDot: Record<string, string> = {
@@ -60,6 +61,10 @@ function saveChatPersisted(state: ChatPersisted) {
   localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(state))
 }
 
+function requestClock(): number {
+  return Date.now()
+}
+
 export default function Chat() {
   const { user, loading: authLoading, refresh } = useAuth()
   const [searchParams] = useSearchParams()
@@ -74,16 +79,20 @@ export default function Chat() {
   const [byokLoading, setByokLoading] = useState(false)
   const [selectedKeyId, setSelectedKeyId] = useState<string>(() => loadChatPersisted().selectedKeyId ?? '')
   const abortRef = useRef<AbortController | null>(null)
-  const streamEndRef = useRef<HTMLDivElement | null>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const pendingRef = useRef('')
+  const rafRef = useRef<number | null>(null)
+  const stickRef = useRef(true)
   const navigate = useNavigate()
 
   const loadModels = useCallback(async () => {
     try {
-      const data = await api.get<{ models: Model[] }>('/models')
-      setModels(data.models)
+      const data = await api.get<{ models: unknown }>('/models')
+      const catalog = Array.isArray(data?.models) ? data.models.map(normalizeCatalogModel) : []
+      setModels(catalog)
       const wanted = searchParams.get('model')
-      if (wanted && data.models.some((m) => m.slug === wanted)) setSelected(wanted)
-      else if (data.models.length > 0) setSelected((prev) => prev || data.models[0].slug)
+      if (wanted && catalog.some((m) => m.slug === wanted)) setSelected(wanted)
+      else if (catalog.length > 0) setSelected((prev) => prev || catalog[0].slug)
     } catch {
       setBanner({ kind: 'err', text: 'Could not load the model catalog.' })
     }
@@ -124,12 +133,59 @@ export default function Chat() {
     })
   }, [mode, selected, selectedKeyId])
 
+  const messageCount = messages.length
   useEffect(() => {
-    streamEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [messages])
+    // New bubbles stick to the bottom instantly. Per-token scrolling is
+    // handled directly (without smooth animation) in the stream flush path.
+    stickRef.current = true
+    const el = scrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [messageCount])
+
+  useEffect(() => {
+    // Abort in-flight stream + drop scheduled paint on unmount.
+    return () => {
+      abortRef.current?.abort()
+      abortRef.current = null
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+      pendingRef.current = ''
+    }
+  }, [])
 
   const model = models.find((m) => m.slug === selected) ?? null
   const selectedKey = byokKeys.find((k) => k.id === selectedKeyId) ?? null
+
+  /** Appends buffered stream text in one paint, then follows only if pinned. */
+  function flushPending(assistantId: string) {
+    rafRef.current = null
+    const text = pendingRef.current
+    if (!text) return
+    pendingRef.current = ''
+    setMessages((prev) =>
+      prev.map((m) => (m.id === assistantId ? { ...m, content: m.content + text } : m)),
+    )
+    if (stickRef.current) {
+      // Scroll after paint so the new height is already laid out.
+      requestAnimationFrame(() => {
+        const el = scrollRef.current
+        if (el && stickRef.current) el.scrollTop = el.scrollHeight
+      })
+    }
+  }
+
+  function scheduleFlush(assistantId: string) {
+    if (rafRef.current !== null) return
+    rafRef.current = requestAnimationFrame(() => flushPending(assistantId))
+  }
+
+  function handleScroll() {
+    const el = scrollRef.current
+    if (!el) return
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+  }
 
   async function send(event: FormEvent) {
     event.preventDefault()
@@ -137,13 +193,35 @@ export default function Chat() {
     if (!content || busy) return
     if (mode === 'pool' && !model) return
     if (mode === 'byok' && !selectedKey) return
+    if (mode === 'pool' && modelLocked) {
+      setBanner({ kind: 'warn', text: `${model?.label ?? 'This model'} requires ${model?.access_tier} tier — contact an admin to upgrade.` })
+      return
+    }
+
+    // Never overlap streams sharing pendingRef/rafRef — abort stale first.
+    abortRef.current?.abort()
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
+    pendingRef.current = ''
 
     const requestId = crypto.randomUUID()
     const userMessage: Message = { id: `u-${requestId}`, role: 'user', content }
     const assistantId = `a-${requestId}`
     const history = [...messages, userMessage]
+    const requestModelSlug = mode === 'pool' ? (model?.slug ?? null) : null
+    const requestModelLabel =
+      mode === 'pool' ? (model?.label ?? 'assistant') : (selectedKey?.label ?? 'your key')
+    const requestFlatRate = mode === 'pool' ? (model?.flat_rate_credits ?? 0) : 0
+    const startedAt = requestClock()
+    let firstTokenMs: number | null = null
+    let latestUsage: { input: number | null; output: number | null; total: number | null; source: string } | null = null
 
-    setMessages([...history, { id: assistantId, role: 'assistant', content: '', streaming: true }])
+    setMessages([
+      ...history,
+      { id: assistantId, role: 'assistant', content: '', streaming: true, model: requestModelLabel },
+    ])
     setInput('')
     setBusy(true)
     setBanner(null)
@@ -152,7 +230,7 @@ export default function Chat() {
     abortRef.current = controller
 
     const payload = {
-      model: model?.slug ?? '',
+      model: requestModelSlug ?? '',
       request_id: requestId,
       messages: history.map((m) => ({ role: m.role, content: m.content })),
       ...(mode === 'byok' && selectedKey ? { key_mode: 'byok' as const, key_id: selectedKey.id } : {}),
@@ -162,11 +240,13 @@ export default function Chat() {
       payload,
       {
         onDelta: (chunk) => {
-          setMessages((prev) =>
-            prev.map((m) => (m.id === assistantId ? { ...m, content: m.content + chunk } : m)),
-          )
+          if (firstTokenMs === null) firstTokenMs = requestClock() - startedAt
+          pendingRef.current += chunk
+          scheduleFlush(assistantId)
         },
         onUsage: (usage) => {
+          latestUsage = usage
+          flushPending(assistantId)
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId
@@ -179,6 +259,10 @@ export default function Chat() {
                       total: usage.total,
                       source: usage.source,
                       status: 'streaming',
+                      model: requestModelLabel,
+                      latencyMs: null,
+                      firstTokenMs,
+                      tokensPerSec: null,
                     },
                   }
                 : m,
@@ -186,6 +270,11 @@ export default function Chat() {
           )
         },
         onSettled: (settled: Extract<ChatSseEvent, { type: 'settled' }>) => {
+          flushPending(assistantId)
+          const latencyMs = requestClock() - startedAt
+          const output = latestUsage?.output ?? null
+          const tokensPerSec =
+            typeof output === 'number' && output > 0 && latencyMs > 0 ? output / (latencyMs / 1000) : null
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId
@@ -194,11 +283,15 @@ export default function Chat() {
                     streaming: false,
                     cost: {
                       credits: settled.credits_charged,
-                      input: m.cost?.input ?? null,
-                      output: m.cost?.output ?? null,
-                      total: m.cost?.total ?? null,
-                      source: m.cost?.source ?? 'flat_rate',
+                      input: latestUsage?.input ?? m.cost?.input ?? null,
+                      output: latestUsage?.output ?? m.cost?.output ?? null,
+                      total: latestUsage?.total ?? m.cost?.total ?? null,
+                      source: latestUsage?.source ?? m.cost?.source ?? 'flat_rate',
                       status: settled.status,
+                      model: requestModelLabel,
+                      latencyMs,
+                      firstTokenMs,
+                      tokensPerSec,
                     },
                   }
                 : m,
@@ -211,6 +304,13 @@ export default function Chat() {
 
     abortRef.current = null
     setBusy(false)
+    // Paint any text still buffered before marking the bubble done.
+    flushPending(assistantId)
+    if (result.completed) {
+      // A successful stream always leaves streaming mode, even if the final
+      // billing event was lost before the connection closed.
+      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)))
+    }
     await refresh()
 
     if (!result.completed && result.error && result.error !== 'aborted') {
@@ -224,8 +324,11 @@ export default function Chat() {
       setBanner({ kind: 'err', text: result.error ?? 'Chat failed.' })
     } else if (!result.completed && result.error === 'aborted') {
       setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)))
-      const flatRate = model?.flat_rate_credits ?? 0
-      setBanner({ kind: 'warn', text: `Stream stopped — ${flatRate.toLocaleString('en-US')} cr flat rate charged.` })
+      if (mode === 'byok') {
+        setBanner({ kind: 'warn', text: 'Stream stopped — no charge in Your Key mode.' })
+      } else {
+        setBanner({ kind: 'warn', text: `Stream stopped — ${requestFlatRate.toLocaleString('en-US')} cr flat rate charged.` })
+      }
     }
   }
 
@@ -260,7 +363,12 @@ export default function Chat() {
     )
   }
 
-  const canSend = mode === 'pool' ? !!model && !!input.trim() : mode === 'byok' ? !!selectedKey && !!input.trim() : false
+  const TIER_RANK: Record<string, number> = { free: 0, pro: 1, enterprise: 2 }
+  const userTierRank = TIER_RANK[user.tier ?? 'free'] ?? 0
+  const modelTierRank = (tier: string | undefined) => TIER_RANK[tier ?? 'free'] ?? 0
+  const modelLocked = !!model && model.access_tier !== 'free' && user.role !== 'admin' && userTierRank < modelTierRank(model.access_tier)
+
+  const canSend = mode === 'pool' ? !!model && !modelLocked && !!input.trim() : mode === 'byok' ? !!selectedKey && !!input.trim() : false
 
   return (
     <div className="grid gap-4 lg:grid-cols-[220px_1fr]">
@@ -329,6 +437,11 @@ export default function Chat() {
                 <span className="flex items-center gap-2">
                   <span className={`h-2 w-2 rounded-full ${statusDot[m.status]}`} />
                   <span className="text-[13px] font-medium">{m.label}</span>
+                  {m.access_tier !== 'free' && (
+                    <span className="rounded bg-accent/10 px-1 py-0.5 text-[10px] font-medium text-accent">
+                      🔒 {m.access_tier}
+                    </span>
+                  )}
                 </span>
                 <span className="num text-[11px] text-muted">
                   flat {m.flat_rate_credits.toLocaleString('en-US')} cr · {m.provider_count} config{m.provider_count === 1 ? '' : 's'}
@@ -385,6 +498,9 @@ export default function Chat() {
             <span className="num ml-auto text-[12px] text-muted">
               flat {model.flat_rate_credits.toLocaleString('en-US')} cr if usage unreported
             </span>
+            {modelLocked && (
+              <span className="text-[12px] text-warn">requires {model.access_tier} tier — contact an admin to upgrade</span>
+            )}
             {model.status === 'down' && (
               <span className="text-[12px] text-warn">all configs down — requests will fail free</span>
             )}
@@ -399,7 +515,7 @@ export default function Chat() {
           </Card>
         )}
 
-        <Card className="flex-1 overflow-y-auto p-4">
+        <div ref={scrollRef} onScroll={handleScroll} className="card flex-1 overflow-y-auto p-4">
           {messages.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
               <p className="text-[13px] text-muted">
@@ -420,7 +536,7 @@ export default function Chat() {
                 <div key={m.id} className={m.role === 'user' ? 'text-right' : ''}>
                   {m.role === 'assistant' && (
                     <p className="mb-1 text-[12px] font-semibold text-accent">
-                      {mode === 'pool' ? (model?.label ?? 'assistant') : (selectedKey?.label ?? 'your key')}
+                      {m.model ?? (mode === 'pool' ? (model?.label ?? 'assistant') : (selectedKey?.label ?? 'your key'))}
                     </p>
                   )}
                   <div
@@ -440,18 +556,20 @@ export default function Chat() {
                       {mode === 'byok' ? ' · Free — your key' : m.cost.status === 'aborted'
                         ? ' · flat rate — stream stopped'
                         : m.cost.source === 'reported'
-                        ? ` · reported by ${model?.label ?? 'provider'}`
+                        ? ` · reported by ${m.cost.model ?? 'provider'}`
                         : m.cost.source === 'flat_rate'
                         ? ' · flat rate — usage unreported'
                         : ''}
+                      {m.cost.latencyMs != null ? ` · ${(m.cost.latencyMs / 1000).toFixed(2)}s` : ''}
+                      {m.cost.firstTokenMs != null ? ` · first token ${(m.cost.firstTokenMs / 1000).toFixed(2)}s` : ''}
+                      {m.cost.tokensPerSec != null ? ` · ${Math.round(m.cost.tokensPerSec)} tok/s` : ''}
                     </p>
                   )}
                 </div>
               ))}
-              <div ref={streamEndRef} />
             </div>
           )}
-        </Card>
+        </div>
 
         {banner && (
           <p className={`text-[13px] ${banner.kind === 'err' ? 'text-loss' : 'text-warn'}`}>{banner.text}</p>

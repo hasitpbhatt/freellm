@@ -160,6 +160,30 @@ test('settle: BYOK (free) is recorded but never touches balances or ledger', asy
   assert.equal(ledger?.n, 0, 'no ledger rows for free requests')
 })
 
+test('settle: BYOK (free) failures are also recorded as BYOK', async () => {
+  const userId = await seedUser(db, { balanceCredits: 5_000, scopedCredits: 100 })
+  const result = await settleRequest(db, {
+    userId,
+    requestId: 'req-byok-failed',
+    model: testModel,
+    providerLabel: 'my-key',
+    settlement: { kind: 'failed', reason: '502 upstream' },
+    latencyMs: 5,
+    free: true,
+  })
+  assert.equal(result.creditsCharged, 0)
+  assert.equal(result.status, 'failed')
+
+  const event = await db
+    .prepare('SELECT credits_charged, key_mode, status FROM freellm_usage_events WHERE request_id = ?')
+    .bind('req-byok-failed')
+    .first<{ credits_charged: number; key_mode: string; status: string }>()
+  assert.equal(event?.key_mode, 'byok')
+  assert.equal(event?.credits_charged, 0)
+  assert.equal(event?.status, 'failed')
+  assert.deepEqual(await readBalances(db, userId), { global: 5_000, scoped: 100 })
+})
+
 // ---------------------------------------------------------------- idempotency
 
 test('settle: retrying the same request_id never double-charges', async () => {
@@ -197,6 +221,7 @@ test('settle: battle spend is attributed to the battle id', async () => {
 
 test('settle: a charge beyond the balance throws instead of going negative', async () => {
   const userId = await seedUser(db, { balanceCredits: 10 })
+  await placeHold(db, userId, 'req-broke', 500)
   await assert.rejects(
     () =>
       settleRequest(db, {
@@ -209,4 +234,45 @@ test('settle: a charge beyond the balance throws instead of going negative', asy
       }),
     /insufficient credits at settlement/,
   )
+  const hold = await db
+    .prepare('SELECT request_id FROM freellm_credit_holds WHERE request_id = ?')
+    .bind('req-broke')
+    .first()
+  assert.equal(hold, null, 'hold is released even when settlement throws')
+})
+
+test('settle: hostile provider usage falls back to flat rate', async () => {
+  const userId = await seedUser(db, { balanceCredits: 10_000 })
+  for (const bad of [
+    { input: -1, output: 5, total: 4 },
+    { input: 5, output: 5, total: Number.NaN },
+    { input: 5.5, output: 5, total: 10 },
+    { input: 1, output: 1, total: 1_000_000 },
+  ]) {
+    const result = await settleRequest(db, {
+      userId,
+      requestId: `req-bad-${bad.input}-${bad.total}`,
+      model: testModel,
+      providerLabel: 'evil-provider',
+      settlement: { kind: 'completed', usage: bad as Usage },
+      latencyMs: 5,
+    })
+    assert.equal(result.source, 'flat_rate')
+    assert.equal(result.creditsCharged, testModel.flat_rate_credits)
+  }
+})
+
+test('settle: free aborted stays aborted with zero charge', async () => {
+  const userId = await seedUser(db, { balanceCredits: 5_000 })
+  const result = await settleRequest(db, {
+    userId,
+    requestId: 'req-free-abort',
+    model: testModel,
+    providerLabel: 'byok:key',
+    settlement: { kind: 'aborted', reason: 'client disconnected' },
+    latencyMs: 5,
+    free: true,
+  })
+  assert.equal(result.status, 'aborted')
+  assert.equal(result.creditsCharged, 0)
 })
