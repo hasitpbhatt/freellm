@@ -121,7 +121,9 @@ migrations applied.
 
 Milestones 1–6 shipped: scaffold, auth, admin panel, promo codes, metering core,
 economy, the **M5 arena**, and the **M6 BYOK vault**.
-- Password auth (PBKDF2-SHA256), KV sessions, first account/ADMIN_EMAIL → admin role;
+- Google-only auth (no passwords): sign-up and sign-in happen exclusively
+  through Google OAuth (`/api/auth/google`, KV state, email verified by Google);
+  first account/`ADMIN_EMAIL` → admin role; referral codes ride along via `?ref=`
   email verification gates earning (MailChannels in production, dev link locally)
 - Google OAuth sign-in (`/api/auth/google`, KV state, email verified by Google)
 - Admin panel (`/admin`): model aliases + grouped OpenAI-compatible provider configs

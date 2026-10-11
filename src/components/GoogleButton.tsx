@@ -5,13 +5,21 @@
 export function GoogleButton({
   label = 'Continue with Google',
   next,
+  ref,
 }: {
   label?: string
   /** Where to land after a successful callback. Must be a same-site path. */
   next?: string
+  /** Referral code to attribute if this sign-in creates the account. */
+  ref?: string | null
 }) {
   const safeNext = next && /^\/[^/\\]/.test(next) ? next : null
-  const href = safeNext ? `/api/auth/google?next=${encodeURIComponent(safeNext)}` : '/api/auth/google'
+  const safeRef = ref && /^[a-z0-9]{2,32}$/i.test(ref) ? ref.toLowerCase() : null
+  const params = new URLSearchParams()
+  if (safeNext) params.set('next', safeNext)
+  if (safeRef) params.set('ref', safeRef)
+  const query = params.toString()
+  const href = query ? `/api/auth/google?${query}` : '/api/auth/google'
   return (
     <a
       href={href}
@@ -40,7 +48,7 @@ export function GoogleButton({
   )
 }
 
-/** The "or" rule that separates the password form from the Google button. */
+/** The "or" rule used between stacked auth actions. */
 export function AuthDivider() {
   return (
     <div className="flex items-center gap-3">

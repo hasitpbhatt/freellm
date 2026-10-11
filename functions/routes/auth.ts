@@ -2,17 +2,10 @@
 // Google OAuth implemented.
 
 import { Hono } from 'hono'
-import { hashPassword, newId, verifyPassword } from '../lib/crypto'
+import { newId } from '../lib/crypto'
 import { createSession, destroySession, getSession, clearedSessionCookie } from '../lib/session'
 import { sendVerificationEmail } from '../lib/email'
-import {
-  generateReferralCode,
-  normalizeEmail,
-  normalizeUsername,
-  validateEmail,
-  validatePassword,
-  validateUsername,
-} from '../lib/validate'
+import { generateReferralCode, normalizeEmail } from '../lib/validate'
 import type { Bindings, PublicUser, Variables } from '../lib/types'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -78,132 +71,10 @@ app.get('/api/me', async (c) => {
   return c.json({ user: toPublicUser(user as UserLike) })
 })
 
-// -------------------------------------------------------------- register
-
-app.post('/api/auth/register', async (c) => {
-  const ip = c.req.header('cf-connecting-ip') ?? 'local'
-  if (!(await allowRequest(c.env.freellm_sessions, `rl:register:${ip}`, 10, 15 * 60))) {
-    return c.json({ error: 'rate_limited', message: 'Too many attempts. Try again in a few minutes.' }, 429)
-  }
-  const body = await c.req.json<{ email?: unknown; username?: unknown; password?: unknown; referral_code?: unknown }>().catch(() => null)
-  if (!body) return c.json({ error: 'invalid_body', message: 'Send JSON.' }, 400)
-
-  const email = normalizeEmail(String(body.email ?? ''))
-  const username = normalizeUsername(String(body.username ?? ''))
-  const password = typeof body.password === 'string' ? body.password : ''
-
-  const invalid =
-    validateEmail(email) ??
-    validateUsername(username) ??
-    validatePassword(password)
-  if (invalid) return c.json({ error: 'invalid_input', message: invalid }, 400)
-
-  // Bootstrap rule: the very first account (or ADMIN_EMAIL) becomes admin.
-  const count = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM freellm_users').first<{ n: number }>()
-  const isFirstUser = (count?.n ?? 0) === 0
-  const isAdminEmail =
-    !!c.env.ADMIN_EMAIL && email === normalizeEmail(c.env.ADMIN_EMAIL)
-  const role: 'user' | 'admin' = isFirstUser || isAdminEmail ? 'admin' : 'user'
-
-  const now = Date.now()
-  let referralCode = generateReferralCode()
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const taken = await c.env.DB.prepare('SELECT 1 FROM freellm_users WHERE referral_code = ?')
-      .bind(referralCode)
-      .first()
-    if (!taken) break
-    referralCode = generateReferralCode()
-  }
-
-  const userId = newId()
-  const passwordHash = await hashPassword(password)
-
-  // Referral attribution: resolve the code before inserting so the row lands
-  // atomically with the account. Self-referral is silently ignored.
-  let referrerId: string | null = null
-  if (typeof body.referral_code === 'string' && body.referral_code.trim() !== '') {
-    const referrer = await c.env.DB.prepare('SELECT id FROM freellm_users WHERE referral_code = ?')
-      .bind(body.referral_code.trim().toLowerCase())
-      .first<{ id: string }>()
-    if (referrer && referrer.id !== userId) referrerId = referrer.id
-  }
-
-  try {
-    await c.env.DB.batch([
-      c.env.DB.prepare(
-        `INSERT INTO freellm_users (id, email, username, password_hash, referral_code, balance_credits, role, email_verified, referred_by, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 0, ?, 0, ?, ?, ?)`,
-      ).bind(userId, email, username, passwordHash, referralCode, role, referrerId, now, now),
-      c.env.DB.prepare(
-        `INSERT INTO freellm_auth_identities (id, user_id, provider, subject, email, email_verified, created_at)
-         VALUES (?, ?, 'password', ?, ?, 0, ?)`,
-      ).bind(newId(), userId, userId, email, now),
-      ...(referrerId
-        ? [
-            c.env.DB.prepare(
-              `INSERT INTO freellm_referrals (id, referrer_id, referred_id, status, created_at) VALUES (?, ?, ?, 'waiting', ?)`,
-            ).bind(newId(), referrerId, userId, now),
-          ]
-        : []),
-    ])
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    if (message.includes('UNIQUE constraint failed: freellm_users.email')) {
-      return c.json({ error: 'email_taken', message: 'That email is already registered.' }, 409)
-    }
-    if (message.includes('UNIQUE constraint failed: freellm_users.username')) {
-      return c.json({ error: 'username_taken', message: 'That username is taken.' }, 409)
-    }
-    throw err
-  }
-
-  const session = await createSession(c.env.freellm_sessions, userId)
-  const user = await c.env.DB.prepare('SELECT * FROM freellm_users WHERE id = ?').bind(userId).first()
-  // Fire-and-forget: the dev fallback logs the link; production sends email.
-  const verification = await issueVerification(c, userId, email)
-  c.header('Set-Cookie', session.cookie)
-  const publicUser = toPublicUser(user as UserLike)
-  return c.json(
-    {
-      user: publicUser,
-      // Surfaced only outside production, so the flow is testable pre-DNS.
-      dev_link: c.env.ENVIRONMENT === 'production' ? undefined : verification.devLink,
-    },
-    201,
-  )
-})
-
-// ----------------------------------------------------------------- login
-
-app.post('/api/auth/login', async (c) => {
-  const ip = c.req.header('cf-connecting-ip') ?? 'local'
-  if (!(await allowRequest(c.env.freellm_sessions, `rl:login:${ip}`, 10, 15 * 60))) {
-    return c.json({ error: 'rate_limited', message: 'Too many attempts. Try again in a few minutes.' }, 429)
-  }
-
-  const body = await c.req.json<{ email?: unknown; password?: unknown }>().catch(() => null)
-  if (!body) return c.json({ error: 'invalid_body', message: 'Send JSON.' }, 400)
-
-  const email = normalizeEmail(String(body.email ?? ''))
-  const password = typeof body.password === 'string' ? body.password : ''
-  if (validateEmail(email) || !password) {
-    return c.json({ error: 'invalid_input', message: 'Enter your email and password.' }, 400)
-  }
-
-  const user = await c.env.DB.prepare('SELECT * FROM freellm_users WHERE email = ?').bind(email).first<{
-    id: string
-    password_hash: string | null
-  }>()
-  // Same response whether the email is unknown or the password is wrong.
-  const invalid = { error: 'invalid_credentials', message: 'Email or password is incorrect.' }
-  if (!user || !user.password_hash) return c.json(invalid, 401)
-  if (!(await verifyPassword(password, user.password_hash))) return c.json(invalid, 401)
-
-  const session = await createSession(c.env.freellm_sessions, user.id)
-  const full = await c.env.DB.prepare('SELECT * FROM freellm_users WHERE id = ?').bind(user.id).first()
-  c.header('Set-Cookie', session.cookie)
-  return c.json({ user: toPublicUser(full as UserLike) })
-})
+// ------------------------------------------------------------- OAuth only
+// Password registration and login are removed: signup and signin happen
+// exclusively via Google. Existing password users sign in with Google on the
+// same email address and are auto-linked to their existing account.
 
 // ---------------------------------------------------------------- logout
 
@@ -216,6 +87,10 @@ app.post('/api/auth/logout', async (c) => {
 // ------------------------------------------------------ email verification
 
 app.post('/api/auth/verify-email', async (c) => {
+  const ip = c.req.header('cf-connecting-ip') ?? 'local'
+  if (!(await allowRequest(c.env.freellm_sessions, `rl:verify:${ip}`, 10, 15 * 60))) {
+    return c.json({ error: 'rate_limited', message: 'Too many attempts. Try again in a few minutes.' }, 429)
+  }
   const body = await c.req.json<{ token?: unknown }>().catch(() => null)
   const token = typeof body?.token === 'string' ? body.token.trim() : ''
   if (!token) return c.json({ error: 'invalid_input', message: 'A verification token is required.' }, 400)
@@ -352,15 +227,23 @@ app.get('/api/auth/google', async (c) => {
   if (!clientId || !clientSecret) {
     return c.json({ error: 'not_configured', message: 'Google OAuth is not configured.' }, 500)
   }
+  const ip = c.req.header('cf-connecting-ip') ?? 'local'
+  if (!(await allowRequest(c.env.freellm_sessions, `rl:oauth:${ip}`, 20, 10 * 60))) {
+    return c.json({ error: 'rate_limited', message: 'Too many attempts. Try again in a few minutes.' }, 429)
+  }
   const state = newId()
   const origin = c.env.PUBLIC_ORIGIN ?? new URL(c.req.url).origin
   // Remember where the caller wanted to land, so the callback can send them
   // there instead of a hardcoded page. Same-site paths only (no open redirect).
   const next = c.req.query('next')
   const safeNext = typeof next === 'string' && /^\/[^/\\]/.test(next) ? next : null
+  // Referral attribution survives the Google round-trip inside the state.
+  const refRaw = c.req.query('ref')
+  const ref =
+    typeof refRaw === 'string' && /^[a-z0-9]{2,32}$/i.test(refRaw.trim()) ? refRaw.trim().toLowerCase() : null
   await c.env.freellm_sessions.put(
     `oauth:state:${state}`,
-    JSON.stringify({ origin, next: safeNext }),
+    JSON.stringify({ origin, next: safeNext, ref }),
     { expirationTtl: 600 },
   )
   return c.redirect(buildGoogleAuthUrl(c.env, state))
@@ -393,8 +276,9 @@ app.get('/api/auth/google/callback', async (c) => {
   // Never trust stored origin for redirects — use server config only.
   const redirectOrigin = c.env.PUBLIC_ORIGIN ?? new URL(c.req.url).origin
   let nextPath = '/dashboard'
+  let stateRef: string | null = null
   try {
-    const parsed = JSON.parse(storedRaw) as { next?: string | null }
+    const parsed = JSON.parse(storedRaw) as { next?: string | null; ref?: string | null }
     if (typeof parsed?.next === 'string') {
       let decoded = parsed.next
       try {
@@ -403,6 +287,9 @@ app.get('/api/auth/google/callback', async (c) => {
         decoded = parsed.next
       }
       if (/^\/[^/\\]/.test(decoded) && !decoded.startsWith('/%')) nextPath = parsed.next
+    }
+    if (typeof parsed?.ref === 'string' && /^[a-z0-9]{2,32}$/i.test(parsed.ref)) {
+      stateRef = parsed.ref.toLowerCase()
     }
   } catch {
     // malformed state — keep default nextPath
@@ -443,6 +330,16 @@ app.get('/api/auth/google/callback', async (c) => {
         referralCode = generateReferralCode()
       }
       const userId = newId()
+
+      // Referral attribution for OAuth signups: resolve the code stashed in
+      // the state before inserting. Self-referral is silently ignored.
+      let referrerId: string | null = null
+      if (stateRef) {
+        const referrer = await c.env.DB.prepare('SELECT id FROM freellm_users WHERE referral_code = ?')
+          .bind(stateRef)
+          .first<{ id: string }>()
+        if (referrer && referrer.id !== userId) referrerId = referrer.id
+      }
       const isFirstUser = (await c.env.DB.prepare('SELECT COUNT(*) AS n FROM freellm_users').first<{ n: number }>())?.n === 0
       const isAdminEmail = !!c.env.ADMIN_EMAIL && email === normalizeEmail(c.env.ADMIN_EMAIL)
       const role: 'user' | 'admin' = isFirstUser || isAdminEmail ? 'admin' : 'user'
@@ -450,12 +347,19 @@ app.get('/api/auth/google/callback', async (c) => {
       await c.env.DB.batch([
         c.env.DB.prepare(
           `INSERT INTO freellm_users (id, email, username, password_hash, referral_code, balance_credits, role, email_verified, referred_by, created_at, updated_at)
-           VALUES (?, ?, ?, NULL, ?, 0, ?, 1, NULL, ?, ?)`,
-        ).bind(userId, email, username, referralCode, role, now, now),
+           VALUES (?, ?, ?, NULL, ?, 0, ?, 1, ?, ?, ?)`,
+        ).bind(userId, email, username, referralCode, role, referrerId, now, now),
         c.env.DB.prepare(
           `INSERT INTO freellm_auth_identities (id, user_id, provider, subject, email, email_verified, created_at)
            VALUES (?, ?, 'google', ?, ?, 1, ?)`,
         ).bind(newId(), userId, googleUser.sub, email, now),
+        ...(referrerId
+          ? [
+              c.env.DB.prepare(
+                `INSERT INTO freellm_referrals (id, referrer_id, referred_id, status, created_at) VALUES (?, ?, ?, 'waiting', ?)`,
+              ).bind(newId(), referrerId, userId, now),
+            ]
+          : []),
       ])
 
       user = await c.env.DB.prepare('SELECT * FROM freellm_users WHERE id = ?').bind(userId).first()

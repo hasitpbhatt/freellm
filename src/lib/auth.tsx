@@ -5,8 +5,6 @@ import type { User } from './types'
 type AuthState = {
   user: User | null
   loading: boolean
-  login: (email: string, password: string) => Promise<User>
-  register: (email: string, username: string, password: string, referralCode?: string) => Promise<User>
   logout: () => Promise<void>
   refresh: () => Promise<void>
 }
@@ -32,30 +30,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void refresh()
   }, [refresh])
 
-  const login = useCallback(async (email: string, password: string) => {
-    const data = await api.post<{ user: User }>('/auth/login', { email, password })
-    setUser(data.user)
-    return data.user
-  }, [])
-
-  const register = useCallback(async (email: string, username: string, password: string, referralCode?: string) => {
-    const data = await api.post<{ user: User }>('/auth/register', {
-      email,
-      username,
-      password,
-      referral_code: referralCode,
-    })
-    setUser(data.user)
-    return data.user
-  }, [])
-
   const logout = useCallback(async () => {
     await api.post('/auth/logout')
     setUser(null)
   }, [])
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout, refresh }}>
+    <AuthContext.Provider value={{ user, loading, logout, refresh }}>
       {children}
     </AuthContext.Provider>
   )
