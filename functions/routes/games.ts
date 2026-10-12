@@ -29,9 +29,9 @@ const now = () => Date.now()
 /** Shared daily mint cap across all arcade games. */
 export const ARCADE_GLOBAL_DAILY_BUDGET = 500_000
 
-export type GameKind = 'typing' | 'memory' | 'chess'
+export type GameKind = 'typing' | 'memory'
 
-const GAME_DAILY_CAPS: Record<GameKind, number> = { typing: 3, memory: 2, chess: 2 }
+const GAME_DAILY_CAPS: Record<GameKind, number> = { typing: 3, memory: 2 }
 
 /** WPM tiers for typing: [minimum wpm, reward]. */
 export const TYPING_TIERS: { minWpm: number; reward: number }[] = [
@@ -56,23 +56,11 @@ export const MEMORY_TIERS: { maxMoves: number; reward: number }[] = [
   { maxMoves: 12, reward: 8000 },
   { maxMoves: MEMORY_MAX_MOVES, reward: 4000 },
 ]
-/** Card faces — chess glyphs, one per pair. */
+// Card faces for memory game (6 pairs)
 export const MEMORY_GLYPHS = ['♞', '♜', '♝', '♛', '♚', '♟']
 
-// Chess tactics: mate-in-1 from a static bank, options shuffled per round.
-// Reward keys off attempts (4 options, so blind guessing lands low tiers).
-export const CHESS_ROUND_TTL_MS = 600_000
-export const CHESS_MIN_SECONDS = 10
-export const CHESS_MAX_SECONDS = 600
-export const CHESS_MAX_ATTEMPTS = 5
-export const CHESS_TIERS: { maxAttempts: number; reward: number }[] = [
-  { maxAttempts: 1, reward: 8000 },
-  { maxAttempts: 2, reward: 5000 },
-  { maxAttempts: CHESS_MAX_ATTEMPTS, reward: 2500 },
-]
-
 export const CLEAR_BONUS_REWARD = 7000
-const CLEAR_GAMES: GameKind[] = ['typing', 'memory', 'chess']
+const CLEAR_GAMES: GameKind[] = ['typing', 'memory']
 
 // ------------------------------------------------------------------ levels
 // XP is lifetime arcade credits / 10 — derived, never stored, cannot drift.
@@ -148,6 +136,24 @@ export function rewardForMemory(moves: number): number | null {
   return null
 }
 
+/** Server-side reward from the stored flip counter. */
+export function rewardForMemoryFlips(flips: number): number | null {
+  const moves = memoryMovesFromFlips(flips)
+  return moves === null ? null : rewardForMemory(moves)
+}
+
+/**
+ * Pair-attempts from the server's stored flip counter. A completed memory
+ * board flips every card an even number of times (a pair attempt is two
+ * flips by construction), so moves = flips / 2 exactly. The client never
+ * reports its score — the claim derives the tier from this counter, so the
+ * only way to understate moves is to not flip, which pays nothing.
+ */
+export function memoryMovesFromFlips(flips: number): number | null {
+  if (!Number.isInteger(flips) || flips < MEMORY_PAIRS * 2 || flips % 2 !== 0) return null
+  return flips / 2
+}
+
 /** Server-side typing reward from validated exact-match typing. */
 export function rewardForTyping(chars: number, seconds: number): number | null {
   if (!Number.isFinite(seconds) || seconds < TYPING_MIN_SECONDS || seconds > TYPING_MAX_SECONDS) return null
@@ -159,15 +165,7 @@ export function rewardForTyping(chars: number, seconds: number): number | null {
   return null
 }
 
-/** Server-side reward from validated chess attempts. */
-export function rewardForChess(attempts: number): number | null {
-  if (!Number.isInteger(attempts) || attempts < 1 || attempts > CHESS_MAX_ATTEMPTS) return null
-  for (const tier of CHESS_TIERS) {
-    if (attempts <= tier.maxAttempts) return tier.reward
-  }
-  return null
-}
-
+/** Returns the current UTC day as YYYY-MM-DD. */
 function utcDay(): string {
   return new Date(now()).toISOString().slice(0, 10)
 }
@@ -187,7 +185,7 @@ function verifiedGate(user: { email_verified: number }) {
 }
 
 function parseGame(value: unknown): GameKind | null {
-  return value === 'typing' || value === 'memory' || value === 'chess' ? value : null
+  return value === 'typing' || value === 'memory' ? value : null
 }
 
 async function paidPlaysToday(db: D1Database, userId: string, game: GameKind): Promise<number> {
@@ -212,33 +210,162 @@ async function globalSpentToday(db: D1Database): Promise<number> {
   return row?.spent ?? 0
 }
 
-async function payOut(
+async function claimBlockReason(
   db: D1Database,
   userId: string,
-  game: string,
-  roundId: string,
-  detail: string,
-  reward: number,
-  timestamp: number,
-): Promise<number> {
-  await db.batch([
+  kind: 'play' | 'clear',
+  game: GameKind,
+): Promise<{ error: string; message: string }> {
+  const clearToday = await db
+    .prepare("SELECT 1 AS x FROM freellm_game_rounds WHERE user_id = ? AND game = 'clear' AND claimed_at >= ?")
+    .bind(userId, dayStartMs())
+    .first()
+  if (kind === 'clear') {
+    if (clearToday) {
+      return { error: 'already_claimed', message: 'Clear bonus already claimed today.' }
+    }
+    return { error: 'not_cleared', message: 'Finish all three games today to claim the clear bonus.' }
+  }
+  const used = await paidPlaysToday(db, userId, game)
+  if (used >= GAME_DAILY_CAPS[game]) {
+    return { error: 'daily_cap', message: 'Daily play budget spent — come back tomorrow.' }
+  }
+  const spent = await globalSpentToday(db)
+  if (spent >= ARCADE_GLOBAL_DAILY_BUDGET) {
+    return { error: 'pot_empty', message: "Today's arcade pot is empty — come back tomorrow." }
+  }
+  return { error: 'already_claimed', message: 'Round already claimed.' }
+}
+
+/**
+ * Ledger + balance statements for a game payout. Each one is conditioned on
+ * the claim marker (the round row this same batch just claimed), so the
+ * guard and the grant commit together or not at all — a crash between the
+ * claim and the payout can no longer strand a claimed round unpaid.
+ *
+ * The ledger row's id is DETERMINISTIC per payout target (one per round for
+ * plays, one per user per day for the clear bonus). That is the final
+ * backstop: if two concurrent batches both pass the claim guard in the same
+ * millisecond (the same-timestamp marker flaw), the second ledger insert
+ * violates the PRIMARY KEY, which rolls the whole losing batch back — so
+ * exactly one payout can ever land.
+ */
+export function gameGrantStatements(
+  db: D1Database,
+  params: { userId: string; game: string; roundId: string; ledgerId: string; reward: number; detail: string; timestamp: number },
+) {
+  const { userId, game, roundId, ledgerId, reward, detail, timestamp } = params
+  return [
     db
       .prepare(
         `INSERT INTO freellm_credit_ledger (id, user_id, delta, reason, meta, created_at)
-         VALUES (?, ?, ?, 'game_reward', ?, ?)`,
+         SELECT ?, ?, ?, 'game_reward', ?, ?
+         WHERE EXISTS (SELECT 1 FROM freellm_game_rounds
+                       WHERE id = ? AND claimed_at = ? AND reward = ?)`,
       )
-      .bind(newId(), userId, reward, JSON.stringify({ game, round_id: roundId, detail }), timestamp),
-    db.prepare('UPDATE freellm_users SET balance_credits = balance_credits + ?, updated_at = ? WHERE id = ?').bind(
-      reward,
-      timestamp,
+      .bind(ledgerId, userId, reward, JSON.stringify({ game, round_id: roundId, detail }), timestamp, roundId, timestamp, reward),
+    db
+      .prepare(
+        `UPDATE freellm_users SET balance_credits = balance_credits + ?, updated_at = ?
+         WHERE id = ? AND EXISTS (SELECT 1 FROM freellm_game_rounds
+                                  WHERE id = ? AND claimed_at = ? AND reward = ?)`,
+      )
+      .bind(reward, timestamp, userId, roundId, timestamp, reward),
+  ]
+}
+
+/**
+ * The claim + payout batch for a paid play. The claim statement carries the
+ * daily cap and the global daily pot as subqueries inside its own WHERE, so
+ * two claims racing on two DIFFERENT rounds of the same game cannot both
+ * pass the cap (D1 serializes the write transactions; the second statement
+ * sees the first one's committed claim). Result: exactly one payout, ever.
+ */
+export function gameClaimStatements(
+  db: D1Database,
+  params: { userId: string; game: GameKind; roundId: string; reward: number; detail: string; timestamp: number },
+) {
+  const { userId, game, roundId, reward, detail, timestamp } = params
+  return [
+    db
+      .prepare(
+        `UPDATE freellm_game_rounds SET claimed_at = ?, reward = ?
+         WHERE id = ? AND claimed_at IS NULL
+           AND (SELECT COUNT(*) FROM freellm_game_rounds
+                 WHERE user_id = ? AND game = ? AND claimed_at IS NOT NULL AND claimed_at >= ?) < ?
+           AND (SELECT COALESCE(SUM(delta), 0) FROM freellm_credit_ledger
+                 WHERE reason = 'game_reward' AND created_at >= ?) <= ?`,
+      )
+      .bind(
+        timestamp,
+        reward,
+        roundId,
+        userId,
+        game,
+        dayStartMs(),
+        GAME_DAILY_CAPS[game],
+        dayStartMs(),
+        ARCADE_GLOBAL_DAILY_BUDGET - reward,
+      ),
+    ...gameGrantStatements(db, {
       userId,
-    ),
-  ])
-  const balance = await db
-    .prepare('SELECT balance_credits FROM freellm_users WHERE id = ?')
-    .bind(userId)
-    .first<{ balance_credits: number }>()
-  return balance?.balance_credits ?? 0
+      game,
+      roundId,
+      ledgerId: `game_reward:play:${roundId}`,
+      reward,
+      detail,
+      timestamp,
+    }),
+  ]
+}
+
+/**
+ * The clear-bonus claim + payout batch. The INSERT ... SELECT form is the
+ * guard: the row only lands when today's three paid plays exist and no
+ * clear bonus was claimed yet today, so two concurrent claims insert one
+ * row and pay once. The ledger id is per user per day, so even a
+ * same-millisecond collision rolls the loser back.
+ */
+export function clearClaimStatements(
+  db: D1Database,
+  params: { userId: string; roundId: string; timestamp: number },
+) {
+  const { userId, roundId, timestamp } = params
+  return [
+    db
+      .prepare(
+        `INSERT INTO freellm_game_rounds (id, user_id, game, detail, created_at, claimed_at, reward)
+         SELECT ?, ?, 'clear', 'daily-clear', ?, ?, ?
+         WHERE NOT EXISTS (SELECT 1 FROM freellm_game_rounds
+                            WHERE user_id = ? AND game = 'clear' AND claimed_at >= ?)
+           AND (SELECT COUNT(*) FROM freellm_game_rounds
+                 WHERE user_id = ? AND game = 'typing' AND claimed_at IS NOT NULL AND claimed_at >= ?) > 0
+           AND (SELECT COUNT(*) FROM freellm_game_rounds
+                 WHERE user_id = ? AND game = 'memory' AND claimed_at IS NOT NULL AND claimed_at >= ?) > 0`,
+      )
+      .bind(
+        roundId,
+        userId,
+        timestamp,
+        timestamp,
+        CLEAR_BONUS_REWARD,
+        userId,
+        dayStartMs(),
+        userId,
+        dayStartMs(),
+        userId,
+        dayStartMs(),
+      ),
+    ...gameGrantStatements(db, {
+      userId,
+      game: 'clear',
+      roundId,
+      ledgerId: `game_reward:clear:${userId}:${utcDay()}`,
+      reward: CLEAR_BONUS_REWARD,
+      detail: 'daily-clear',
+      timestamp,
+    }),
+  ]
 }
 
 // ------------------------------------------------------------------ status
@@ -288,7 +415,6 @@ app.get('/api/games/status', requireAuth, async (c) => {
     },
     typing_tiers: TYPING_TIERS.map((t) => ({ min_wpm: t.minWpm, reward: t.reward })),
     memory_tiers: MEMORY_TIERS.map((t) => ({ max_moves: t.maxMoves, reward: t.reward })),
-    chess_tiers: CHESS_TIERS.map((t) => ({ max_attempts: t.maxAttempts, reward: t.reward })),
   })
 })
 
@@ -365,6 +491,12 @@ app.post('/api/games/memory/flip', requireAuth, async (c) => {
   }
 
   // Reveal only the requested card; the rest of the board stays server-side.
+  // Each flip advances the server's authoritative flip counter, so the claim
+  // derives the score from flips/2 — the client's own count is ignored and
+  // cannot understate the pair-attempts.
+  await c.env.DB.prepare('UPDATE freellm_game_rounds SET flips = flips + 1 WHERE id = ?')
+    .bind(roundId)
+    .run()
   return c.json({ ok: true, index, glyph: board[index] })
 })
 
@@ -377,25 +509,25 @@ app.post('/api/games/:game/claim', requireAuth, async (c) => {
 
   const game = parseGame(c.req.param('game'))
   if (!game) return c.json({ error: 'not_found', message: 'Unknown game.' }, 404)
-  if (game === 'chess') {
-    return c.json({ error: 'not_available', message: 'Chess tactics is not live yet.' }, 404)
-  }
 
   const body = await c.req.json<Record<string, unknown>>().catch(() => null)
   const roundId = typeof body?.round_id === 'string' ? body.round_id : ''
   if (!roundId) return c.json({ error: 'invalid_input', message: 'round_id is required.' }, 400)
 
   const timestamp = now()
-  const round = await c.env.DB.prepare('SELECT user_id, game, detail, created_at FROM freellm_game_rounds WHERE id = ?')
+  const round = await c.env.DB.prepare('SELECT user_id, game, detail, created_at, flips, attempts FROM freellm_game_rounds WHERE id = ?')
     .bind(roundId)
-    .first<{ user_id: string; game: string; detail: string | null; created_at: number }>()
+    .first<{ user_id: string; game: string; detail: string | null; created_at: number; flips: number; attempts: number }>()
   if (!round || round.user_id !== user.id || round.game !== game) {
     return c.json({ error: 'not_found', message: 'Round not found.' }, 404)
   }
   const ageMs = timestamp - round.created_at
   const seconds = ageMs / 1000
 
-  // Per-game server-side scoring from validated input.
+  // Per-game server-side scoring. Every score input is either compared to
+  // a server-held value (typing) or read from a counter the server
+  // maintains (memory flips, chess attempts) — the client's own counts are
+  // ignored, so the tier cannot be understated.
   let reward: number | null = null
   let detail = ''
   if (game === 'typing') {
@@ -409,46 +541,60 @@ app.post('/api/games/:game/claim', requireAuth, async (c) => {
       return c.json({ error: 'invalid_time', message: 'Too fast to be typing or too slow to count — no pay, try again.' }, 422)
     }
   } else {
-    const moves = typeof body?.moves === 'number' ? Math.floor(body.moves) : NaN
-    if (!Number.isInteger(moves)) {
-      return c.json({ error: 'invalid_input', message: 'moves is required.' }, 400)
-    }
+    // Memory: pair-attempts come from the server's flip counter — the
+    // client's own count is ignored entirely.
+    const moves = memoryMovesFromFlips(round.flips ?? 0)
     if (seconds < MEMORY_MIN_SECONDS) {
       return c.json({ error: 'invalid_time', message: 'That board was solved too fast to be human — no pay, try again.' }, 422)
     }
     if (seconds > MEMORY_MAX_SECONDS) {
       return c.json({ error: 'expired', message: 'Round expired — start a fresh one.' }, 410)
     }
+    if (moves === null) {
+      return c.json(
+        { error: 'invalid_moves', message: `Move counts must be ${MEMORY_PAIRS}–${MEMORY_MAX_MOVES} — no pay, try again.` },
+        422,
+      )
+    }
     reward = rewardForMemory(moves)
-    detail = `moves:${Number.isInteger(moves) ? moves : 'nan'}`
+    detail = `moves:${moves} flips:${round.flips ?? 0}`
     if (reward === null) {
-      return c.json({ error: 'invalid_moves', message: `Move counts must be ${MEMORY_PAIRS}–${MEMORY_MAX_MOVES} — no pay, try again.` }, 422)
+      return c.json(
+        { error: 'invalid_moves', message: `Move counts must be ${MEMORY_PAIRS}–${MEMORY_MAX_MOVES} — no pay, try again.` },
+        422,
+      )
     }
   }
 
-  // Daily caps first (bounded TOCTOU race, same as every grant endpoint),
-  // then the conditional claim so a capped-out round is never marked.
-  const used = await paidPlaysToday(c.env.DB, user.id, game)
-  if (used >= GAME_DAILY_CAPS[game]) {
-    return c.json({ error: 'daily_cap', message: 'Daily play budget spent — come back tomorrow.' }, 409)
+  // Claim + payout in ONE batch (one transaction). The claim statement is
+  // the race gate — round unclaimed, daily cap, and global pot are all
+  // compared inside SQL — and the grant statements are conditioned on it,
+  // so a capped-out, already-claimed, or out-raced claim pays nothing, and
+  // a paid round is always claimed. No check-then-act window remains. The
+  // batch can still lose a same-millisecond collision to the ledger's
+  // deterministic id (PRIMARY KEY) — that rolls the whole batch back, so
+  // the loser reports the standard already-claimed 409.
+  let batchResult: Array<{ success: boolean; meta?: { changes?: number } }>
+  try {
+    batchResult = (await c.env.DB.batch(
+      gameClaimStatements(c.env.DB, { userId: user.id, game, roundId, reward, detail, timestamp }),
+    )) as unknown as Array<{ success: boolean; meta?: { changes?: number } }>
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('UNIQUE constraint failed: freellm_credit_ledger')) {
+      return c.json({ error: 'already_claimed', message: 'Round already claimed.' }, 409)
+    }
+    throw err
   }
-  const spent = await globalSpentToday(c.env.DB)
-  if (spent + reward > ARCADE_GLOBAL_DAILY_BUDGET) {
-    return c.json({ error: 'pot_empty', message: "Today's arcade pot is empty — come back tomorrow." }, 409)
+  const guard = batchResult[0]
+  if (!guard?.success || guard.meta?.changes === 0) {
+    const reason = await claimBlockReason(c.env.DB, user.id, 'play', game)
+    return c.json({ error: reason.error, message: reason.message }, 409)
   }
 
-  // Conditional claim: exactly one winner per round, race-safe.
-  const claimed = (await c.env.DB.prepare(
-    'UPDATE freellm_game_rounds SET claimed_at = ?, reward = ? WHERE id = ? AND claimed_at IS NULL',
-  )
-    .bind(timestamp, reward, roundId)
-    .run() as unknown as { meta?: { changes?: number } })
-  if (typeof claimed?.meta?.changes === 'number' && claimed.meta.changes === 0) {
-    return c.json({ error: 'already_claimed', message: 'Round already claimed.' }, 409)
-  }
-
-  const balance = await payOut(c.env.DB, user.id, game, roundId, detail, reward, timestamp)
-  return c.json({ ok: true, reward, balance })
+  const balance = await c.env.DB.prepare('SELECT balance_credits FROM freellm_users WHERE id = ?')
+    .bind(user.id)
+    .first<{ balance_credits: number }>()
+  return c.json({ ok: true, reward, balance: balance?.balance_credits ?? 0 })
 })
 
 // ------------------------------------------------------------ clear bonus
@@ -458,28 +604,33 @@ app.post('/api/games/clear/claim', requireAuth, async (c) => {
   const gate = verifiedGate(user)
   if (gate) return c.json(gate, 403)
 
-  // One paid play in each game today, and no clear bonus yet today.
-  for (const game of CLEAR_GAMES) {
-    if ((await paidPlaysToday(c.env.DB, user.id, game)) === 0) {
-      return c.json({ error: 'not_cleared', message: 'Finish all three games today to claim the clear bonus.' }, 409)
-    }
-  }
-  const existing = await c.env.DB.prepare(
-    `SELECT 1 AS x FROM freellm_game_rounds WHERE user_id = ? AND game = 'clear' AND claimed_at >= ?`,
-  )
-    .bind(user.id, dayStartMs())
-    .first()
-  if (existing) return c.json({ error: 'already_claimed', message: 'Clear bonus already claimed today.' }, 409)
-
+  // The insert itself is the guard: the row only lands when today's three
+  // paid plays exist and no clear bonus was claimed yet today, so two
+  // concurrent claims insert one row and pay once — the old
+  // check-then-insert let both through.
   const timestamp = now()
-  const id = newId()
-  await c.env.DB.prepare(
-    'INSERT INTO freellm_game_rounds (id, user_id, game, detail, created_at, claimed_at, reward) VALUES (?, ?, ?, ?, ?, ?, ?)',
-  )
-    .bind(id, user.id, 'clear', 'daily-clear', timestamp, timestamp, CLEAR_BONUS_REWARD)
-    .run()
-  const balance = await payOut(c.env.DB, user.id, 'clear', id, 'daily-clear', CLEAR_BONUS_REWARD, timestamp)
-  return c.json({ ok: true, reward: CLEAR_BONUS_REWARD, balance })
+  const roundId = newId()
+  let batchResult: Array<{ success: boolean; meta?: { changes?: number } }>
+  try {
+    batchResult = (await c.env.DB.batch(
+      clearClaimStatements(c.env.DB, { userId: user.id, roundId, timestamp }),
+    )) as unknown as Array<{ success: boolean; meta?: { changes?: number } }>
+  } catch (err) {
+    // Same-millisecond collision with another claim — the deterministic
+    // ledger id rolled this batch back; the bonus is already paid.
+    if (err instanceof Error && err.message.includes('UNIQUE constraint failed: freellm_credit_ledger')) {
+      return c.json({ error: 'already_claimed', message: 'Clear bonus already claimed today.' }, 409)
+    }
+    throw err
+  }
+  if (!batchResult[0]?.success || batchResult[0].meta?.changes === 0) {
+    const reason = await claimBlockReason(c.env.DB, user.id, 'clear', 'typing')
+    return c.json({ error: reason.error, message: reason.message }, 409)
+  }
+  const balance = await c.env.DB.prepare('SELECT balance_credits FROM freellm_users WHERE id = ?')
+    .bind(user.id)
+    .first<{ balance_credits: number }>()
+  return c.json({ ok: true, reward: CLEAR_BONUS_REWARD, balance: balance?.balance_credits ?? 0 })
 })
 
 // ------------------------------------------------------------ level bonus

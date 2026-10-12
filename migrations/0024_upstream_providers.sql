@@ -81,6 +81,7 @@ SELECT DISTINCT mp.id, mp.upstream_model
 FROM freellm_model_providers mp;
 
 -- 3. Create new model_providers table entries linking to upstream providers
+-- Preserve ALL provider mappings, even those for inactive models (for safety)
 INSERT OR REPLACE INTO freellm_model_providers_new (
   id, model_id, upstream_provider_id, upstream_model,
   priority, active, messages_served, created_at, updated_at
@@ -95,8 +96,7 @@ SELECT
   mp.messages_served,
   mp.created_at,
   mp.updated_at
-FROM freellm_model_providers mp
-WHERE EXISTS (SELECT 1 FROM freellm_models m WHERE m.id = mp.model_id AND m.active = 1);
+FROM freellm_model_providers mp;
 
 -- Swap tables atomically.
 DROP TABLE freellm_model_providers;

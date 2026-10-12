@@ -16,22 +16,22 @@ after(async () => {
   if (dispose) await dispose()
 })
 
-test('games task seed: SkillArcade task is active with a sane reward', async () => {
+test('codewhip task seed: star task is active with a sane reward', async () => {
   const task = await db
     .prepare('SELECT slug, title, reward, url, active FROM freellm_tasks WHERE slug = ?')
-    .bind('play-games')
+    .bind('star_gh')
     .first<{ slug: string; title: string; reward: number; url: string; active: number }>()
-  assert.ok(task, 'play-games task seeded')
+  assert.ok(task, 'star_gh task seeded')
   assert.equal(task.active, 1)
   assert.ok(task.reward > 0)
-  assert.equal(task.url, 'https://games.hasit.in')
+  assert.equal(task.url, 'https://github.com/hasitpbhatt/codewhip')
 })
 
-test('games task claim: verified user can complete it once for the reward', async () => {
+test('codewhip task claim: verified user can complete it once for the reward', async () => {
   const userId = await seedUser(db, { balanceCredits: 0 })
   const task = await db
     .prepare('SELECT id, reward FROM freellm_tasks WHERE slug = ? AND active = 1')
-    .bind('play-games')
+    .bind('star_gh')
     .first<{ id: string; reward: number }>()
   assert.ok(task)
   const now = Date.now()

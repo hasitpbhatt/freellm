@@ -65,6 +65,118 @@ app.get('/api/balance', async (c) => {
 
 // ------------------------------------------------------------- redeem
 
+/**
+ * The redemption grant as one ordered statement list. Statement 0 is the
+ * atomic gate: the redemption row INSERT itself checks the redemption
+ * ceiling AND the per-user limit inline, so the row only lands when both
+ * are satisfied. Every later statement is conditioned on that row existing
+ * in this transaction, so a lost slot or a limited retry pays nothing, and
+ * the whole list is a single transaction.
+ *
+ * Why the INSERT (not a pre-increment counter) is the gate: the old shape
+ * reserved a slot by bumping `redemption_count` and then guarded the INSERT
+ * with `redemption_count = <stale snapshot + 1>`. Two DIFFERENT users racing
+ * a one-shot code both snapshot count=0, so user B's INSERT saw count=1
+ * (bumped by A) equal its own stale snapshot and minted too. Making the
+ * INSERT the gate means the second user's INSERT sees the first's committed
+ * count and is refused by the ceiling. Exported for the race tests.
+ */
+export function promoRedemptionStatements(
+  db: D1Database,
+  params: {
+    promo: {
+      id: string
+      code: string
+      credits: number
+      model_id: string | null
+      redemption_count: number
+      per_user_limit: number
+    }
+    user: { id: string }
+    redemptionId: string
+    ledgerId: string
+    timestamp: number
+  },
+) {
+  const { promo, user, redemptionId, ledgerId, timestamp } = params
+
+  const statements = [
+    // The atomic gate: insert the redemption row only while the code is
+    // under its ceiling AND this user is under their per-user limit. The
+    // UNIQUE(promo_code_id, user_id) index is the final word on same-user
+    // races; the inline ceiling check is what stops two different users
+    // from both minting a one-shot code.
+    db
+      .prepare(
+        `INSERT INTO freellm_promo_redemptions (id, promo_code_id, user_id, credits, model_id, created_at)
+         SELECT ?, ?, ?, ?, ?, ?
+         WHERE EXISTS (SELECT 1 FROM freellm_promo_codes
+                        WHERE id = ? AND (max_redemptions IS NULL OR redemption_count < max_redemptions))
+           AND (SELECT COUNT(*) FROM freellm_promo_redemptions
+                 WHERE promo_code_id = ? AND user_id = ?) < ?`,
+      )
+      .bind(
+        redemptionId,
+        promo.id,
+        user.id,
+        promo.credits,
+        promo.model_id,
+        timestamp,
+        promo.id,
+        promo.id,
+        user.id,
+        promo.per_user_limit,
+      ),
+    // Bump the denormalized counter, only when the row above landed.
+    db
+      .prepare(
+        `UPDATE freellm_promo_codes SET redemption_count = redemption_count + 1, updated_at = ?
+         WHERE id = ? AND EXISTS (SELECT 1 FROM freellm_promo_redemptions WHERE id = ?)`,
+      )
+      .bind(timestamp, promo.id, redemptionId),
+    // Ledger, then the actual credit — both only when the redemption row
+    // exists in this transaction.
+    db
+      .prepare(
+        `INSERT INTO freellm_credit_ledger (id, user_id, delta, reason, meta, created_at)
+         SELECT ?, ?, ?, 'promo_code', ?, ?
+         WHERE EXISTS (SELECT 1 FROM freellm_promo_redemptions WHERE id = ?)`,
+      )
+      .bind(
+        ledgerId,
+        user.id,
+        promo.credits,
+        JSON.stringify({ promo_code: promo.code, redemption_id: redemptionId, model_id: promo.model_id }),
+        timestamp,
+        redemptionId,
+      ),
+  ]
+
+  if (promo.model_id) {
+    // Model-scoped: upsert the per-model grant balance.
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO freellm_model_credit_grants (id, user_id, model_id, credits, created_at, updated_at)
+           SELECT ?, ?, ?, ?, ?, ?
+           WHERE EXISTS (SELECT 1 FROM freellm_promo_redemptions WHERE id = ?)
+           ON CONFLICT (user_id, model_id) DO UPDATE SET credits = credits + excluded.credits, updated_at = excluded.updated_at`,
+        )
+        .bind(newId(), user.id, promo.model_id, promo.credits, timestamp, timestamp, redemptionId),
+    )
+  } else {
+    statements.push(
+      db
+        .prepare(
+          `UPDATE freellm_users SET balance_credits = balance_credits + ?, updated_at = ?
+           WHERE id = ? AND EXISTS (SELECT 1 FROM freellm_promo_redemptions WHERE id = ?)`,
+        )
+        .bind(promo.credits, timestamp, user.id, redemptionId),
+    )
+  }
+  return statements
+}
+
 app.post('/api/promos/redeem', async (c) => {
   const user = c.get('user')
   const body = await c.req.json<{ code?: unknown }>().catch(() => null)
@@ -120,56 +232,51 @@ app.post('/api/promos/redeem', async (c) => {
     return c.json({ error: 'already_redeemed', message: 'You have already redeemed this code.' }, 409)
   }
 
-  // ---- grant (atomic batch) --------------------------------------------
+  // ---- grant (one atomic batch) ---------------------------------------
+  // The old shape checked the guarded UPDATE's `changes` AFTER the batch,
+  // which committed the ledger insert and balance bump anyway — so an
+  // exhausted code could be "redeemed" repeatedly, each time returning
+  // 409 sold_out while still minting credits. Now the redemption INSERT is
+  // statement zero and EVERY later statement is conditioned on it, so a
+  // lost slot pays nothing; the batch is the transaction, so a crash pays
+  // all or nothing. The UNIQUE(promo_code_id, user_id) index (migration
+  // 0022) is the hard per-user guarantee for the common limit-1 case, and
+  // the INSERT's inline ceiling check stops two different users from both
+  // minting a one-shot code.
   const redemptionId = newId()
   const ledgerId = newId()
+  const statements = promoRedemptionStatements(c.env.DB, {
+    promo,
+    user,
+    redemptionId,
+    ledgerId,
+    timestamp,
+  })
 
-  const statements = [
-    // Guarded increment: the WHERE makes overselling impossible even under
-    // concurrent redemptions; a 0-change result aborts the whole batch.
-    c.env.DB.prepare(
-      `UPDATE freellm_promo_codes SET redemption_count = redemption_count + 1, updated_at = ?
-       WHERE id = ? AND (max_redemptions IS NULL OR redemption_count < max_redemptions)`,
-    ).bind(timestamp, promo.id),
-    c.env.DB.prepare(
-      `INSERT INTO freellm_promo_redemptions (id, promo_code_id, user_id, credits, model_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).bind(redemptionId, promo.id, user.id, promo.credits, promo.model_id, timestamp),
-    c.env.DB.prepare(
-      `INSERT INTO freellm_credit_ledger (id, user_id, delta, reason, meta, created_at)
-       VALUES (?, ?, ?, 'promo_code', ?, ?)`,
-    ).bind(
-      ledgerId,
-      user.id,
-      promo.credits,
-      JSON.stringify({ promo_code: promo.code, redemption_id: redemptionId, model_id: promo.model_id }),
-      timestamp,
-    ),
-  ]
-
-  if (promo.model_id) {
-    // Model-scoped: upsert the per-model grant balance.
-    statements.push(
-      c.env.DB.prepare(
-        `INSERT INTO freellm_model_credit_grants (id, user_id, model_id, credits, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT (user_id, model_id) DO UPDATE SET credits = credits + excluded.credits, updated_at = excluded.updated_at`,
-      ).bind(newId(), user.id, promo.model_id, promo.credits, timestamp, timestamp),
-    )
-  } else {
-    statements.push(
-      c.env.DB.prepare('UPDATE freellm_users SET balance_credits = balance_credits + ?, updated_at = ? WHERE id = ?').bind(
-        promo.credits,
-        timestamp,
-        user.id,
-      ),
-    )
+  let batchResult: Array<{ success: boolean; meta?: { changes?: number } }>
+  try {
+    batchResult = (await c.env.DB.batch(statements)) as unknown as Array<{ success: boolean; meta?: { changes?: number } }>
+  } catch (err) {
+    // Lost the per-user race — the UNIQUE index rejected the redemption row.
+    if (err instanceof Error && err.message.includes('UNIQUE constraint failed: freellm_promo_redemptions')) {
+      return c.json({ error: 'already_redeemed', message: 'You have already redeemed this code.' }, 409)
+    }
+    throw err
   }
-
-  const batchResult = await c.env.DB.batch(statements)
-  const guarded = batchResult[0]
-  if (!guarded.success || guarded.meta.changes === 0) {
-    // Lost a race for the last redemption slot.
+  const reserved = batchResult[0]
+  if (!reserved?.success || reserved.meta?.changes === 0) {
+    // The redemption row didn't land — either a lost race for the last slot
+    // or this user is at their limit. One extra read tells us which, so the
+    // message is honest.
+    const used = await c.env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM freellm_promo_redemptions WHERE promo_code_id = ? AND user_id = ?',
+    )
+      .bind(promo.id, user.id)
+      .first<{ n: number }>()
+    if ((used?.n ?? 0) >= promo.per_user_limit) {
+      return c.json({ error: 'already_redeemed', message: 'You have already redeemed this code.' }, 409)
+    }
+    // Nothing else ran — the grant statements are all conditioned on the INSERT.
     return c.json({ error: 'sold_out', message: 'That promo code has just been fully redeemed.' }, 409)
   }
 

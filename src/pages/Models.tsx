@@ -123,7 +123,7 @@ export default function Models() {
             </p>
             {isLocked(model) ? (
               <p className="mt-2 text-[12px] text-muted">
-                Requires {model.access_tier} tier — ask an admin to upgrade.
+                Requires {model.access_tier} tier — upgrade not available yet.
               </p>
             ) : (
               <div className="mt-2 flex flex-wrap gap-2">

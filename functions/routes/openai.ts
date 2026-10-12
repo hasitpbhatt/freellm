@@ -50,9 +50,15 @@ function usageFromChunk(chunk: Record<string, unknown>): Usage | null {
 // ------------------------------------------------------------- models list
 
 app.get('/v1/models', async (c) => {
+  // Join model_providers -> upstream_providers for provider status info
   const rows = await c.env.DB.prepare(
-    'SELECT slug, label, description, access_tier, scoped_only FROM freellm_models WHERE active = 1 ORDER BY sort_order, slug',
-  ).all<{ slug: string; label: string; description: string | null; access_tier: string; scoped_only: number }>()
+    `SELECT DISTINCT m.slug, m.label, m.description, m.access_tier, m.scoped_only, up.status AS up_status
+     FROM freellm_models m
+     LEFT JOIN freellm_model_providers mp ON mp.model_id = m.id AND mp.active = 1
+     LEFT JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
+     WHERE m.active = 1
+     ORDER BY m.sort_order, m.slug`,
+  ).all<{ slug: string; label: string; description: string | null; access_tier: string; scoped_only: number; up_status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled' | null }>()
 
   return c.json({
     object: 'list',
@@ -82,6 +88,7 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
       stream_options?: unknown
       temperature?: unknown
       top_p?: unknown
+      required_capabilities?: unknown
     }>()
     .catch(() => null)
 
@@ -97,6 +104,10 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
         ['system', 'user', 'assistant'].includes((m as { role: string }).role),
     )
     .map((m) => ({ role: m.role, content: m.content }))
+  // required_capabilities: array of capability strings (e.g., ["tools", "vision"])
+  const requiredCapabilities = Array.isArray(payload?.required_capabilities)
+    ? payload.required_capabilities.filter((c): c is string => typeof c === 'string')
+    : []
 
   if (!slug || messages.length === 0) {
     return c.json(openAiBody('invalid_request_error', 'model and a non-empty messages array are required.'), 400)
@@ -171,7 +182,7 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
   await placeHold(c.env.DB, user.id, requestId, reserve)
 
   // ---- acquire (failover across provider configs) ----
-  const opened = await openStreamingCall(c.env, alias, messages, { maxTokens, sampling })
+  const opened = await openStreamingCall(c.env, alias, messages, { maxTokens, sampling, requiredCapabilities })
   if ('error' in opened) {
     await settleRequest(c.env.DB, {
       userId: user.id,
@@ -194,24 +205,30 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
 
   const settle = async (kind: 'completed' | 'aborted' | 'failed', usage?: Usage | null, reason?: string) => {
     let result: Awaited<ReturnType<typeof settleRequest>> | null = null
-    try {
-      result = await settleRequest(c.env.DB, {
-        userId: user.id,
-        requestId,
-        model: alias.model,
-        providerLabel: provider.label,
-        settlement: kind === 'completed' ? { kind, usage: usage ?? null } : { kind, reason },
-        latencyMs: Date.now() - startedAt,
-        usage,
-      })
-    } catch (err) {
-      console.error('[v1] settleRequest failed', completionId, err)
+    // One retry before giving up: a D1 hiccup must not turn an
+    // already-streamed completion into a silent free one with no usage
+    // event and no ledger row.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        result = await settleRequest(c.env.DB, {
+          userId: user.id,
+          requestId,
+          model: alias.model,
+          providerLabel: provider.upstream.label,
+          settlement: kind === 'completed' ? { kind, usage: usage ?? null } : { kind, reason },
+          latencyMs: Date.now() - startedAt,
+          usage,
+        })
+        break
+      } catch (err) {
+        console.error('[v1] settleRequest failed (attempt %d)', attempt, completionId, err)
+      }
     }
     // Health recording is best-effort: it must never turn an already-billed,
     // already-streamed completion into an error response.
     if (kind === 'completed') {
       try {
-        await recordOutcome(c.env, provider.id, { ok: true, latencyMs: Date.now() - startedAt })
+        await recordOutcome(c.env, provider.upstream.id, provider.id, { ok: true, latencyMs: Date.now() - startedAt })
       } catch (err) {
         console.error('[v1] recordOutcome failed', completionId, err)
       }
@@ -262,7 +279,7 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
         request_id: requestId,
         credits_charged: result ? result.creditsCharged : null,
         billed_source: result?.source ?? null,
-        provider: provider.label,
+        provider: provider.upstream.label,
       },
     })
   }
@@ -343,7 +360,11 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
     async flush(controller) {
       if (settled) return
       settled = true
-      await settle('completed', usage)
+      try {
+        await settle('completed', usage)
+      } catch (err) {
+        console.error('[v1] settle failed in flush', completionId, err)
+      }
       flushChunks(controller)
     },
     cancel() {

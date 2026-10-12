@@ -2,12 +2,13 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, ApiError } from '../lib/api'
 import { Button, Card, CardHeader } from '../components/ui'
 import TypingGame from './TypingGame'
+import MemoryGame from './MemoryGame'
 
 type ClearState = {
   done: boolean
   ready: boolean
   reward: number
-  needs: ('typing' | 'memory' | 'chess')[]
+  needs: ('typing' | 'memory')[]
 }
 
 type LevelState = {
@@ -18,10 +19,10 @@ type LevelState = {
   pending: { level: number; reward: number } | null
 }
 
-const GAME_LABELS: Record<string, string> = { typing: 'Typing proficiency', memory: 'Memory match', chess: 'Chess tactics' }
+const GAME_LABELS: Record<string, string> = { typing: 'Typing proficiency', memory: 'Memory match' }
 
 // The arcade: skill games with bounded payouts, effort-proportional rewards.
-// Typing, memory match, and chess tactics — all require real skill, no reflex games.
+// Typing and memory match — both require real skill, no reflex games.
 export default function ArcadePanel() {
   const [clear, setClear] = useState<ClearState | null>(null)
   const [level, setLevel] = useState<LevelState | null>(null)
@@ -142,7 +143,7 @@ export default function ArcadePanel() {
       </Card>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <TypingGame />
-        {/* Memory and Chess games will be added here in a future update */}
+        <MemoryGame />
       </div>
     </div>
   )

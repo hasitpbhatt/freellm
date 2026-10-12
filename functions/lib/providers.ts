@@ -27,7 +27,21 @@
 //   - API key stored once, decrypted per request
 
 import { decryptSecret } from './crypto'
-import type { Bindings, ModelProviderRow, ModelRow, UpstreamProviderRow } from './types'
+import type { Bindings, ModelProviderRow, ModelRow, UpstreamProviderRow, UpstreamProviderWithModel } from './types'
+import { assertSafeBaseUrl } from './validate'
+
+/** `capabilities` is a JSON text column; tolerate junk rather than 500. */
+function parseCapabilities(raw: string | null): string[] {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+export type { ModelProviderRow, UpstreamProviderRow, UpstreamProviderWithModel }
 
 const ROLLING_AVG_ALPHA = 0.3
 const ROLLING_AVG_BETA = 0.7
@@ -75,7 +89,7 @@ export const LATENCY_WEIGHTED_EXPLORATION_RATE = 0.15
 /** Alias with its resolved upstream providers (for routing). */
 export type AliasWithProviders = {
   model: ModelRow
-  providers: Array<ModelProviderRow & { upstream: UpstreamProviderRow }>
+  providers: Array<ModelProviderRow & { upstream: UpstreamProviderWithModel }>
 }
 
 /** Minimal upstream config for callProvider (decrypted on demand). */
@@ -91,17 +105,20 @@ export async function loadAlias(env: Bindings, slug: string): Promise<AliasWithP
     .first<ModelRow>()
   if (!model) return null
 
-  // Join model_providers -> upstream_providers in one query.
+  // Join model_providers -> upstream_providers -> upstream_models in one query.
   const rows = await env.DB.prepare(
     `SELECT mp.*, 
             up.id AS up_id, up.label, up.base_url, up.api_key_ciphertext, up.api_key_iv,
             up.status, up.avg_latency_ms, up.consecutive_failures, up.cooldown_until,
             up.cooldown_base_ms, up.last_checked_at, up.last_error, 
-            up.created_at AS up_created_at, up.updated_at AS up_updated_at
+            up.created_at AS up_created_at, up.updated_at AS up_updated_at,
+            um.capabilities AS um_capabilities
      FROM freellm_model_providers mp
      JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
+     LEFT JOIN freellm_upstream_models um
+       ON um.upstream_provider_id = up.id AND um.upstream_model = mp.upstream_model
      WHERE mp.model_id = ? AND mp.active = 1
-     ORDER BY mp.priority, mp.label`
+     ORDER BY mp.priority, up.label`
   ).bind(model.id).all<{
     id: string
     model_id: string
@@ -126,9 +143,10 @@ export async function loadAlias(env: Bindings, slug: string): Promise<AliasWithP
     last_error: string | null
     up_created_at: number
     up_updated_at: number
+    um_capabilities: string | null
   }>()
 
-  const providers = rows.results.map((r) => ({
+  const providers: Array<ModelProviderRow & { upstream: UpstreamProviderWithModel }> = rows.results.map((r) => ({
     id: r.id,
     model_id: r.model_id,
     upstream_provider_id: r.upstream_provider_id,
@@ -153,24 +171,36 @@ export async function loadAlias(env: Bindings, slug: string): Promise<AliasWithP
       last_error: r.last_error,
       created_at: r.up_created_at,
       updated_at: r.up_updated_at,
+      model_capabilities: parseCapabilities(r.um_capabilities),
     },
   }))
 
   return { model, providers }
 }
 
-/** Active configs ordered by the alias's routing strategy. */
+/** Active configs ordered by the alias's routing strategy.
+ *  Optionally filters to configs whose upstream model supports all required capabilities.
+ */
 export async function resolveCandidates(
   env: Bindings,
   alias: AliasWithProviders,
   now: number = Date.now(),
-  opts: { random?: () => number } = {},
-): Promise<Array<ModelProviderRow & { upstream: UpstreamProviderRow }>> {
+  opts: { random?: () => number; requiredCapabilities?: string[] } = {},
+): Promise<Array<ModelProviderRow & { upstream: UpstreamProviderWithModel }>> {
   // Filter active + not disabled (upstream.status can also be 'disabled').
-  const usable = alias.providers.filter(
+  let usable = alias.providers.filter(
     (p) => p.active !== 0 && p.upstream.status !== 'disabled',
   )
   if (usable.length === 0) return []
+
+  // Capability-based filtering: keep only configs whose upstream model supports ALL required capabilities.
+  if (opts.requiredCapabilities && opts.requiredCapabilities.length > 0) {
+    const req = opts.requiredCapabilities
+    usable = usable.filter((p) =>
+      req.every((cap) => p.upstream.model_capabilities.includes(cap))
+    )
+    if (usable.length === 0) return []
+  }
 
   // Cooldown is at the upstream provider level — if the shared provider is cooling,
   // none of its configs can be selected.
@@ -181,6 +211,9 @@ export async function resolveCandidates(
   const healthy = rested.filter((p) => p.upstream.status !== 'down')
   const fresh = healthy.filter((p) => p.upstream.status !== 'slow')
   const pool = fresh.length > 0 ? fresh : healthy.length > 0 ? healthy : rested
+
+  // If capability filtering reduced the pool to zero, return empty (don't fall back).
+  if (pool.length === 0) return []
 
   switch (alias.model.routing) {
     case 'random':
@@ -206,8 +239,8 @@ export async function resolveCandidates(
 
 /** Lowest upstream avg_latency_ms first; NULL (never measured) last. */
 export function sortByLatency(
-  pool: Array<ModelProviderRow & { upstream: UpstreamProviderRow }>
-): Array<ModelProviderRow & { upstream: UpstreamProviderRow }> {
+  pool: Array<ModelProviderRow & { upstream: UpstreamProviderWithModel }>
+): Array<ModelProviderRow & { upstream: UpstreamProviderWithModel }> {
   return [...pool].sort((a, b) => {
     const la = a.upstream.avg_latency_ms ?? Number.MAX_SAFE_INTEGER
     const lb = b.upstream.avg_latency_ms ?? Number.MAX_SAFE_INTEGER
@@ -221,8 +254,8 @@ export function sortByLatency(
 async function rotateRoundRobin(
   env: Bindings,
   modelId: string,
-  pool: Array<ModelProviderRow & { upstream: UpstreamProviderRow }>,
-): Promise<Array<ModelProviderRow & { upstream: UpstreamProviderRow }>> {
+  pool: Array<ModelProviderRow & { upstream: UpstreamProviderWithModel }>,
+): Promise<Array<ModelProviderRow & { upstream: UpstreamProviderWithModel }>> {
   try {
     const key = `rr:${modelId}`
     const raw = await env.freellm_sessions.get(key)
@@ -270,6 +303,9 @@ export async function callProvider(
   },
 ): Promise<UpstreamCall> {
   const base = provider.base_url.replace(/\/+$/, '')
+  // SSRF guard at fetch time: the config-time check may be older than this
+  // deployment (or the URL slipped in pre-guard) — never fetch a private host.
+  assertSafeBaseUrl(base)
   const signal =
     options.signal ??
     (typeof AbortSignal.timeout === 'function'
@@ -374,9 +410,9 @@ export async function openStreamingCall(
   env: Bindings,
   alias: AliasWithProviders,
   messages: ChatMessage[],
-  options: { maxTokens: number; sampling?: { temperature?: number; top_p?: number } },
-): Promise<{ provider: ModelProviderRow & { upstream: UpstreamProviderRow }; response: Response } | { error: string }> {
-  const candidates = await resolveCandidates(env, alias)
+  options: { maxTokens: number; sampling?: { temperature?: number; top_p?: number }; requiredCapabilities?: string[] },
+): Promise<{ provider: ModelProviderRow & { upstream: UpstreamProviderWithModel }; response: Response } | { error: string }> {
+  const candidates = await resolveCandidates(env, alias, Date.now(), { requiredCapabilities: options.requiredCapabilities })
   if (candidates.length === 0) return { error: 'no usable provider configs' }
 
   let lastError = ''

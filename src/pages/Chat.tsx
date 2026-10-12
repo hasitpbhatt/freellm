@@ -25,7 +25,7 @@ type Message = {
   error?: string
   model?: string | null
   cost?: {
-    credits: number
+    credits: number | null
     input: number | null
     output: number | null
     total: number | null
@@ -126,6 +126,18 @@ export default function Chat() {
   }, [loadModels])
 
   useEffect(() => {
+    const modeParam = searchParams.get('mode')
+    const keyParam = searchParams.get('key')
+    if (modeParam === 'byok' || modeParam === 'pool') {
+      setMode(modeParam)
+    }
+    if (keyParam) {
+      setSelectedKeyId(keyParam)
+      setMode('byok')
+    }
+  }, [searchParams])
+
+  useEffect(() => {
     if (mode === 'byok') void loadByokKeys()
   }, [mode, loadByokKeys])
 
@@ -202,7 +214,7 @@ export default function Chat() {
     if (mode === 'pool' && !model) return
     if (mode === 'byok' && !selectedKey) return
     if (mode === 'pool' && modelLocked) {
-      setBanner({ kind: 'warn', text: `${model?.label ?? 'This model'} requires ${model?.access_tier} tier — contact an admin to upgrade.` })
+      setBanner({ kind: 'warn', text: `${model?.label ?? 'This model'} requires ${model?.access_tier} tier — upgrade not available yet.` })
       return
     }
     if (mode === 'pool' && model?.status === 'down') {
@@ -267,7 +279,7 @@ export default function Chat() {
                 ? {
                     ...m,
                     cost: {
-                      credits: m.cost?.credits ?? 0,
+                      credits: m.cost?.credits ?? null,
                       input: usage.input,
                       output: usage.output,
                       total: usage.total,
@@ -463,8 +475,7 @@ export default function Chat() {
           <>
             {models.length === 0 && (
               <p className="text-[13px] text-muted">
-                No models yet. An admin can add them in{' '}
-                <Link to="/admin" className="text-accent hover:underline">/admin</Link>.
+                The Pool is empty right now — check back soon.
               </p>
             )}
             <div className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible lg:pb-0">
@@ -555,7 +566,7 @@ export default function Chat() {
               flat {model.flat_rate_credits.toLocaleString('en-US')} cr if usage unreported
             </span>
             {modelLocked && (
-              <span className="text-[12px] text-warn">requires {model.access_tier} tier — contact an admin to upgrade</span>
+              <span className="text-[12px] text-warn">requires {model.access_tier} tier — upgrade not available yet</span>
             )}
             {model.scoped_only === 1 && (
               <span className="text-[12px] text-muted">scoped credits only — global balance can't buy this model</span>
@@ -611,7 +622,9 @@ export default function Chat() {
                   </div>
                   {m.cost && (
                     <p className="num mt-1 text-[12px] text-muted">
-                      {m.cost.credits.toLocaleString('en-US')} cr
+                      {m.cost.credits == null
+                        ? 'billing pending — no charge recorded'
+                        : `${m.cost.credits.toLocaleString('en-US')} cr`}
                       {m.cost.input != null && m.cost.output != null
                         ? ` — ${m.cost.input.toLocaleString('en-US')} in · ${m.cost.output.toLocaleString('en-US')} out`
                         : ''}

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { Link } from 'react-router-dom'
 import { api, ApiError } from '../lib/api'
 import { Button, Card } from '../components/ui'
-import type { ModelAlias, ModelProvider } from '../lib/types'
+import type { ModelAlias, ModelProvider, UpstreamModel, UpstreamProvider } from '../lib/types'
 
 type TestResult = { ok: boolean; status: string; latencyMs: number | null; error?: string; mode: string }
 
@@ -15,22 +16,12 @@ function formatCooldown(ms: number | null): string {
   return `retry ${ms}ms`
 }
 
-function msToMinutesInput(ms: number | null): string {
-  if (ms == null) return ''
-  return String(ms / 60000)
-}
-
 const statusDot: Record<string, string> = {
   live: 'bg-gain',
   slow: 'bg-warn',
   down: 'bg-loss',
   unknown: 'bg-muted',
   disabled: 'bg-muted',
-}
-
-function revealProvider(modelId: string, providerId: string): Promise<string> {
-  return api.post<{ api_key: string }>(`/admin/models/${modelId}/providers/${providerId}/reveal`)
-    .then((res) => res.api_key)
 }
 
 export default function AdminModels() {
@@ -98,7 +89,6 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
   const busy = (key: string) => busyKey === key
   const [editingAlias, setEditingAlias] = useState(false)
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null)
-  const [revealed, setRevealed] = useState<{ providerId: string; label: string; key: string } | null>(null)
   const [actionError, setActionError] = useState('')
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({})
 
@@ -119,25 +109,6 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
           mode: '-',
         },
       }))
-    } finally {
-      setBusyKey(null)
-    }
-  }
-
-  async function revealProviderKey(provider: ModelProvider) {
-    if (!confirm(`Reveal the bearer key for "${provider.label}"? It will be shown on screen — make sure nobody is watching.`)) return
-    setBusyKey(`reveal:${provider.id}`)
-    setActionError('')
-    try {
-      const key = await revealProvider(model.id, provider.id)
-      setRevealed({ providerId: provider.id, label: provider.label, key })
-      try {
-        await navigator.clipboard.writeText(key)
-      } catch {
-        // clipboard denied — key stays visible below for manual copy
-      }
-    } catch (err) {
-      setActionError(`Reveal failed: ${err instanceof ApiError ? err.message : String(err)}`)
     } finally {
       setBusyKey(null)
     }
@@ -172,7 +143,6 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
     try {
       await api.del(`/admin/models/${model.id}/providers/${provider.id}`)
       if (editingProviderId === provider.id) setEditingProviderId(null)
-      if (revealed?.providerId === provider.id) setRevealed(null)
       onChanged()
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Failed to delete provider config.')
@@ -194,35 +164,6 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
     }
   }
 
-  type ProviderGroup = { key: string; base_url: string; upstream_model: string; members: ModelProvider[] }
-
-  // Club configs that differ only by bearer key (same endpoint + model) so a
-  // pool of keys reads as one unit instead of N near-identical rows.
-  const groups: ProviderGroup[] = []
-  for (const p of model.providers) {
-    const key = `${p.base_url}||${p.upstream_model}`
-    const existing = groups.find((g) => g.key === key)
-    if (existing) existing.members.push(p)
-    else groups.push({ key, base_url: p.base_url, upstream_model: p.upstream_model, members: [p] })
-  }
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
-  const [keyPreset, setKeyPreset] = useState<{ baseUrl: string; upstreamModel: string; nonce: number } | null>(null)
-
-  function groupStatus(members: ModelProvider[]): string {
-    const statuses = members.map((m) => (m.active === 0 ? 'disabled' : m.status))
-    if (statuses.includes('live')) return 'live'
-    if (statuses.includes('slow')) return 'slow'
-    if (statuses.includes('unknown')) return 'unknown'
-    if (statuses.includes('down')) return 'down'
-    return 'disabled'
-  }
-
-  async function testGroup(members: ModelProvider[]) {
-    for (const m of members) {
-      await testProvider(m.id)
-    }
-  }
-
   const renderProviderRow = (provider: ModelProvider) => {
     const test = testResults[provider.id]
     return (
@@ -241,9 +182,9 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
             {provider.avg_latency_ms}ms avg
           </span>
         )}
-        {provider.cooldown_ms != null && (
-          <span className="num text-[12px] text-muted" title="How long this config waits before retry after a failure (doubles per consecutive failure)">
-            {formatCooldown(provider.cooldown_ms)}
+        {provider.cooldown_base_ms != null && (
+          <span className="num text-[12px] text-muted" title="How long this provider waits before retry after a failure (doubles per consecutive failure)">
+            {formatCooldown(provider.cooldown_base_ms)}
           </span>
         )}
         <div className="flex gap-2">
@@ -256,44 +197,13 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
           <Button variant="secondary" onClick={() => testProvider(provider.id)} disabled={busyKey !== null}>
             {busy(`test:${provider.id}`) ? 'Testing…' : 'Test'}
           </Button>
-          <Button variant="ghost" onClick={() => revealProviderKey(provider)} disabled={busyKey !== null} className="text-accent">
-            {busy(`reveal:${provider.id}`) ? 'Revealing…' : 'Reveal'}
-          </Button>
           <Button variant="ghost" onClick={() => toggleProvider(provider)} disabled={busyKey !== null}>
             {busy(`toggle:${provider.id}`) ? 'Saving…' : provider.active === 0 ? 'Enable' : 'Disable'}
-          </Button>
-          <Button
-            variant="ghost"
-            onClick={() => setKeyPreset({ baseUrl: provider.base_url, upstreamModel: provider.upstream_model, nonce: Date.now() })}
-            disabled={busyKey !== null}
-            title="Add another key for this same endpoint and model"
-          >
-            Clone key
           </Button>
           <Button variant="ghost" onClick={() => deleteProvider(provider)} disabled={busyKey !== null} className="text-loss">
             {busy(`delete:${provider.id}`) ? 'Deleting…' : 'Delete'}
           </Button>
         </div>
-        {revealed?.providerId === provider.id && (
-          <div className="flex w-full flex-col gap-2 rounded-lg border border-warn/40 bg-warn/5 p-3">
-            <p className="text-[12px] text-warn">
-              Bearer key for "{revealed.label}" — copied to clipboard when possible. Clear it from the clipboard after use.
-            </p>
-            <div className="flex items-center gap-2">
-              <code className="num flex-1 break-all text-[12px]">{revealed.key}</code>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => { void navigator.clipboard.writeText(revealed.key).catch(() => {}) }}
-              >
-                Copy
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => setRevealed(null)}>
-                Hide
-              </Button>
-            </div>
-          </div>
-        )}
         {editingProviderId === provider.id && (
           <EditProviderForm
             modelId={model.id}
@@ -379,55 +289,13 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
       )}
 
       <div className="flex flex-col divide-y divide-line">
-        {groups.map((group) => {
-          if (group.members.length === 1) return renderProviderRow(group.members[0])
-          const status = groupStatus(group.members)
-          const served = group.members.reduce((sum, m) => sum + m.messages_served, 0)
-          const isCollapsed = collapsed[group.key] === true
-          return (
-            <div key={group.key} className="border-b border-line last:border-0">
-              <div className="flex flex-wrap items-center gap-2 bg-surface-2/50 px-4 py-2">
-                <button
-                  onClick={() => setCollapsed((prev) => ({ ...prev, [group.key]: !prev[group.key] }))}
-                  aria-expanded={!isCollapsed}
-                  className="rounded px-1 text-[13px] text-muted hover:text-content"
-                  aria-label={isCollapsed ? `Expand ${group.members.length} keys` : `Collapse ${group.members.length} keys`}
-                >
-                  {isCollapsed ? '▸' : '▾'}
-                </button>
-                <span className={`h-2 w-2 rounded-full ${statusDot[status]}`} aria-hidden="true" />
-                <span className="sr-only">Club status {status}: </span>
-                <span className="num text-[12px] text-muted">
-                  {group.base_url} · {group.upstream_model}
-                </span>
-                <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent">
-                  {group.members.length} keys, one endpoint
-                </span>
-                <span className="num text-[12px] text-muted">{served.toLocaleString('en-US')} served</span>
-                <span className="ml-auto flex gap-2">
-                  <Button variant="secondary" size="sm" onClick={() => void testGroup(group.members)} disabled={busyKey !== null}>
-                    Test all
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setKeyPreset({ baseUrl: group.base_url, upstreamModel: group.upstream_model, nonce: Date.now() })}
-                    disabled={busyKey !== null}
-                  >
-                    + Add key
-                  </Button>
-                </span>
-              </div>
-              {!isCollapsed && group.members.map((member) => renderProviderRow(member))}
-            </div>
-          )
-        })}
+        {model.providers.map((provider) => renderProviderRow(provider))}
         {model.providers.length === 0 && (
           <p className="px-4 py-4 text-[13px] text-muted">No provider configs yet — add one below.</p>
         )}
       </div>
 
-      <AddProviderForm modelId={model.id} preset={keyPreset} onCreated={() => { setKeyPreset(null); onChanged() }} />
+      <AddProviderForm modelId={model.id} onCreated={onChanged} />
     </Card>
   )
 }
@@ -591,25 +459,16 @@ function EditProviderForm({
   onDone: () => void
   onChanged: () => void
 }) {
-  const [label, setLabel] = useState(provider.label)
-  const [baseUrl, setBaseUrl] = useState(provider.base_url)
   const [upstreamModel, setUpstreamModel] = useState(provider.upstream_model)
-  const [apiKey, setApiKey] = useState('')
   const [priority, setPriority] = useState(provider.priority.toString())
-  const [cooldownMinutes, setCooldownMinutes] = useState(msToMinutesInput(provider.cooldown_ms))
   const [active, setActive] = useState(provider.active === 1)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    const trimmedLabel = label.trim()
-    if (!trimmedLabel || trimmedLabel.length > 80) {
-      setError('Config label must be 1–80 characters.')
-      return
-    }
-    if (!baseUrl.trim() || !upstreamModel.trim()) {
-      setError('Base URL and upstream model are required.')
+    if (!upstreamModel.trim()) {
+      setError('Upstream model is required.')
       return
     }
     const priorityValue = Number(priority)
@@ -617,27 +476,14 @@ function EditProviderForm({
       setError('Priority must be an integer.')
       return
     }
-    let cooldownMs: number | null = null
-    if (cooldownMinutes.trim() !== '') {
-      const minutes = Number(cooldownMinutes)
-      if (!Number.isInteger(minutes) || minutes < 0 || minutes > 10080) {
-        setError('Retry cooldown must be empty (default) or an integer 0–10080 minutes.')
-        return
-      }
-      cooldownMs = minutes * 60000
-    }
 
     setBusy(true)
     setError('')
     try {
       await api.patch(`/admin/models/${modelId}/providers/${provider.id}`, {
-        label: trimmedLabel,
-        base_url: baseUrl.trim(),
         upstream_model: upstreamModel.trim(),
         priority: priorityValue,
-        cooldown_ms: cooldownMs,
         active,
-        ...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
       })
       onChanged()
     } catch (err) {
@@ -649,28 +495,17 @@ function EditProviderForm({
 
   return (
     <form className="grid w-full gap-3 rounded-lg border border-line bg-surface-2 p-4 sm:grid-cols-2" onSubmit={submit}>
-      <Field label="Config label">
-        <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} required />
-      </Field>
-      <Field label="OpenAI-compatible base URL">
-        <input className="input" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} required />
-      </Field>
-      <Field label="Upstream model name">
-        <input className="input" value={upstreamModel} onChange={(e) => setUpstreamModel(e.target.value)} required />
-      </Field>
-      <Field label={`Rotate bearer key (current: ${provider.key_masked})`}>
-        <input
-          className="input"
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          placeholder="Leave blank to keep the current key"
-        />
+      <p className="text-[13px] font-medium sm:col-span-2">
+        Config: {provider.label} → {provider.upstream_model}
+      </p>
+      <p className="num text-[12px] text-muted sm:col-span-2">
+        {provider.base_url} · key {provider.key_masked} — endpoint and key live on the shared provider; edit them on the Upstream providers tab.
+      </p>
+      <Field label="Upstream model (must be registered for this provider)">
+        <input className="input num" value={upstreamModel} onChange={(e) => setUpstreamModel(e.target.value)} required />
       </Field>
       <Field label="Priority (failover order, lower first — ignored by other routing modes)">
-        <input className="input" value={priority} onChange={(e) => setPriority(e.target.value)} inputMode="numeric" />
-      </Field>
-      <Field label="Retry cooldown, minutes (empty = default 30m, e.g. 1440 for daily quotas)">
-        <input className="input" value={cooldownMinutes} onChange={(e) => setCooldownMinutes(e.target.value)} inputMode="numeric" placeholder="default" />
+        <input className="input num" value={priority} onChange={(e) => setPriority(e.target.value)} inputMode="numeric" />
       </Field>
       <label className="flex items-center gap-2 text-[13px]">
         <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
@@ -828,59 +663,76 @@ function NewAliasForm({ onCreated }: { onCreated: () => void }) {
 
 function AddProviderForm({
   modelId,
-  preset,
   onCreated,
 }: {
   modelId: string
-  preset: { baseUrl: string; upstreamModel: string; nonce: number } | null
   onCreated: () => void
 }) {
   const [open, setOpen] = useState(false)
-  const [label, setLabel] = useState('')
-  const [baseUrl, setBaseUrl] = useState('')
+  const [providers, setProviders] = useState<UpstreamProvider[]>([])
+  const [models, setModels] = useState<UpstreamModel[]>([])
+  const [providerId, setProviderId] = useState('')
   const [upstreamModel, setUpstreamModel] = useState('')
-  const [apiKey, setApiKey] = useState('')
   const [priority, setPriority] = useState('0')
-  const [cooldownMinutes, setCooldownMinutes] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [loaded, setLoaded] = useState(false)
 
-  // Clone / add-key-to-club: prefill the endpoint, operator only adds the bearer.
+  // Lazy-load the shared providers + model catalog the first time the form opens.
   useEffect(() => {
-    if (!preset) return
-    setBaseUrl(preset.baseUrl)
-    setUpstreamModel(preset.upstreamModel)
-    setOpen(true)
-  }, [preset])
+    if (!open || loaded) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const [providerData, modelData] = await Promise.all([
+          api.get<{ providers: UpstreamProvider[] }>('/admin/upstream-providers'),
+          api.get<{ models: UpstreamModel[] }>('/admin/upstream-models'),
+        ])
+        if (cancelled) return
+        setProviders(providerData.providers)
+        setModels(modelData.models)
+        // Preselect the only provider when there is exactly one.
+        if (providerData.providers.length === 1) setProviderId(providerData.providers[0].id)
+        setLoaded(true)
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof ApiError ? err.message : 'Failed to load upstream providers.')
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [open, loaded])
+
+  const providerModels = models.filter((m) => m.upstream_provider_id === providerId)
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    let cooldownMs: number | null = null
-    if (cooldownMinutes.trim() !== '') {
-      const minutes = Number(cooldownMinutes)
-      if (!Number.isInteger(minutes) || minutes < 0 || minutes > 10080) {
-        setError('Retry cooldown must be empty (default) or an integer 0–10080 minutes.')
-        return
-      }
-      cooldownMs = minutes * 60000
+    if (!providerId) {
+      setError('Pick an upstream provider.')
+      return
+    }
+    if (!upstreamModel) {
+      setError('Pick one of the provider’s upstream models.')
+      return
+    }
+    const priorityValue = Number(priority || '0')
+    if (!Number.isInteger(priorityValue)) {
+      setError('Priority must be an integer.')
+      return
     }
     setBusy(true)
     setError('')
     try {
       await api.post(`/admin/models/${modelId}/providers`, {
-        label: label || baseUrl,
-        base_url: baseUrl,
+        upstream_provider_id: providerId,
         upstream_model: upstreamModel,
-        api_key: apiKey,
-        priority: Number(priority),
-        cooldown_ms: cooldownMs,
+        priority: priorityValue,
       })
-      setLabel('')
-      setBaseUrl('')
+      setProviderId('')
       setUpstreamModel('')
-      setApiKey('')
       setPriority('0')
-      setCooldownMinutes('')
       setOpen(false)
       onCreated()
     } catch (err) {
@@ -903,24 +755,55 @@ function AddProviderForm({
   return (
     <div className="border-t border-line p-4">
       <form className="grid gap-3 sm:grid-cols-2" onSubmit={submit}>
-        <Field label="Config label (optional — blank uses the base URL)">
-          <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="pool-key-1" />
+        <Field label="Upstream provider">
+          <select
+            className="input"
+            value={providerId}
+            onChange={(e) => {
+              setProviderId(e.target.value)
+              setUpstreamModel('')
+            }}
+            required
+          >
+            <option value="">Choose a provider…</option>
+            {providers.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label} — {p.base_url}
+              </option>
+            ))}
+          </select>
         </Field>
-        <Field label="OpenAI-compatible base URL">
-          <input className="input" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.poolside.ai/v1" required />
+        <Field label="Upstream model">
+          <select
+            className="input"
+            value={upstreamModel}
+            onChange={(e) => setUpstreamModel(e.target.value)}
+            disabled={!providerId || providerModels.length === 0}
+            required
+          >
+            <option value="">
+              {!providerId
+                ? 'Pick a provider first…'
+                : providerModels.length === 0
+                  ? 'This provider has no models yet — add them on the Upstream providers tab'
+                  : 'Choose a model…'}
+            </option>
+            {providerModels.map((m) => (
+              <option key={m.upstream_model} value={m.upstream_model}>
+                {m.upstream_model}
+              </option>
+            ))}
+          </select>
         </Field>
-        <Field label="Upstream model name">
-          <input className="input" value={upstreamModel} onChange={(e) => setUpstreamModel(e.target.value)} placeholder="poolside-laguna-2026-01" required />
+        <Field label="Priority (failover order, lower first — ignored by other routing modes)">
+          <input className="input num" value={priority} onChange={(e) => setPriority(e.target.value)} inputMode="numeric" />
         </Field>
-        <Field label="Bearer key">
-          <input className="input" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-…" required />
-        </Field>
-        <Field label="Priority (failover order, lower first)">
-          <input className="input" value={priority} onChange={(e) => setPriority(e.target.value)} inputMode="numeric" />
-        </Field>
-        <Field label="Retry cooldown, minutes (empty = default 30m, e.g. 1440 for daily quotas)">
-          <input className="input" value={cooldownMinutes} onChange={(e) => setCooldownMinutes(e.target.value)} inputMode="numeric" placeholder="default" />
-        </Field>
+        {providers.length === 0 && loaded && (
+          <p className="text-[13px] text-muted sm:col-span-2">
+            No upstream providers exist yet — <Link to="/admin?tab=providers" className="text-accent hover:underline">create one on the Upstream providers tab</Link> first,
+            then map it here. One provider can serve any number of aliases with different upstream models.
+          </p>
+        )}
         {error && <p className="text-[13px] text-loss sm:col-span-2">{error}</p>}
         <div className="flex gap-2 sm:col-span-2">
           <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Add config'}</Button>

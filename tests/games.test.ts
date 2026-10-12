@@ -10,14 +10,10 @@ import {
   MEMORY_MAX_MOVES,
   TYPING_MIN_SECONDS,
   TYPING_MAX_SECONDS,
-  CHESS_MAX_ATTEMPTS,
-  CHESS_MIN_SECONDS,
-  CHESS_MAX_SECONDS,
   levelBonus,
   levelForXp,
   rewardForTyping,
   rewardForMemory,
-  rewardForChess,
   dealMemoryBoard,
 } from '../functions/routes/games'
 import { createTestDb, seedUser } from './helpers/db'
@@ -54,16 +50,6 @@ test('rewardForMemory: human move bands in the 10min window', () => {
   assert.equal(rewardForMemory(5), null)
   assert.equal(rewardForMemory(31), null)
   assert.equal(rewardForMemory(6.5), null)
-})
-
-test('rewardForChess: attempt bands with anti-guessing', () => {
-  // 4 options per puzzle; 1 attempt = solved immediately, 2 = lucky guess, 3-5 = brute force
-  assert.equal(rewardForChess(1), 8000)
-  assert.equal(rewardForChess(2), 5000)
-  assert.equal(rewardForChess(5), 2500)
-  assert.equal(rewardForChess(0), null)
-  assert.equal(rewardForChess(6), null)
-  assert.equal(rewardForChess(1.5), null)
 })
 
 test('dealMemoryBoard: 12 cards, two of each glyph, properly shuffled', () => {
@@ -120,7 +106,4 @@ test('constants: daily pot and game bounds are sane', () => {
   assert.ok(MEMORY_MAX_MOVES === 30)
   assert.ok(TYPING_MIN_SECONDS === 2)
   assert.ok(TYPING_MAX_SECONDS === 120)
-  assert.ok(CHESS_MAX_ATTEMPTS === 5)
-  assert.ok(CHESS_MIN_SECONDS === 10)
-  assert.ok(CHESS_MAX_SECONDS === 600)
 })

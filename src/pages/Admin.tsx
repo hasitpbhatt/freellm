@@ -5,11 +5,13 @@ import AdminPromos from '../components/AdminPromos'
 import AdminVault from '../components/AdminVault'
 import AdminUsers from '../components/AdminUsers'
 import AdminEmailBlocks from '../components/AdminEmailBlocks'
+import AdminUpstreamProviders from '../components/AdminUpstreamProviders'
 
-type Tab = 'models' | 'promos' | 'vault' | 'users' | 'blocks'
+type Tab = 'models' | 'providers' | 'promos' | 'vault' | 'users' | 'blocks'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'models', label: 'Model catalog' },
+  { id: 'providers', label: 'Upstream providers' },
   { id: 'promos', label: 'Promo codes' },
   { id: 'vault', label: 'Vault (BYOK)' },
   { id: 'users', label: 'Users' },
@@ -20,7 +22,8 @@ export default function Admin() {
   const { user, loading: authLoading } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
   const rawTab = searchParams.get('tab')
-  const tab: Tab = rawTab === 'promos' || rawTab === 'vault' || rawTab === 'users' || rawTab === 'blocks' ? rawTab : 'models'
+  const tab: Tab =
+    rawTab === 'providers' || rawTab === 'promos' || rawTab === 'vault' || rawTab === 'users' || rawTab === 'blocks' ? rawTab : 'models'
 
   if (authLoading) return <p className="py-12 text-center text-[13px] text-muted" role="status">Checking admin access…</p>
   if (!user) {
@@ -53,7 +56,19 @@ export default function Admin() {
         </div>
       </div>
       <div role="tabpanel">
-        {tab === 'models' ? <AdminModels /> : tab === 'promos' ? <AdminPromos /> : tab === 'vault' ? <AdminVault /> : tab === 'users' ? <AdminUsers /> : <AdminEmailBlocks />}
+        {tab === 'models' ? (
+          <AdminModels />
+        ) : tab === 'providers' ? (
+          <AdminUpstreamProviders />
+        ) : tab === 'promos' ? (
+          <AdminPromos />
+        ) : tab === 'vault' ? (
+          <AdminVault />
+        ) : tab === 'users' ? (
+          <AdminUsers />
+        ) : (
+          <AdminEmailBlocks />
+        )}
       </div>
     </div>
   )

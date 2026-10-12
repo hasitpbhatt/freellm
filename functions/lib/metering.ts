@@ -30,9 +30,12 @@ export async function computeSpendable(
   excludeRequestId?: string,
 ): Promise<Spendable> {
   // The stale-hold sweep and the grant read are independent; the held-sum
-  // read must follow the sweep, so only those two are overlapped.
+  // read must follow the sweep, so only those two are overlapped. One
+  // cutoff for both — computing Date.now() twice let a hold created between
+  // the two reads be deleted and then not counted.
+  const cutoff = Date.now() - HOLD_STALE_MS
   const [, grant] = await Promise.all([
-    db.prepare('DELETE FROM freellm_credit_holds WHERE created_at <= ?').bind(Date.now() - HOLD_STALE_MS).run(),
+    db.prepare('DELETE FROM freellm_credit_holds WHERE created_at <= ?').bind(cutoff).run(),
     db
       .prepare('SELECT credits FROM freellm_model_credit_grants WHERE user_id = ? AND model_id = ?')
       .bind(userId, modelId)
@@ -44,7 +47,7 @@ export async function computeSpendable(
       `SELECT COALESCE(SUM(amount), 0) AS total FROM freellm_credit_holds
        WHERE user_id = ? AND created_at > ? ${excludeRequestId ? 'AND request_id != ?' : ''}`,
     )
-    .bind(...(excludeRequestId ? [userId, Date.now() - HOLD_STALE_MS, excludeRequestId] : [userId, Date.now() - HOLD_STALE_MS]))
+    .bind(...(excludeRequestId ? [userId, cutoff, excludeRequestId] : [userId, cutoff]))
     .first<{ total: number }>()
 
   const scoped = grant?.credits ?? 0
@@ -75,6 +78,10 @@ export function sanitizeUsage(usage: Usage | null | undefined): Usage | null {
   }
   if (total > input + output + 1000) return null
   if (total === 0 && (input > 0 || output > 0)) return null
+  // Lower bound: total_tokens is always >= prompt_tokens and >= completion_tokens
+  // in every real provider. A host that reports total=1 with input/output in the
+  // thousands is trying to under-charge the pool — reject and fall back to flat rate.
+  if (total < input || total < output) return null
   return { input, output, total }
 }
 
@@ -175,12 +182,53 @@ export async function settleRequest(
   const fromScoped = Math.min(scopedAvailable, charge)
   const fromGlobal = scopedOnly ? 0 : charge - fromScoped
 
-  if (fromGlobal > user.balance_credits || (scopedOnly && fromScoped < charge)) {
+  // A scoped-only shortfall is a JS-side condition (the conditional debit
+  // below can't express "no global allowed"); fail before any write.
+  if (scopedOnly && fromScoped < charge) {
     await releaseHold(db, requestId).catch(() => {})
     throw new Error('insufficient credits at settlement')
   }
 
+  // Gate the spend BEFORE anything is written. The old check compared
+  // fromGlobal against the raw balance_credits in JS, ignoring the
+  // outstanding holds the reserve exists to protect — two concurrent
+  // settlements both passed and drove the balance negative (the CHECK
+  // constraint only rejects the UPDATE, after the other one charged).
+  // The condition now lives inside the debit, so SQLite decides
+  // atomically: balance - charge must still cover every OTHER request's
+  // outstanding reserve.
   const timestamp = Date.now()
+
+  if (!isFree && fromGlobal > 0) {
+    const debit = await db
+      .prepare(
+        `UPDATE freellm_users SET balance_credits = balance_credits - ?, updated_at = ?
+         WHERE id = ? AND balance_credits - ? >= (
+           SELECT COALESCE(SUM(amount), 0) FROM freellm_credit_holds WHERE user_id = ? AND request_id != ?
+         )`,
+      )
+      .bind(fromGlobal, timestamp, userId, fromGlobal, userId, requestId)
+      .run()
+    if ((debit?.meta?.changes ?? 0) === 0) {
+      await releaseHold(db, requestId).catch(() => {})
+      throw new Error('insufficient credits at settlement')
+    }
+  }
+
+  if (!isFree && fromScoped > 0) {
+    const grantDebit = await db
+      .prepare(
+        `UPDATE freellm_model_credit_grants SET credits = credits - ?, updated_at = ?
+         WHERE user_id = ? AND model_id = ? AND credits >= ?`,
+      )
+      .bind(fromScoped, timestamp, userId, model.id, fromScoped)
+      .run()
+    if ((grantDebit?.meta?.changes ?? 0) === 0) {
+      await releaseHold(db, requestId).catch(() => {})
+      throw new Error('insufficient credits at settlement')
+    }
+  }
+
   const keyMode = isFree ? 'byok' : 'pool'
   const statements = [
     db
@@ -213,9 +261,6 @@ export async function settleRequest(
   if (!isFree && fromGlobal > 0) {
     statements.push(
       db
-        .prepare('UPDATE freellm_users SET balance_credits = balance_credits - ?, updated_at = ? WHERE id = ?')
-        .bind(fromGlobal, timestamp, userId),
-      db
         .prepare(
           `INSERT INTO freellm_credit_ledger (id, user_id, delta, reason, meta, created_at)
            VALUES (?, ?, ?, 'chat_spend', ?, ?)`,
@@ -237,22 +282,19 @@ export async function settleRequest(
     )
   }
 
-  if (!isFree && fromScoped > 0) {
-    statements.push(
-      db
-        .prepare(
-          `UPDATE freellm_model_credit_grants SET credits = credits - ?, updated_at = ? WHERE user_id = ? AND model_id = ?`,
-        )
-        .bind(fromScoped, timestamp, userId, model.id),
-    )
-  }
-
   try {
     await db.batch(statements)
   } catch (err) {
-    // Concurrent retry with the same request_id won the race — replay the
-    // original instead of throwing UNIQUE.
+    // Concurrent retry with the same request_id won the race — refund the
+    // gate debit made above and replay the original instead of throwing
+    // UNIQUE (and instead of double-charging the user).
     if (err instanceof Error && err.message.includes('UNIQUE constraint failed: freellm_usage_events.request_id')) {
+      if (!isFree && fromGlobal > 0) {
+        await db
+          .prepare('UPDATE freellm_users SET balance_credits = balance_credits + ?, updated_at = ? WHERE id = ?')
+          .bind(fromGlobal, Date.now(), userId)
+          .run()
+      }
       const winner = await db
         .prepare('SELECT credits_charged, source, status FROM freellm_usage_events WHERE request_id = ?')
         .bind(requestId)

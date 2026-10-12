@@ -22,7 +22,6 @@ import {
   validateBaseUrl,
   validateBearer,
   validateCapabilities,
-  validateUpstreamModel,
 } from '../lib/validate'
 import type { Bindings, ModelProviderRow, ModelRow, UpstreamProviderRow, Variables } from '../lib/types'
 
@@ -74,7 +73,7 @@ app.get('/api/admin/models', async (c) => {
      LEFT JOIN freellm_upstream_models um 
        ON um.upstream_provider_id = up.id AND um.upstream_model = mp.upstream_model
      WHERE mp.active = 1
-     ORDER BY mp.model_id, mp.priority, mp.label`
+     ORDER BY mp.model_id, mp.priority, up.label`
   ).all<{
     id: string
     model_id: string
@@ -115,25 +114,7 @@ app.get('/api/admin/models', async (c) => {
       ...model,
       capabilities: safeParseArray(model.capabilities),
       providers: await Promise.all(
-        (byModel.get(model.id) ?? []).map(async (p) => ({
-          id: p.id,
-          label: p.up_label,
-          upstream_provider_id: p.upstream_provider_id,
-          upstream_model: p.upstream_model,
-          upstream_model_caps: p.capabilities ? safeParseArray(p.capabilities) : [],
-          upstream_model_context: p.context_window,
-          upstream_model_max_output: p.max_output_tokens,
-          base_url: p.base_url,
-          key_masked: encryptionKey ? await safeKeyMask(p, encryptionKey) : '••••',
-          status: p.active === 0 ? 'disabled' : p.up_status,
-          last_checked_at: p.last_checked_at,
-          last_error: p.last_error,
-          avg_latency_ms: p.avg_latency_ms,
-          priority: p.priority,
-          active: p.active,
-          messages_served: p.messages_served,
-          cooldown_base_ms: p.cooldown_base_ms,
-        })),
+        (byModel.get(model.id) ?? []).map((p) => publicModelProvider(p, encryptionKey)),
       ),
     })),
   )
@@ -141,12 +122,9 @@ app.get('/api/admin/models', async (c) => {
   return c.json({ models: modelPayloads })
 })
 
-async function safeKeyMask(provider: {
-  api_key_ciphertext: string
-  api_key_iv: string
-}, encryptionKey: string): Promise<string> {
+async function safeKeyMask(provider: Record<string, unknown>, encryptionKey: string): Promise<string> {
   try {
-    return maskSecret(await decryptSecret(provider.api_key_ciphertext, provider.api_key_iv, encryptionKey))
+    return maskSecret(await decryptSecret(provider.api_key_ciphertext as string, provider.api_key_iv as string, encryptionKey))
   } catch {
     return '•••• (key unreadable — check ENCRYPTION_KEY)'
   }
@@ -382,6 +360,9 @@ app.post('/api/admin/upstream-providers', async (c) => {
 
   const id = newId()
   const timestamp = now()
+  const normalizedBaseUrl = String(body.base_url).trim().replace(/\/+$/, '')
+
+  // Insert the new provider first
   await c.env.DB.prepare(
     `INSERT INTO freellm_upstream_providers (id, label, base_url, api_key_ciphertext, api_key_iv, status, cooldown_base_ms, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, 'unknown', ?, ?, ?)`,
@@ -389,7 +370,7 @@ app.post('/api/admin/upstream-providers', async (c) => {
     .bind(
       id,
       label,
-      String(body.base_url).trim().replace(/\/+$/, ''),
+      normalizedBaseUrl,
       ciphertext,
       iv,
       cooldownBaseMs,
@@ -397,6 +378,29 @@ app.post('/api/admin/upstream-providers', async (c) => {
       timestamp,
     )
     .run()
+
+  // Auto-inherit models from existing providers with the same base_url.
+  // Same base URL = same API = same available models.
+  const existingModels = await c.env.DB.prepare(
+    `SELECT upstream_model, capabilities, context_window, max_output_tokens
+     FROM freellm_upstream_models
+     WHERE upstream_provider_id IN (
+       SELECT id FROM freellm_upstream_providers
+       WHERE base_url = ? AND id != ?
+     )`
+  )
+    .bind(normalizedBaseUrl, id)
+    .all<{ upstream_model: string; capabilities: string | null; context_window: number | null; max_output_tokens: number | null }>()
+
+  if (existingModels.results.length > 0) {
+    const statements = existingModels.results.map((m) =>
+      c.env.DB.prepare(
+        `INSERT INTO freellm_upstream_models (upstream_provider_id, upstream_model, capabilities, context_window, max_output_tokens)
+         VALUES (?, ?, ?, ?, ?)`
+      ).bind(id, m.upstream_model, m.capabilities, m.context_window, m.max_output_tokens)
+    )
+    if (statements.length > 0) await c.env.DB.batch(statements)
+  }
 
   const provider = await c.env.DB.prepare('SELECT * FROM freellm_upstream_providers WHERE id = ?').bind(id).first<UpstreamProviderRow>()
   return c.json({ provider: { ...provider!, key_masked: await safeKeyMask(provider!, encryptionKey) } }, 201)
@@ -530,6 +534,51 @@ app.post('/api/admin/upstream-providers/:id/reveal', async (c) => {
   return c.json({ id: provider.id, label: provider.label, api_key: apiKey })
 })
 
+// ------------------------------------------------ copy models from another provider
+
+app.post('/api/admin/upstream-providers/:id/copy-models', async (c) => {
+  const targetId = c.req.param('id')
+  const target = await c.env.DB.prepare('SELECT id, base_url FROM freellm_upstream_providers WHERE id = ?').bind(targetId).first<{ id: string; base_url: string }>()
+  if (!target) return c.json({ error: 'not_found', message: 'Target provider not found.' }, 404)
+
+  const body = await c.req.json<{ source_provider_id?: string }>().catch(() => null)
+  const sourceId = body?.source_provider_id
+  if (!sourceId) return c.json({ error: 'invalid_input', message: 'source_provider_id is required.' }, 400)
+
+  const source = await c.env.DB.prepare('SELECT id, base_url FROM freellm_upstream_providers WHERE id = ?').bind(sourceId).first<{ id: string; base_url: string }>()
+  if (!source) return c.json({ error: 'not_found', message: 'Source provider not found.' }, 404)
+  if (sourceId === targetId) return c.json({ error: 'invalid_input', message: 'Source and target must be different.' }, 400)
+
+  // Verify same base_url for safety (same API = same models)
+  if (source.base_url !== target.base_url) {
+    return c.json({ error: 'invalid_input', message: 'Providers must share the same base_url to copy models.' }, 400)
+  }
+
+  const existingModels = await c.env.DB.prepare(
+    `SELECT upstream_model, capabilities, context_window, max_output_tokens
+     FROM freellm_upstream_models
+     WHERE upstream_provider_id = ?`
+  )
+    .bind(sourceId)
+    .all<{ upstream_model: string; capabilities: string | null; context_window: number | null; max_output_tokens: number | null }>()
+
+  if (existingModels.results.length === 0) {
+    return c.json({ error: 'not_found', message: 'Source provider has no models to copy.' }, 404)
+  }
+
+  const statements = existingModels.results.map((m) =>
+    c.env.DB.prepare(
+      `INSERT INTO freellm_upstream_models (upstream_provider_id, upstream_model, capabilities, context_window, max_output_tokens)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (upstream_provider_id, upstream_model) DO NOTHING`
+    ).bind(targetId, m.upstream_model, m.capabilities, m.context_window, m.max_output_tokens)
+  )
+
+  if (statements.length > 0) await c.env.DB.batch(statements)
+
+  return c.json({ copied: statements.length })
+})
+
 // ------------------------------------------------ model providers (alias -> upstream provider + model)
 
 // List model providers for an alias
@@ -548,7 +597,7 @@ app.get('/api/admin/models/:id/providers', async (c) => {
      LEFT JOIN freellm_upstream_models um 
        ON um.upstream_provider_id = up.id AND um.upstream_model = mp.upstream_model
      WHERE mp.model_id = ? AND mp.active = 1
-     ORDER BY mp.priority, mp.label`
+     ORDER BY mp.priority, up.label`
   ).all<{
     id: string
     model_id: string
@@ -615,7 +664,7 @@ app.post('/api/admin/models/:id/providers', async (c) => {
   const upstreamProviderId = String(body.upstream_provider_id ?? '').trim()
   if (!upstreamProviderId) return c.json({ error: 'invalid_input', message: 'upstream_provider_id is required.' }, 400)
   
-  const upstreamProvider = await c.env.DB.prepare('SELECT id FROM freellm_upstream_providers WHERE id = ? AND active = 1').bind(upstreamProviderId).first()
+  const upstreamProvider = await c.env.DB.prepare('SELECT id FROM freellm_upstream_providers WHERE id = ?').bind(upstreamProviderId).first()
   if (!upstreamProvider) return c.json({ error: 'invalid_input', message: 'Upstream provider not found or inactive.' }, 400)
 
   // Validate upstream_model exists for this provider
@@ -680,7 +729,7 @@ app.patch('/api/admin/models/:id/providers/:providerId', async (c) => {
   }
   if (body.upstream_provider_id !== undefined) {
     const upstreamProviderId = String(body.upstream_provider_id).trim()
-    const upstreamProvider = await c.env.DB.prepare('SELECT id FROM freellm_upstream_providers WHERE id = ? AND active = 1').bind(upstreamProviderId).first()
+    const upstreamProvider = await c.env.DB.prepare('SELECT id FROM freellm_upstream_providers WHERE id = ?').bind(upstreamProviderId).first()
     if (!upstreamProvider) return c.json({ error: 'invalid_input', message: 'Upstream provider not found or inactive.' }, 400)
     updates.upstream_provider_id = upstreamProviderId
   }
@@ -724,11 +773,19 @@ app.post('/api/admin/models/:id/providers/:providerId/test', async (c) => {
   const modelId = c.req.param('id')
   const providerId = c.req.param('providerId')
   const provider = await c.env.DB.prepare(
-    `SELECT mp.*, up.base_url, up.api_key_ciphertext, up.api_key_iv, up.status AS up_status
+    `SELECT mp.*, up.base_url, up.api_key_ciphertext, up.api_key_iv, up.status AS up_status, up.consecutive_failures
      FROM freellm_model_providers mp
      JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
      WHERE mp.id = ? AND mp.model_id = ?`
-  ).bind(providerId, modelId).first()
+  ).bind(providerId, modelId).first<{
+    upstream_provider_id: string
+    base_url: string
+    api_key_ciphertext: string
+    api_key_iv: string
+    upstream_model: string
+    up_status: string
+    consecutive_failures: number
+  }>()
 
   if (!provider) return c.json({ error: 'not_found', message: 'Provider config not found.' }, 404)
 
@@ -788,7 +845,12 @@ app.post('/api/admin/models/:id/providers/:providerId/reveal', async (c) => {
      FROM freellm_model_providers mp
      JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
      WHERE mp.id = ? AND mp.model_id = ?`
-  ).bind(providerId, modelId).first()
+  ).bind(providerId, modelId).first<{
+    api_key_ciphertext: string
+    api_key_iv: string
+    up_label: string
+    id: string
+  }>()
 
   if (!provider) return c.json({ error: 'not_found', message: 'Provider config not found.' }, 404)
 
@@ -797,28 +859,7 @@ app.post('/api/admin/models/:id/providers/:providerId/reveal', async (c) => {
   return c.json({ id: provider.id, label: provider.up_label, api_key: apiKey })
 })
 
-async function publicModelProvider(provider: {
-  id: string
-  model_id: string
-  upstream_provider_id: string
-  upstream_model: string
-  priority: number
-  active: number
-  messages_served: number
-  created_at: number
-  updated_at: number
-  up_label: string
-  base_url: string
-  api_key_ciphertext: string
-  api_key_iv: string
-  up_status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled'
-  avg_latency_ms: number | null
-  consecutive_failures: number
-  cooldown_until: number | null
-  cooldown_base_ms: number | null
-  last_checked_at: number | null
-  last_error: string | null
-}, encryptionKey: string) {
+async function publicModelProvider(provider: Record<string, unknown>, encryptionKey: string) {
   return {
     id: provider.id,
     label: provider.up_label,
@@ -867,14 +908,13 @@ app.post('/api/admin/upstream-models', async (c) => {
     return c.json({ error: 'invalid_input', message: 'upstream_provider_id and upstream_model are required.' }, 400)
   }
 
-  const provider = await c.env.DB.prepare('SELECT id FROM freellm_upstream_providers WHERE id = ? AND active = 1').bind(upstreamProviderId).first()
+  const provider = await c.env.DB.prepare('SELECT id FROM freellm_upstream_providers WHERE id = ?').bind(upstreamProviderId).first()
   if (!provider) return c.json({ error: 'invalid_input', message: 'Upstream provider not found or inactive.' }, 400)
 
   const capabilities = Array.isArray(body.capabilities) ? body.capabilities : []
   const contextWindow = body.context_window == null ? null : Number(body.context_window)
   const maxOutputTokens = body.max_output_tokens == null ? null : Number(body.max_output_tokens)
 
-  const timestamp = now()
   try {
     await c.env.DB.prepare(
       `INSERT INTO freellm_upstream_models (upstream_provider_id, upstream_model, capabilities, context_window, max_output_tokens)

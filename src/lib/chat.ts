@@ -4,7 +4,7 @@
 export type ChatSseEvent =
   | { type: 'delta'; content: string }
   | { type: 'usage'; input: number | null; output: number | null; total: number | null; source: 'reported' | 'flat_rate' }
-  | { type: 'settled'; credits_charged: number; balance: { global: number; scoped: number }; status: string; model?: string; provider?: string; latency_ms?: number; request_id?: string }
+  | { type: 'settled'; credits_charged: number | null; balance: { global: number; scoped: number }; status: string; model?: string; provider?: string; latency_ms?: number; request_id?: string }
 
 export type StreamHandlers = {
   onDelta: (content: string) => void

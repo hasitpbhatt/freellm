@@ -14,7 +14,7 @@
 import { Hono } from 'hono'
 import { requireAuth } from '../lib/middleware'
 import { estimateReserve, computeSpendable, placeHold, settleRequest } from '../lib/metering'
-import { callProvider, loadAlias, providerApiKey, recordOutcome, resolveCandidates, type UpstreamConfig } from '../lib/providers'
+import { callProvider, loadAlias, providerApiKey, recordOutcome, resolveCandidates, type UpstreamConfig, type ModelProviderRow, type UpstreamProviderWithModel } from '../lib/providers'
 import { canAccessModel, tierGatedMessage } from '../lib/tiers'
 import { decryptSecret } from '../lib/crypto'
 import type { Bindings, ApiKeyRow, Variables } from '../lib/types'
@@ -52,7 +52,7 @@ function usageFromChunk(chunk: Record<string, unknown>): { input: number; output
 app.post('/api/chat', requireAuth, async (c) => {
   const user = c.get('user')
   const payload = await c.req
-    .json<{ model?: unknown; messages?: unknown; request_id?: unknown; max_tokens?: unknown; key_mode?: unknown; key_id?: unknown }>()
+    .json<{ model?: unknown; messages?: unknown; request_id?: unknown; max_tokens?: unknown; key_mode?: unknown; key_id?: unknown; required_capabilities?: unknown }>()
     .catch(() => null)
 
   const slug = typeof payload?.model === 'string' ? payload.model.trim() : ''
@@ -60,6 +60,10 @@ app.post('/api/chat', requireAuth, async (c) => {
   const rawMessages = Array.isArray(payload?.messages) ? payload.messages : []
   const keyMode = payload?.key_mode === 'byok' ? 'byok' : 'pool'
   const keyId = typeof payload?.key_id === 'string' ? payload.key_id : ''
+  // required_capabilities: array of capability strings (e.g., ["tools", "vision"])
+  const requiredCapabilities = Array.isArray(payload?.required_capabilities)
+    ? payload.required_capabilities.filter((c): c is string => typeof c === 'string')
+    : []
 
   const messages = rawMessages
     .filter(
@@ -133,6 +137,10 @@ app.post('/api/chat', requireAuth, async (c) => {
   let providerLabel = ''
   let startedAt = Date.now()
   let isByok = false
+  // The winning Pool candidate (full row incl. upstream), set in the failover
+  // loop so the success path can record health + impact. BYOK leaves it null
+  // (recordOutcome is skipped for BYOK anyway).
+  let selectedProvider: (ModelProviderRow & { upstream: UpstreamProviderWithModel }) | null = null
 
   const clientGone = () => c.req.raw.signal?.aborted === true
 
@@ -226,7 +234,7 @@ app.post('/api/chat', requireAuth, async (c) => {
     // The hold write and the routing-counter read/write are independent:
     // overlap them so candidate selection costs no extra round trip.
     const [candidates] = await Promise.all([
-      resolveCandidates(c.env, alias),
+      resolveCandidates(c.env, alias, Date.now(), { requiredCapabilities }),
       placeHold(c.env.DB, user.id, requestId, reserve),
     ])
     if (candidates.length === 0) {
@@ -248,19 +256,20 @@ app.post('/api/chat', requireAuth, async (c) => {
       if (clientGone()) break
       const attemptStart = Date.now()
       try {
-        const apiKey = await providerApiKey(c.env, candidate)
-        call = await callProvider(candidate, apiKey, messages, { maxTokens, stream: true })
+        const apiKey = await providerApiKey(c.env, candidate.upstream)
+        call = await callProvider({ id: candidate.id, base_url: candidate.upstream.base_url, upstream_model: candidate.upstream_model }, apiKey, messages, { maxTokens, stream: true })
         if (call.response.ok && call.response.body) {
-          providerLabel = candidate.label
+          providerLabel = candidate.upstream.label
+          selectedProvider = candidate
           break
         }
         lastError = `${call.response.status} ${call.response.statusText}`
         const detail = (await call.response.text().catch(() => '')).slice(0, 200)
-        await recordOutcome(c.env, candidate.id, { ok: false, latencyMs: Date.now() - attemptStart, error: `${lastError} ${detail}` })
+        await recordOutcome(c.env, candidate.upstream.id, candidate.id, { ok: false, latencyMs: Date.now() - attemptStart, error: `${lastError} ${detail}` })
         call = null
       } catch (err) {
         lastError = err instanceof Error ? err.message : 'network error'
-        await recordOutcome(c.env, candidate.id, { ok: false, latencyMs: Date.now() - attemptStart, error: lastError })
+        await recordOutcome(c.env, candidate.upstream.id, candidate.id, { ok: false, latencyMs: Date.now() - attemptStart, error: lastError })
         call = null
       }
     }
@@ -301,7 +310,15 @@ app.post('/api/chat', requireAuth, async (c) => {
   }
 
   // ---- Step 2: Shared streaming + settle ----
-  const provider = call.provider
+  // Both paths either return early or set `call` to a non-null upstream call,
+  // but TS can't narrow a `let` across the if/else boundary — guard it once.
+  if (!call) {
+    return c.json({ error: 'upstream_failed', message: 'No upstream response.' }, 502)
+  }
+  // `call.response` is the streaming Response on both paths. `selectedProvider`
+  // is the winning Pool candidate (with its upstream); it stays null on the
+  // BYOK path, where health bookkeeping is skipped anyway.
+  const provider = selectedProvider
   const upstream = call.response
 
   let usage: { input: number; output: number; total: number } | null = null
@@ -310,34 +327,40 @@ app.post('/api/chat', requireAuth, async (c) => {
   const decoder = new TextDecoder()
   const streamStart = Date.now()
 
-  const settle = async (kind: 'completed' | 'aborted' | 'failed', reason?: string) => {
-    if (settled) return
+  const settle = async (kind: 'completed' | 'aborted' | 'failed', reason?: string): Promise<Awaited<ReturnType<typeof settleRequest>> | null> => {
+    if (settled) return null
     settled = true
-    try {
-      // Health bookkeeping must never block or break billing: settle the
-      // credits first-class, and record the outcome alongside it.
-      const settlePromise = settleRequest(c.env.DB, {
-        userId: user.id,
-        requestId,
-        model: alias.model,
-        providerLabel,
-        settlement: kind === 'completed' ? { kind, usage } : { kind, reason },
-        latencyMs: Date.now() - startedAt,
-        usage,
-        free: isByok,
-      })
-      const outcomePromise =
-        kind === 'completed' && !isByok
-          ? recordOutcome(c.env, provider.id, { ok: true, latencyMs: Date.now() - streamStart }).catch((err) => {
-              console.error('[chat] recordOutcome failed', requestId, err)
-            })
-          : Promise.resolve()
-      const [result] = await Promise.all([settlePromise, outcomePromise])
-      return result
-    } catch (err) {
-      console.error('[chat] settle failed', requestId, err)
-      return null
+    // One retry: a D1 hiccup used to be swallowed and the flush event
+    // below invented a flat-rate charge that never happened. Now the
+    // client is told the truth — credits_charged null, status unknown —
+    // rather than shown a receipt for tokens it got for free.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        // Health bookkeeping must never block or break billing: settle the
+        // credits first-class, and record the outcome alongside it.
+        const settlePromise = settleRequest(c.env.DB, {
+          userId: user.id,
+          requestId,
+          model: alias.model,
+          providerLabel,
+          settlement: kind === 'completed' ? { kind, usage } : { kind, reason },
+          latencyMs: Date.now() - startedAt,
+          usage,
+          free: isByok,
+        })
+        const outcomePromise =
+          kind === 'completed' && !isByok && provider
+            ? recordOutcome(c.env, provider.upstream.id, provider.id, { ok: true, latencyMs: Date.now() - streamStart }).catch((err) => {
+                console.error('[chat] recordOutcome failed', requestId, err)
+              })
+            : Promise.resolve()
+        const [result] = await Promise.all([settlePromise, outcomePromise])
+        return result
+      } catch (err) {
+        console.error('[chat] settle failed (attempt %d)', attempt, requestId, err)
+      }
     }
+    return null
   }
 
   const transform = new TransformStream<Uint8Array, Uint8Array>({
@@ -372,7 +395,12 @@ app.post('/api/chat', requireAuth, async (c) => {
         }
       }
       buffer = ''
-      const result = await settle('completed', usage ? undefined : 'no usage block in stream')
+      let result: Awaited<ReturnType<typeof settleRequest>> | null = null
+      try {
+        result = await settle('completed', usage ? undefined : 'no usage block in stream')
+      } catch (err) {
+        console.error('[chat] settle failed in flush', requestId, err)
+      }
       const status = result?.status ?? (usage ? 'completed' : 'aborted')
       controller.enqueue(
         encoder.encode(
@@ -389,9 +417,11 @@ app.post('/api/chat', requireAuth, async (c) => {
         encoder.encode(
           sse({
             type: 'settled',
-            credits_charged: result?.creditsCharged ?? alias.model.flat_rate_credits,
+            // null (not flat_rate) when settlement genuinely failed — the
+            // charge may land asynchronously; never report one that didn't.
+            credits_charged: result?.creditsCharged ?? null,
             balance: result?.balance ?? { global: user.balance_credits, scoped: 0 },
-            status,
+            status: result ? status : 'unknown',
             model: alias.model.slug,
             provider: providerLabel,
             latency_ms: Date.now() - startedAt,
@@ -431,12 +461,15 @@ app.post('/api/chat', requireAuth, async (c) => {
  * not public data (admin gets those from /api/admin/models).
  */
 app.get('/api/models', async (c) => {
+  // Join model_providers -> upstream_providers -> upstream_models
   const rows = await c.env.DB.prepare(
     `SELECT m.slug, m.label, m.description, m.capabilities, m.context_window,
             m.max_output_tokens, m.flat_rate_credits, m.routing, m.access_tier, m.scoped_only,
-            p.status AS provider_status
+            up.id AS up_id, up.label AS up_label, up.base_url,
+            up.status AS provider_status, up.avg_latency_ms
      FROM freellm_models m
-     LEFT JOIN freellm_model_providers p ON p.model_id = m.id AND p.active = 1
+     LEFT JOIN freellm_model_providers mp ON mp.model_id = m.id AND mp.active = 1
+     LEFT JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
      WHERE m.active = 1
      ORDER BY m.sort_order, m.slug`,
   ).all<{
@@ -450,7 +483,11 @@ app.get('/api/models', async (c) => {
     routing: string
     access_tier: string
     scoped_only: number
-    provider_status: 'unknown' | 'live' | 'slow' | 'down' | null
+    up_id: string | null
+    up_label: string | null
+    base_url: string | null
+    provider_status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled' | null
+    avg_latency_ms: number | null
   }>()
 
   type PublicModel = {
@@ -468,7 +505,7 @@ app.get('/api/models', async (c) => {
     provider_count: number
   }
 
-  const bySlug = new Map<string, PublicModel & { statuses: string[] }>()
+  const bySlug = new Map<string, PublicModel & { statuses: string[]; up_labels: string[] }>()
   for (const row of rows.results) {
     let entry = bySlug.get(row.slug)
     if (!entry) {
@@ -486,15 +523,17 @@ app.get('/api/models', async (c) => {
         status: 'unknown',
         provider_count: 0,
         statuses: [],
+        up_labels: [],
       }
       bySlug.set(row.slug, entry)
     }
-    if (row.provider_status) {
+    if (row.provider_status && row.up_id) {
       entry.statuses.push(row.provider_status)
+      entry.up_labels.push(row.up_label!)
     }
   }
 
-  const models = Array.from(bySlug.values()).map(({ statuses, ...model }) => ({
+  const models = Array.from(bySlug.values()).map(({ statuses, up_labels, ...model }) => ({
     ...model,
     provider_count: statuses.length,
     status: statuses.includes('live')

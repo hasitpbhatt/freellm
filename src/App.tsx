@@ -1,7 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import AppShell from './components/AppShell'
 import Landing from './pages/Landing'
-import Placeholder from './pages/Placeholder'
+import NotFound from './pages/NotFound'
 import Login from './pages/Login'
 import Admin from './pages/Admin'
 import Earn from './pages/Earn'
@@ -34,7 +34,7 @@ export default function App() {
           <Route path="/r/:code" element={<ReferralLanding />} />
           <Route path="/register" element={<Navigate to="/login" replace />} />
           <Route path="/login" element={<Login />} />
-          <Route path="*" element={<Placeholder title="Not found" milestone="—" />} />
+          <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>
     </BrowserRouter>

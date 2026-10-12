@@ -211,7 +211,7 @@ app.post('/api/battles', requireAuth, async (c) => {
       }
     } catch (err) {
       // stream broke mid-flight: settle what we have
-      await recordOutcome(c.env, provider.id, {
+      await recordOutcome(c.env, provider.upstream.id, provider.id, {
         ok: false,
         latencyMs: Date.now() - streamStart,
         error: err instanceof Error ? err.message : 'stream error',
@@ -220,7 +220,7 @@ app.post('/api/battles', requireAuth, async (c) => {
         userId: user.id,
         requestId,
         model: alias.model,
-        providerLabel: provider.label,
+        providerLabel: provider.upstream.label,
         settlement: { kind: 'failed', reason: 'stream error' },
         latencyMs: Date.now() - streamStart,
         battleId,
@@ -235,13 +235,13 @@ app.post('/api/battles', requireAuth, async (c) => {
       userId: user.id,
       requestId,
       model: alias.model,
-      providerLabel: provider.label,
+      providerLabel: provider.upstream.label,
       settlement: { kind: 'completed', usage },
       latencyMs: Date.now() - streamStart,
       battleId,
     })
 
-    await recordOutcome(c.env, provider.id, { ok: true, latencyMs: Date.now() - streamStart })
+    await recordOutcome(c.env, provider.upstream.id, provider.id, { ok: true, latencyMs: Date.now() - streamStart })
 
     answers[label] = { slug: alias.model.slug, content: content.slice(0, MAX_ANSWER_CHARS) }
     send({
@@ -303,7 +303,9 @@ app.post('/api/battles/:id/vote', requireAuth, async (c) => {
 
   const answers = safeParse<Record<string, BattleAnswer>>(battle.answers) ?? {}
   const winner = answers[label]
-  if (!winner) return c.json({ error: 'invalid_label', message: 'No answer for that label.' }, 400)
+  // The vote must not be able to award Elo to a column that errored out and
+  // returned nothing — the SPA hides the button, the API must not rely on it.
+  if (!winner || winner.error) return c.json({ error: 'invalid_label', message: 'No answer for that label.' }, 400)
 
   const already = await c.env.DB.prepare('SELECT 1 AS x FROM freellm_battle_votes WHERE battle_id = ? AND user_id = ?')
     .bind(battleId, user.id)
@@ -321,6 +323,10 @@ app.post('/api/battles/:id/vote', requireAuth, async (c) => {
   const updates = eloBattle(ratings, winner.slug)
 
   const timestamp = now()
+  // The vote INSERT is the race guard: its PRIMARY KEY (battle_id, user_id)
+  // rejects the loser, which rolls the whole batch back (so no Elo update
+  // lands for the loser either) and surfaces as a friendly already_voted
+  // instead of the raw UNIQUE-constraint 500 the un-guarded batch threw.
   const statements = [
     c.env.DB.prepare('INSERT INTO freellm_battle_votes (battle_id, user_id, model, created_at) VALUES (?, ?, ?, ?)').bind(
       battleId,
@@ -332,11 +338,19 @@ app.post('/api/battles/:id/vote', requireAuth, async (c) => {
   for (const update of updates) {
     statements.push(
       c.env.DB.prepare(
-        `UPDATE freellm_models SET elo_rating = ?, elo_games = elo_games + 1, elo_wins = elo_wins + ?, updated_at = ? WHERE slug = ?`,
-      ).bind(update.after, update.slug === winner.slug ? 1 : 0, timestamp, update.slug),
+        `UPDATE freellm_models SET elo_rating = ?, elo_games = elo_games + 1, elo_wins = elo_wins + ?, updated_at = ?
+         WHERE slug = ? AND EXISTS (SELECT 1 FROM freellm_battle_votes WHERE battle_id = ? AND user_id = ?)`,
+      ).bind(update.after, update.slug === winner.slug ? 1 : 0, timestamp, update.slug, battleId, user.id),
     )
   }
-  await c.env.DB.batch(statements)
+  try {
+    await c.env.DB.batch(statements)
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('UNIQUE constraint failed: freellm_battle_votes')) {
+      return c.json({ error: 'already_voted', message: 'You already voted in this battle.' }, 409)
+    }
+    throw err
+  }
 
   return c.json({
     voted: winner.slug,

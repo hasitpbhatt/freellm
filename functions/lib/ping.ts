@@ -2,6 +2,7 @@
 // config tests and BYOK key validation.
 
 import { SLOW_THRESHOLD_MS } from './providers'
+import { assertSafeBaseUrl } from './validate'
 
 export type PingResult = {
   ok: boolean
@@ -17,6 +18,8 @@ export async function pingProvider(
   apiKey: string,
 ): Promise<PingResult> {
   const base = baseUrl.replace(/\/+$/, '')
+  // SSRF guard: never probe a private/link-local host from the server side.
+  assertSafeBaseUrl(base)
   const started = Date.now()
   const headers = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }
 

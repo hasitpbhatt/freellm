@@ -70,13 +70,18 @@ export type UpstreamProviderRow = {
   updated_at: number
 }
 
-/** Upstream model catalog entry. */
+/** Upstream model catalog entry with capabilities. */
 export type UpstreamModelRow = {
   upstream_provider_id: string
   upstream_model: string
   capabilities: string | null
   context_window: number | null
   max_output_tokens: number | null
+}
+
+/** Upstream provider with its model capabilities (for routing). */
+export type UpstreamProviderWithModel = UpstreamProviderRow & {
+  model_capabilities: string[]
 }
 
 /** Model provider mapping: alias -> upstream provider + upstream_model. */

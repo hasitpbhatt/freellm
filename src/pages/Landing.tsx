@@ -138,7 +138,7 @@ export default function Landing() {
                       </span>
                     ))}
                   </div>
-                  <p className="num text-[11px] text-muted">{replay.votes} votes · tap to vote</p>
+                  <p className="num text-[11px] text-muted">{replay.votes} votes · tap to watch replay</p>
                 </Card>
               </Link>
             ))}

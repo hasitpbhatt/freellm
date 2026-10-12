@@ -12,7 +12,7 @@ import {
   sortByLatency,
 } from '../functions/lib/providers'
 import { encryptSecret } from '../functions/lib/crypto'
-import type { Bindings, ModelProviderRow, UpstreamProviderRow } from '../functions/lib/types'
+import type { Bindings, ModelProviderRow, UpstreamProviderRow, UpstreamProviderWithModel } from '../functions/lib/types'
 import { createTestDb, testModel } from './helpers/db'
 
 let db: D1Database
@@ -39,10 +39,10 @@ afterEach(async () => {
 /** Create a test upstream provider row. */
 async function createUpstreamProvider(
   id: string,
-  overrides: Partial<UpstreamProviderRow> = {}
-): Promise<UpstreamProviderRow> {
+  overrides: Partial<UpstreamProviderWithModel> = {}
+): Promise<UpstreamProviderWithModel> {
   const now = Date.now()
-  const row: UpstreamProviderRow = {
+  const row: UpstreamProviderWithModel = {
     id,
     label: id,
     base_url: 'https://provider.example/v1',
@@ -57,6 +57,7 @@ async function createUpstreamProvider(
     cooldown_base_ms: null,
     created_at: now,
     updated_at: now,
+    model_capabilities: [],
     ...overrides,
   }
   await db.prepare(
@@ -135,7 +136,7 @@ function providerRow(id: string, upstreamProviderId: string, priority: number, o
   }
 }
 
-function upstreamProviderRow(id: string, overrides: Partial<UpstreamProviderRow> = {}): UpstreamProviderRow {
+function upstreamProviderRow(id: string, overrides: Partial<UpstreamProviderWithModel> = {}): UpstreamProviderWithModel {
   const now = Date.now()
   return {
     id,
@@ -152,6 +153,7 @@ function upstreamProviderRow(id: string, overrides: Partial<UpstreamProviderRow>
     cooldown_base_ms: null,
     created_at: now,
     updated_at: now,
+    model_capabilities: [],
     ...overrides,
   }
 }
@@ -172,10 +174,10 @@ async function storedModelProviders(): Promise<ModelProviderRow[]> {
   return rows.results
 }
 
-async function storedUpstreamProviders(): Promise<UpstreamProviderRow[]> {
+async function storedUpstreamProviders(): Promise<UpstreamProviderWithModel[]> {
   const rows = await db
-    .prepare('SELECT * FROM freellm_upstream_providers ORDER BY label')
-    .all<UpstreamProviderRow>()
+    .prepare('SELECT *, NULL AS model_capabilities FROM freellm_upstream_providers ORDER BY label')
+    .all<UpstreamProviderWithModel>()
   return rows.results
 }
 

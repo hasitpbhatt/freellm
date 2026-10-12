@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, ApiError } from '../lib/api'
 import { Button, Card, CardHeader } from '../components/ui'
+import { useAuth } from '../lib/auth'
 
 type Phase = { name: 'idle' } | { name: 'typing'; roundId: string } | { name: 'done'; text: string; kind: 'ok' | 'err' }
 
@@ -14,6 +15,7 @@ export default function TypingGame() {
   const [typed, setTyped] = useState('')
   const [phase, setPhase] = useState<Phase>({ name: 'idle' })
   const claimed = useRef(false)
+  const { refresh } = useAuth()
 
   const load = async () => {
     try {
@@ -50,6 +52,7 @@ export default function TypingGame() {
         typed: text,
       })
       setPhase({ name: 'done', kind: 'ok', text: `Perfect — +${data.reward} cr. Balance ${data.balance.toLocaleString('en-US')} cr.` })
+      await refresh()
     } catch (err) {
       setPhase({ name: 'done', kind: 'err', text: err instanceof ApiError ? err.message : 'Claim failed.' })
     } finally {

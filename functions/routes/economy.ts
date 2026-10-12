@@ -75,30 +75,49 @@ export async function qualifyReferrals(db: D1Database, referrerId: string): Prom
     if (tenureDays < REFERRAL_TENURE_DAYS && tokensUsed < REFERRAL_TOKENS) continue
 
     const timestamp = now()
-    // Conditional claim: only the winner of the race updates a row from
-    // 'waiting'. Losers update 0 rows and must not mint ledger/balance.
-    const claim = (await db
-      .prepare("UPDATE freellm_referrals SET status = 'paid', qualified_at = ?, paid_at = ?, reward = ? WHERE id = ? AND status = 'waiting'")
-      .bind(timestamp, timestamp, REFERRAL_REWARD, row.id)
-      .run() as unknown as { meta?: { changes?: number }; success?: boolean })
-    const claimed = typeof claim?.meta?.changes === 'number' ? claim.meta.changes > 0 : true
-    if (!claimed) continue
-    await db.batch([
-      db
-        .prepare(
-          "INSERT INTO freellm_credit_ledger (id, user_id, delta, reason, meta, created_at) VALUES (?, ?, ?, 'referral_reward', ?, ?)",
-        )
-        .bind(
-          newId(),
-          referrerId,
-          REFERRAL_REWARD,
-          JSON.stringify({ referred_id: row.referred_id, milestone: { tenure_days: Math.floor(tenureDays), tokens_used: tokensUsed } }),
-          timestamp,
-        ),
-      db
-        .prepare('UPDATE freellm_users SET balance_credits = balance_credits + ?, updated_at = ? WHERE id = ?')
-        .bind(REFERRAL_REWARD, timestamp, referrerId),
-    ])
+    // Claim + payout in ONE batch: the claim UPDATE is the race gate (only
+    // the winner flips a row from 'waiting'), and both grant statements are
+    // conditioned on the marker it writes — so a crash between the claim
+    // and the payout can no longer strand a paid-marked referral with no
+    // credits, and a losing racer mints nothing. The deterministic ledger
+    // id (one per referral row) is the backstop for same-millisecond
+    // collisions: the loser's insert violates the PRIMARY KEY, the batch
+    // rolls back, and we treat it as already paid.
+    let claimResult: Array<{ success: boolean; meta?: { changes?: number } }>
+    try {
+      claimResult = (await db.batch([
+        db
+          .prepare("UPDATE freellm_referrals SET status = 'paid', qualified_at = ?, paid_at = ?, reward = ? WHERE id = ? AND status = 'waiting'")
+          .bind(timestamp, timestamp, REFERRAL_REWARD, row.id),
+        db
+          .prepare(
+            `INSERT INTO freellm_credit_ledger (id, user_id, delta, reason, meta, created_at)
+             SELECT ?, ?, ?, 'referral_reward', ?, ?
+             WHERE EXISTS (SELECT 1 FROM freellm_referrals WHERE id = ? AND status = 'paid' AND paid_at = ?)`,
+          )
+          .bind(
+            `referral_reward:${row.id}`,
+            referrerId,
+            REFERRAL_REWARD,
+            JSON.stringify({ referred_id: row.referred_id, milestone: { tenure_days: Math.floor(tenureDays), tokens_used: tokensUsed } }),
+            timestamp,
+            row.id,
+            timestamp,
+          ),
+        db
+          .prepare(
+            `UPDATE freellm_users SET balance_credits = balance_credits + ?, updated_at = ?
+             WHERE id = ? AND EXISTS (SELECT 1 FROM freellm_referrals WHERE id = ? AND status = 'paid' AND paid_at = ?)`,
+          )
+          .bind(REFERRAL_REWARD, timestamp, referrerId, row.id, timestamp),
+      ])) as unknown as Array<{ success: boolean; meta?: { changes?: number } }>
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('UNIQUE constraint failed: freellm_credit_ledger')) {
+        continue
+      }
+      throw err
+    }
+    if (!claimResult[0]?.success || claimResult[0].meta?.changes === 0) continue
     paid += 1
   }
   return paid
@@ -389,7 +408,7 @@ app.post('/api/tasks/:slug/complete', requireAuth, async (c) => {
       c.env.DB.prepare('INSERT INTO freellm_task_completions (user_id, task_id, reward, created_at) VALUES (?, ?, ?, ?)')
         .bind(user.id, task.id, task.reward, timestamp),
       c.env.DB.prepare(
-        'INSERT INTO freellm_credit_ledger (id, user_id, delta, reason, meta, created_at) VALUES (?, ?, ?, 'task_reward', ?, ?)'
+        "INSERT INTO freellm_credit_ledger (id, user_id, delta, reason, meta, created_at) VALUES (?, ?, ?, 'task_reward', ?, ?)"
       ).bind(newId(), user.id, task.reward, JSON.stringify({ task_id: task.id, slug: task.slug }), timestamp),
       c.env.DB.prepare('UPDATE freellm_users SET balance_credits = balance_credits + ?, updated_at = ? WHERE id = ?')
         .bind(task.reward, timestamp, user.id),

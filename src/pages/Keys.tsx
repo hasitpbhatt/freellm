@@ -304,7 +304,7 @@ export default function Keys() {
                       <Button variant="secondary" size="sm" onClick={() => handleTest(k.id)} disabled={testingId === k.id || adding}>
                         {testingId === k.id ? 'Testing…' : 'Test'}
                       </Button>
-                      <Link to="/chat" className="btn-secondary btn-sm">Use in chat</Link>
+                      <Link to={`/chat?mode=byok&key=${k.id}`} className="btn-secondary btn-sm">Use in chat</Link>
                       <Button variant="secondary" size="sm" className="text-loss hover:bg-loss/10" onClick={() => handleDelete(k)}>Delete</Button>
                     </div>
                   </div>

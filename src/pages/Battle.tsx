@@ -125,46 +125,49 @@ export default function Battle() {
     setVoted(false)
     setColumns([])
 
-    const result = await streamBattle({ prompt: prompt.trim(), models: selected }, {
-      onEvent: (event: BattleStreamEvent) => {
-        switch (event.type) {
-          case 'battle':
-            setBattleId(event.id)
-            setColumns([])
-            break
-          case 'start':
-            setColumns((prev) => [
-              ...prev,
-              { label: event.label, content: '', streaming: true, error: null, cost: null, revealedSlug: null, elo: null },
-            ])
-            break
-          case 'delta':
-            setColumns((prev) =>
-              prev.map((c) => (c.label === event.label ? { ...c, content: c.content + event.content } : c)),
-            )
-            break
-          case 'settled':
-            setColumns((prev) =>
-              prev.map((c) =>
-                c.label === event.label
-                  ? { ...c, streaming: false, cost: { credits: event.credits, source: event.source, usage: event.usage } }
-                  : c,
-              ),
-            )
-            break
-          case 'error':
-            setColumns((prev) =>
-              prev.map((c) => (c.label === event.label ? { ...c, streaming: false, error: event.message } : c)),
-            )
-            break
-          case 'done':
-            setRunning(false)
-            break
-        }
-      },
-    })
-
-    setRunning(false)
+    let result: { ok: boolean; error?: string } = { ok: false }
+    try {
+      result = await streamBattle({ prompt: prompt.trim(), models: selected }, {
+        onEvent: (event: BattleStreamEvent) => {
+          switch (event.type) {
+            case 'battle':
+              setBattleId(event.id)
+              setColumns([])
+              break
+            case 'start':
+              setColumns((prev) => [
+                ...prev,
+                { label: event.label, content: '', streaming: true, error: null, cost: null, revealedSlug: null, elo: null },
+              ])
+              break
+            case 'delta':
+              setColumns((prev) =>
+                prev.map((c) => (c.label === event.label ? { ...c, content: c.content + event.content } : c)),
+              )
+              break
+            case 'settled':
+              setColumns((prev) =>
+                prev.map((c) =>
+                  c.label === event.label
+                    ? { ...c, streaming: false, cost: { credits: event.credits, source: event.source, usage: event.usage } }
+                    : c,
+                ),
+              )
+              break
+            case 'error':
+              setColumns((prev) =>
+                prev.map((c) => (c.label === event.label ? { ...c, streaming: false, error: event.message } : c)),
+              )
+              break
+            case 'done':
+              setRunning(false)
+              break
+          }
+        },
+      })
+    } finally {
+      setRunning(false)
+    }
     await Promise.all([refresh(), loadArena()])
     if (!result.ok && result.error) setError(result.error)
   }
