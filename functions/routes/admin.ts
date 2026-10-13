@@ -1,7 +1,8 @@
 // Admin API: the model catalog + user dashboard.
 //
 //   models           — aliases freellm_users chat with ("poolside-laguna")
-//   upstream_providers — real upstream providers (Poolside, OpenAI, etc.)
+//   upstream_providers — one endpoint (base_url) each; owns N bearer keys
+//   upstream_keys     — the bearer keys in each provider's pool
 //   upstream_models   — canonical model names per provider
 //   model_providers   — alias -> upstream_provider + upstream_model mapping
 //   users            — every signed-up user with balances + token leaderboard.
@@ -16,14 +17,14 @@ import {
   validateEmailBlockPattern,
 } from '../lib/email-blocks'
 import { pingProvider } from '../lib/ping'
-import { EWMA_ALPHA, EWMA_BETA } from '../lib/providers'
+import { EWMA_ALPHA, EWMA_BETA, selectProviderKey } from '../lib/providers'
 import {
   slugify,
   validateBaseUrl,
   validateBearer,
   validateCapabilities,
 } from '../lib/validate'
-import type { Bindings, ModelProviderRow, ModelRow, UpstreamProviderRow, Variables } from '../lib/types'
+import type { Bindings, ModelProviderRow, ModelRow, UpstreamKeyRow, UpstreamProviderRow, Variables } from '../lib/types'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -57,14 +58,48 @@ function safeParseArray(json: string): string[] {
   }
 }
 
+/** Masks one key's ciphertext for display. */
+async function maskKey(key: { api_key_ciphertext: string; api_key_iv: string }, encryptionKey: string): Promise<string> {
+  try {
+    return maskSecret(await decryptSecret(key.api_key_ciphertext, key.api_key_iv, encryptionKey))
+  } catch {
+    return '•••• (key unreadable — check ENCRYPTION_KEY)'
+  }
+}
+
+/** Loads the key pool for a set of upstream provider ids, grouped by provider. */
+async function loadKeysByProvider(env: Bindings, providerIds: string[]): Promise<Map<string, UpstreamKeyRow[]>> {
+  const map = new Map<string, UpstreamKeyRow[]>()
+  if (providerIds.length === 0) return map
+  const rows = await env.DB.prepare(
+    `SELECT * FROM freellm_upstream_keys
+     WHERE upstream_provider_id IN (${providerIds.map(() => '?').join(',')})
+     ORDER BY priority ASC, COALESCE(last_used_at, 0) ASC, created_at ASC`,
+  )
+    .bind(...providerIds)
+    .all<UpstreamKeyRow>()
+  for (const k of rows.results) {
+    const list = map.get(k.upstream_provider_id) ?? []
+    list.push(k)
+    map.set(k.upstream_provider_id, list)
+  }
+  return map
+}
+
+/** Masks the first key of a pool (the "primary" display key), or a placeholder. */
+async function primaryKeyMask(keys: UpstreamKeyRow[], encryptionKey: string): Promise<string> {
+  if (keys.length === 0) return 'no keys'
+  return maskKey(keys[0], encryptionKey)
+}
+
 // -------------------------------------------------------------- list models
 
 app.get('/api/admin/models', async (c) => {
   const models = await c.env.DB.prepare('SELECT * FROM freellm_models ORDER BY sort_order, label').all<ModelRow>()
-  
+
   // Join model_providers -> upstream_providers -> upstream_models
   const providerRows = await c.env.DB.prepare(
-    `SELECT mp.*, up.id AS up_id, up.label AS up_label, up.base_url, up.api_key_ciphertext, up.api_key_iv,
+    `SELECT mp.*, up.id AS up_id, up.label AS up_label, up.base_url,
             up.status AS up_status, up.avg_latency_ms, up.consecutive_failures, up.cooldown_until,
             up.cooldown_base_ms, up.last_checked_at, up.last_error,
             um.capabilities, um.context_window, um.max_output_tokens
@@ -87,8 +122,6 @@ app.get('/api/admin/models', async (c) => {
     up_id: string
     up_label: string
     base_url: string
-    api_key_ciphertext: string
-    api_key_iv: string
     up_status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled'
     avg_latency_ms: number | null
     consecutive_failures: number
@@ -109,26 +142,21 @@ app.get('/api/admin/models', async (c) => {
   }
 
   const encryptionKey = c.env.ENCRYPTION_KEY
+  const keysByProvider = await loadKeysByProvider(c.env, [...new Set(providerRows.results.map((p) => p.up_id))])
   const modelPayloads = await Promise.all(
     models.results.map(async (model) => ({
       ...model,
       capabilities: safeParseArray(model.capabilities),
       providers: await Promise.all(
-        (byModel.get(model.id) ?? []).map((p) => publicModelProvider(p, encryptionKey)),
+        (byModel.get(model.id) ?? []).map(async (p) =>
+          publicModelProvider(p, await primaryKeyMask(keysByProvider.get(p.up_id) ?? [], encryptionKey)),
+        ),
       ),
     })),
   )
 
   return c.json({ models: modelPayloads })
 })
-
-async function safeKeyMask(provider: Record<string, unknown>, encryptionKey: string): Promise<string> {
-  try {
-    return maskSecret(await decryptSecret(provider.api_key_ciphertext as string, provider.api_key_iv as string, encryptionKey))
-  } catch {
-    return '•••• (key unreadable — check ENCRYPTION_KEY)'
-  }
-}
 
 // ------------------------------------------------------- create alias (model)
 
@@ -319,11 +347,28 @@ app.get('/api/admin/upstream-providers', async (c) => {
   ).all<UpstreamProviderRow>()
 
   const encryptionKey = c.env.ENCRYPTION_KEY
+  const keysByProvider = await loadKeysByProvider(c.env, rows.results.map((p) => p.id))
   const providers = await Promise.all(
-    rows.results.map(async (p) => ({
-      ...p,
-      key_masked: await safeKeyMask(p, encryptionKey),
-    }))
+    rows.results.map(async (p) => {
+      const keys = keysByProvider.get(p.id) ?? []
+      const masked = await Promise.all(keys.map((k) => maskKey(k, encryptionKey)))
+      return {
+        ...p,
+        key_count: keys.length,
+        key_masked: masked[0] ?? 'no keys',
+        keys: keys.map((k, i) => ({
+          id: k.id,
+          label: k.label,
+          status: k.status,
+          key_masked: masked[i],
+          consecutive_failures: k.consecutive_failures,
+          cooldown_until: k.cooldown_until,
+          last_used_at: k.last_used_at,
+          last_error: k.last_error,
+          priority: k.priority,
+        })),
+      }
+    }),
   )
 
   return c.json({ providers })
@@ -359,25 +404,21 @@ app.post('/api/admin/upstream-providers', async (c) => {
   }
 
   const id = newId()
+  const keyId = newId()
   const timestamp = now()
   const normalizedBaseUrl = String(body.base_url).trim().replace(/\/+$/, '')
 
-  // Insert the new provider first
-  await c.env.DB.prepare(
-    `INSERT INTO freellm_upstream_providers (id, label, base_url, api_key_ciphertext, api_key_iv, status, cooldown_base_ms, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'unknown', ?, ?, ?)`,
-  )
-    .bind(
-      id,
-      label,
-      normalizedBaseUrl,
-      ciphertext,
-      iv,
-      cooldownBaseMs,
-      timestamp,
-      timestamp,
-    )
-    .run()
+  // Insert the provider + its first key atomically.
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `INSERT INTO freellm_upstream_providers (id, label, base_url, status, cooldown_base_ms, created_at, updated_at)
+       VALUES (?, ?, ?, 'unknown', ?, ?, ?)`,
+    ).bind(id, label, normalizedBaseUrl, cooldownBaseMs, timestamp, timestamp),
+    c.env.DB.prepare(
+      `INSERT INTO freellm_upstream_keys (id, upstream_provider_id, label, api_key_ciphertext, api_key_iv, status, priority, created_at, updated_at)
+       VALUES (?, ?, 'primary', ?, ?, 'unknown', 0, ?, ?)`,
+    ).bind(keyId, id, ciphertext, iv, timestamp, timestamp),
+  ])
 
   // Auto-inherit models from existing providers with the same base_url.
   // Same base URL = same API = same available models.
@@ -403,7 +444,17 @@ app.post('/api/admin/upstream-providers', async (c) => {
   }
 
   const provider = await c.env.DB.prepare('SELECT * FROM freellm_upstream_providers WHERE id = ?').bind(id).first<UpstreamProviderRow>()
-  return c.json({ provider: { ...provider!, key_masked: await safeKeyMask(provider!, encryptionKey) } }, 201)
+  const keys = await loadKeysByProvider(c.env, [id])
+  return c.json({
+    provider: {
+      ...provider!,
+      key_count: 1,
+      key_masked: await primaryKeyMask(keys.get(id) ?? [], encryptionKey),
+      keys: await Promise.all(
+        (keys.get(id) ?? []).map(async (k) => ({ ...k, key_masked: await maskKey(k, encryptionKey) })),
+      ),
+    },
+  }, 201)
 })
 
 // ------------------------------------------------ update upstream provider
@@ -441,19 +492,6 @@ app.patch('/api/admin/upstream-providers/:id', async (c) => {
     }
   }
   if (body.active !== undefined) updates.active = body.active ? 1 : 0
-  if (body.api_key !== undefined && body.api_key !== null && String(body.api_key) !== '') {
-    const keyError = validateBearer(body.api_key)
-    if (keyError) return c.json({ error: 'invalid_input', message: keyError }, 400)
-    const encryptionKey = await requireEncryptionKey(c.env)
-    const { ciphertext, iv } = await encryptSecret(String(body.api_key).trim(), encryptionKey)
-    updates.api_key_ciphertext = ciphertext
-    updates.api_key_iv = iv
-    // force a re-test after key rotation
-    updates.status = 'unknown'
-    updates.last_error = null
-    updates.consecutive_failures = 0
-    updates.cooldown_until = null
-  }
 
   const columns = Object.keys(updates)
   if (columns.length === 0) return c.json({ error: 'invalid_input', message: 'Nothing to update.' }, 400)
@@ -465,7 +503,18 @@ app.patch('/api/admin/upstream-providers/:id', async (c) => {
     .run()
 
   const provider = await c.env.DB.prepare('SELECT * FROM freellm_upstream_providers WHERE id = ?').bind(id).first<UpstreamProviderRow>()
-  return c.json({ provider: { ...provider!, key_masked: await safeKeyMask(provider!, await requireEncryptionKey(c.env)) } })
+  const keys = await loadKeysByProvider(c.env, [id])
+  const encryptionKey = await requireEncryptionKey(c.env)
+  return c.json({
+    provider: {
+      ...provider!,
+      key_count: (keys.get(id) ?? []).length,
+      key_masked: await primaryKeyMask(keys.get(id) ?? [], encryptionKey),
+      keys: await Promise.all(
+        (keys.get(id) ?? []).map(async (k) => ({ ...k, key_masked: await maskKey(k, encryptionKey) })),
+      ),
+    },
+  })
 })
 
 // ------------------------------------------------ delete upstream provider
@@ -474,13 +523,72 @@ app.delete('/api/admin/upstream-providers/:id', async (c) => {
   const id = c.req.param('id')
   const existing = await c.env.DB.prepare('SELECT id FROM freellm_upstream_providers WHERE id = ?').bind(id).first()
   if (!existing) return c.json({ error: 'not_found', message: 'Upstream provider not found.' }, 404)
-  
+
   // Check if any model_providers reference this upstream provider
   const refs = await c.env.DB.prepare('SELECT 1 FROM freellm_model_providers WHERE upstream_provider_id = ? LIMIT 1').bind(id).first()
   if (refs) return c.json({ error: 'in_use', message: 'Cannot delete — provider is referenced by model configs.' }, 409)
 
+  // Keys cascade via ON DELETE CASCADE.
   await c.env.DB.prepare('DELETE FROM freellm_upstream_providers WHERE id = ?').bind(id).run()
   return c.json({ ok: true })
+})
+
+// ------------------------------------------------ provider key pool
+
+// Add a bearer key to a provider's pool.
+app.post('/api/admin/upstream-providers/:id/keys', async (c) => {
+  const id = c.req.param('id')
+  const provider = await c.env.DB.prepare('SELECT id FROM freellm_upstream_providers WHERE id = ?').bind(id).first()
+  if (!provider) return c.json({ error: 'not_found', message: 'Upstream provider not found.' }, 404)
+
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null)
+  if (!body) return c.json({ error: 'invalid_body', message: 'Send JSON.' }, 400)
+  const keyError = validateBearer(body.api_key)
+  if (keyError) return c.json({ error: 'invalid_input', message: keyError }, 400)
+  const label = typeof body.label === 'string' && body.label.trim() ? body.label.trim().slice(0, 80) : 'primary'
+
+  const encryptionKey = await requireEncryptionKey(c.env)
+  const { ciphertext, iv } = await encryptSecret(String(body.api_key).trim(), encryptionKey)
+  const keyId = newId()
+  const timestamp = now()
+  await c.env.DB.prepare(
+    `INSERT INTO freellm_upstream_keys (id, upstream_provider_id, label, api_key_ciphertext, api_key_iv, status, priority, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'unknown', 0, ?, ?)`,
+  ).bind(keyId, id, label, ciphertext, iv, timestamp, timestamp).run()
+
+  const keys = await loadKeysByProvider(c.env, [id])
+  const key = (keys.get(id) ?? []).find((k) => k.id === keyId)!
+  return c.json({ key: { ...key, key_masked: await maskKey(key, encryptionKey) } }, 201)
+})
+
+// Delete a key from a provider's pool (refuse to remove the last key).
+app.delete('/api/admin/upstream-providers/:id/keys/:keyId', async (c) => {
+  const id = c.req.param('id')
+  const keyId = c.req.param('keyId')
+  const key = await c.env.DB.prepare('SELECT id FROM freellm_upstream_keys WHERE id = ? AND upstream_provider_id = ?')
+    .bind(keyId, id).first()
+  if (!key) return c.json({ error: 'not_found', message: 'Key not found.' }, 404)
+
+  const count = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM freellm_upstream_keys WHERE upstream_provider_id = ?')
+    .bind(id).first<{ n: number }>()
+  if ((count?.n ?? 0) <= 1) {
+    return c.json({ error: 'last_key', message: 'Cannot delete the provider\'s last key — add another first.' }, 409)
+  }
+  await c.env.DB.prepare('DELETE FROM freellm_upstream_keys WHERE id = ?').bind(keyId).run()
+  return c.json({ ok: true })
+})
+
+// Reveal a specific key.
+app.post('/api/admin/upstream-providers/:id/keys/:keyId/reveal', async (c) => {
+  const id = c.req.param('id')
+  const keyId = c.req.param('keyId')
+  const key = await c.env.DB.prepare('SELECT * FROM freellm_upstream_keys WHERE id = ? AND upstream_provider_id = ?')
+    .bind(keyId, id).first<UpstreamKeyRow>()
+  if (!key) return c.json({ error: 'not_found', message: 'Key not found.' }, 404)
+
+  const encryptionKey = await requireEncryptionKey(c.env)
+  const apiKey = await decryptSecret(key.api_key_ciphertext, key.api_key_iv, encryptionKey)
+  return c.json({ id: key.id, label: key.label, api_key: apiKey })
 })
 
 // ------------------------------------------------ test upstream provider
@@ -491,7 +599,11 @@ app.post('/api/admin/upstream-providers/:id/test', async (c) => {
   if (!provider) return c.json({ error: 'not_found', message: 'Upstream provider not found.' }, 404)
 
   const encryptionKey = await requireEncryptionKey(c.env)
-  const apiKey = await decryptSecret(provider.api_key_ciphertext, provider.api_key_iv, encryptionKey)
+  const keys = await loadKeysByProvider(c.env, [id])
+  const key = selectProviderKey(keys.get(id) ?? [], now())
+  if (!key) return c.json({ error: 'no_keys', message: 'This provider has no usable keys.' }, 409)
+
+  const apiKey = await decryptSecret(key.api_key_ciphertext, key.api_key_iv, encryptionKey)
   const result = await pingProvider(provider.base_url, 'test', apiKey)
 
   const timestamp = now()
@@ -517,12 +629,29 @@ app.post('/api/admin/upstream-providers/:id/test', async (c) => {
       id,
     )
     .run()
+  await c.env.DB.prepare(
+    `UPDATE freellm_upstream_keys SET status = ?, last_checked_at = ?, last_error = ?, updated_at = ? WHERE id = ?`,
+  )
+    .bind(result.status, timestamp, result.error ?? null, timestamp, key.id)
+    .run()
 
   const updated = await c.env.DB.prepare('SELECT * FROM freellm_upstream_providers WHERE id = ?').bind(id).first<UpstreamProviderRow>()
-  return c.json({ provider: { ...updated!, key_masked: await safeKeyMask(updated!, encryptionKey) }, test: result })
+  const updatedKeys = await loadKeysByProvider(c.env, [id])
+  return c.json({
+    provider: {
+      ...updated!,
+      key_count: (updatedKeys.get(id) ?? []).length,
+      key_masked: await primaryKeyMask(updatedKeys.get(id) ?? [], encryptionKey),
+      keys: await Promise.all(
+        (updatedKeys.get(id) ?? []).map(async (k) => ({ ...k, key_masked: await maskKey(k, encryptionKey) })),
+      ),
+    },
+    test: result,
+  })
 })
 
 // ------------------------------------------------ reveal upstream provider key
+// Reveals every key in the provider's pool (the operator's explicit override).
 
 app.post('/api/admin/upstream-providers/:id/reveal', async (c) => {
   const id = c.req.param('id')
@@ -530,8 +659,17 @@ app.post('/api/admin/upstream-providers/:id/reveal', async (c) => {
   if (!provider) return c.json({ error: 'not_found', message: 'Upstream provider not found.' }, 404)
 
   const encryptionKey = await requireEncryptionKey(c.env)
-  const apiKey = await decryptSecret(provider.api_key_ciphertext, provider.api_key_iv, encryptionKey)
-  return c.json({ id: provider.id, label: provider.label, api_key: apiKey })
+  const keys = await loadKeysByProvider(c.env, [id])
+  const revealed = await Promise.all(
+    (keys.get(id) ?? []).map(async (k) => ({
+      id: k.id,
+      label: k.label,
+      api_key: await decryptSecret(k.api_key_ciphertext, k.api_key_iv, encryptionKey),
+    })),
+  )
+  // Backward-compatible: the first key's plaintext is surfaced as `api_key`
+  // for single-key callers, with the full pool available as `keys`.
+  return c.json({ id: provider.id, label: provider.label, api_key: revealed[0]?.api_key ?? null, keys: revealed })
 })
 
 // ------------------------------------------------ copy models from another provider
@@ -588,7 +726,7 @@ app.get('/api/admin/models/:id/providers', async (c) => {
   if (!model) return c.json({ error: 'not_found', message: 'Model not found.' }, 404)
 
   const rows = await c.env.DB.prepare(
-    `SELECT mp.*, up.id AS up_id, up.label AS up_label, up.base_url, up.api_key_ciphertext, up.api_key_iv,
+    `SELECT mp.*, up.id AS up_id, up.label AS up_label, up.base_url,
             up.status AS up_status, up.avg_latency_ms, up.consecutive_failures, up.cooldown_until,
             up.cooldown_base_ms, up.last_checked_at, up.last_error,
             um.capabilities, um.context_window, um.max_output_tokens
@@ -611,8 +749,6 @@ app.get('/api/admin/models/:id/providers', async (c) => {
     up_id: string
     up_label: string
     base_url: string
-    api_key_ciphertext: string
-    api_key_iv: string
     up_status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled'
     avg_latency_ms: number | null
     consecutive_failures: number
@@ -626,26 +762,32 @@ app.get('/api/admin/models/:id/providers', async (c) => {
   }>()
 
   const encryptionKey = c.env.ENCRYPTION_KEY
+  const keysByProvider = await loadKeysByProvider(c.env, [...new Set(rows.results.map((p) => p.up_id))])
   const providers = await Promise.all(
-    rows.results.map(async (p) => ({
-      id: p.id,
-      label: p.up_label,
-      upstream_provider_id: p.upstream_provider_id,
-      upstream_model: p.upstream_model,
-      upstream_model_caps: p.capabilities ? safeParseArray(p.capabilities) : [],
-      upstream_model_context: p.context_window,
-      upstream_model_max_output: p.max_output_tokens,
-      base_url: p.base_url,
-      key_masked: await safeKeyMask(p, encryptionKey),
-      status: p.active === 0 ? 'disabled' : p.up_status,
-      last_checked_at: p.last_checked_at,
-      last_error: p.last_error,
-      avg_latency_ms: p.avg_latency_ms,
-      priority: p.priority,
-      active: p.active,
-      messages_served: p.messages_served,
-      cooldown_base_ms: p.cooldown_base_ms,
-    }))
+    rows.results.map(async (p) => {
+      const keyMasked = await primaryKeyMask(keysByProvider.get(p.up_id) ?? [], encryptionKey)
+      const keyCount = (keysByProvider.get(p.up_id) ?? []).length
+      return {
+        id: p.id,
+        label: p.up_label,
+        upstream_provider_id: p.upstream_provider_id,
+        upstream_model: p.upstream_model,
+        upstream_model_caps: p.capabilities ? safeParseArray(p.capabilities) : [],
+        upstream_model_context: p.context_window,
+        upstream_model_max_output: p.max_output_tokens,
+        base_url: p.base_url,
+        key_masked: keyMasked,
+        key_count: keyCount,
+        status: p.active === 0 ? 'disabled' : p.up_status,
+        last_checked_at: p.last_checked_at,
+        last_error: p.last_error,
+        avg_latency_ms: p.avg_latency_ms,
+        priority: p.priority,
+        active: p.active,
+        messages_served: p.messages_served,
+        cooldown_base_ms: p.cooldown_base_ms,
+      }
+    }),
   )
 
   return c.json({ providers })
@@ -663,14 +805,14 @@ app.post('/api/admin/models/:id/providers', async (c) => {
   // Validate upstream provider exists
   const upstreamProviderId = String(body.upstream_provider_id ?? '').trim()
   if (!upstreamProviderId) return c.json({ error: 'invalid_input', message: 'upstream_provider_id is required.' }, 400)
-  
+
   const upstreamProvider = await c.env.DB.prepare('SELECT id FROM freellm_upstream_providers WHERE id = ?').bind(upstreamProviderId).first()
   if (!upstreamProvider) return c.json({ error: 'invalid_input', message: 'Upstream provider not found or inactive.' }, 400)
 
   // Validate upstream_model exists for this provider
   const upstreamModel = String(body.upstream_model ?? '').trim()
   if (!upstreamModel) return c.json({ error: 'invalid_input', message: 'upstream_model is required.' }, 400)
-  
+
   const upstreamModelRow = await c.env.DB.prepare(
     'SELECT * FROM freellm_upstream_models WHERE upstream_provider_id = ? AND upstream_model = ?'
   ).bind(upstreamProviderId, upstreamModel).first()
@@ -686,16 +828,29 @@ app.post('/api/admin/models/:id/providers', async (c) => {
     .run()
 
   const provider = await c.env.DB.prepare(
-    `SELECT mp.*, up.label AS up_label, up.base_url, up.api_key_ciphertext, up.api_key_iv,
+    `SELECT mp.*, up.label AS up_label, up.base_url,
             up.status AS up_status, up.avg_latency_ms, up.consecutive_failures, up.cooldown_until,
             up.cooldown_base_ms, up.last_checked_at, up.last_error
      FROM freellm_model_providers mp
      JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
      WHERE mp.id = ?`
-  ).bind(id).first()
+  ).bind(id).first<{
+    id: string
+    upstream_provider_id: string
+    up_label: string
+    base_url: string
+    up_status: string
+    avg_latency_ms: number | null
+    consecutive_failures: number
+    cooldown_until: number | null
+    cooldown_base_ms: number | null
+    last_checked_at: number | null
+    last_error: string | null
+  }>()
 
   const encryptionKey = c.env.ENCRYPTION_KEY
-  return c.json({ provider: await publicModelProvider(provider!, encryptionKey) }, 201)
+  const keys = await loadKeysByProvider(c.env, [provider!.upstream_provider_id])
+  return c.json({ provider: await publicModelProvider(provider!, await primaryKeyMask(keys.get(provider!.upstream_provider_id) ?? [], encryptionKey)) }, 201)
 })
 
 // Update model provider
@@ -744,16 +899,29 @@ app.patch('/api/admin/models/:id/providers/:providerId', async (c) => {
     .run()
 
   const provider = await c.env.DB.prepare(
-    `SELECT mp.*, up.label AS up_label, up.base_url, up.api_key_ciphertext, up.api_key_iv,
+    `SELECT mp.*, up.label AS up_label, up.base_url,
             up.status AS up_status, up.avg_latency_ms, up.consecutive_failures, up.cooldown_until,
             up.cooldown_base_ms, up.last_checked_at, up.last_error
      FROM freellm_model_providers mp
      JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
      WHERE mp.id = ?`
-  ).bind(providerId).first()
+  ).bind(providerId).first<{
+    id: string
+    upstream_provider_id: string
+    up_label: string
+    base_url: string
+    up_status: string
+    avg_latency_ms: number | null
+    consecutive_failures: number
+    cooldown_until: number | null
+    cooldown_base_ms: number | null
+    last_checked_at: number | null
+    last_error: string | null
+  }>()
 
   const encryptionKey = c.env.ENCRYPTION_KEY
-  return c.json({ provider: await publicModelProvider(provider!, encryptionKey) })
+  const keys = await loadKeysByProvider(c.env, [provider!.upstream_provider_id])
+  return c.json({ provider: await publicModelProvider(provider!, await primaryKeyMask(keys.get(provider!.upstream_provider_id) ?? [], encryptionKey)) })
 })
 
 // Delete model provider
@@ -768,20 +936,18 @@ app.delete('/api/admin/models/:id/providers/:providerId', async (c) => {
   return c.json({ ok: true })
 })
 
-// Test model provider (uses upstream provider's credentials)
+// Test model provider (uses a pool key from the upstream provider)
 app.post('/api/admin/models/:id/providers/:providerId/test', async (c) => {
   const modelId = c.req.param('id')
   const providerId = c.req.param('providerId')
   const provider = await c.env.DB.prepare(
-    `SELECT mp.*, up.base_url, up.api_key_ciphertext, up.api_key_iv, up.status AS up_status, up.consecutive_failures
+    `SELECT mp.*, up.base_url, up.status AS up_status, up.consecutive_failures
      FROM freellm_model_providers mp
      JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
      WHERE mp.id = ? AND mp.model_id = ?`
   ).bind(providerId, modelId).first<{
     upstream_provider_id: string
     base_url: string
-    api_key_ciphertext: string
-    api_key_iv: string
     upstream_model: string
     up_status: string
     consecutive_failures: number
@@ -790,7 +956,11 @@ app.post('/api/admin/models/:id/providers/:providerId/test', async (c) => {
   if (!provider) return c.json({ error: 'not_found', message: 'Provider config not found.' }, 404)
 
   const encryptionKey = await requireEncryptionKey(c.env)
-  const apiKey = await decryptSecret(provider.api_key_ciphertext, provider.api_key_iv, encryptionKey)
+  const keys = await loadKeysByProvider(c.env, [provider.upstream_provider_id])
+  const key = selectProviderKey(keys.get(provider.upstream_provider_id) ?? [], now())
+  if (!key) return c.json({ error: 'no_keys', message: 'This provider has no usable keys.' }, 409)
+
+  const apiKey = await decryptSecret(key.api_key_ciphertext, key.api_key_iv, encryptionKey)
   const result = await pingProvider(provider.base_url, provider.upstream_model, apiKey)
 
   const timestamp = now()
@@ -816,6 +986,11 @@ app.post('/api/admin/models/:id/providers/:providerId/test', async (c) => {
       provider.upstream_provider_id,
     )
     .run()
+  await c.env.DB.prepare(
+    `UPDATE freellm_upstream_keys SET status = ?, last_checked_at = ?, last_error = ?, updated_at = ? WHERE id = ?`,
+  )
+    .bind(result.status, timestamp, result.error ?? null, timestamp, key.id)
+    .run()
 
   // Also update model_provider messages_served on success
   if (result.ok) {
@@ -825,48 +1000,69 @@ app.post('/api/admin/models/:id/providers/:providerId/test', async (c) => {
   }
 
   const updated = await c.env.DB.prepare(
-    `SELECT mp.*, up.label AS up_label, up.base_url, up.api_key_ciphertext, up.api_key_iv,
+    `SELECT mp.*, up.label AS up_label, up.base_url,
             up.status AS up_status, up.avg_latency_ms, up.consecutive_failures, up.cooldown_until,
             up.cooldown_base_ms, up.last_checked_at, up.last_error
      FROM freellm_model_providers mp
      JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
      WHERE mp.id = ?`
-  ).bind(providerId).first()
+  ).bind(providerId).first<{
+    id: string
+    upstream_provider_id: string
+    up_label: string
+    base_url: string
+    up_status: string
+    avg_latency_ms: number | null
+    consecutive_failures: number
+    cooldown_until: number | null
+    cooldown_base_ms: number | null
+    last_checked_at: number | null
+    last_error: string | null
+  }>()
 
-  return c.json({ provider: await publicModelProvider(updated!, encryptionKey), test: result })
+  const keys2 = await loadKeysByProvider(c.env, [provider.upstream_provider_id])
+  return c.json({
+    provider: await publicModelProvider(updated!, await primaryKeyMask(keys2.get(provider.upstream_provider_id) ?? [], encryptionKey)),
+    test: result,
+  })
 })
 
-// Reveal model provider key (actually reveals upstream provider key)
+// Reveal model provider key (reveals the upstream provider's pool keys)
 app.post('/api/admin/models/:id/providers/:providerId/reveal', async (c) => {
   const modelId = c.req.param('id')
   const providerId = c.req.param('providerId')
   const provider = await c.env.DB.prepare(
-    `SELECT mp.*, up.api_key_ciphertext, up.api_key_iv
+    `SELECT mp.upstream_provider_id, up.label AS up_label
      FROM freellm_model_providers mp
      JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
      WHERE mp.id = ? AND mp.model_id = ?`
   ).bind(providerId, modelId).first<{
-    api_key_ciphertext: string
-    api_key_iv: string
+    upstream_provider_id: string
     up_label: string
-    id: string
   }>()
 
   if (!provider) return c.json({ error: 'not_found', message: 'Provider config not found.' }, 404)
 
   const encryptionKey = await requireEncryptionKey(c.env)
-  const apiKey = await decryptSecret(provider.api_key_ciphertext, provider.api_key_iv, encryptionKey)
-  return c.json({ id: provider.id, label: provider.up_label, api_key: apiKey })
+  const keys = await loadKeysByProvider(c.env, [provider.upstream_provider_id])
+  const revealed = await Promise.all(
+    (keys.get(provider.upstream_provider_id) ?? []).map(async (k) => ({
+      id: k.id,
+      label: k.label,
+      api_key: await decryptSecret(k.api_key_ciphertext, k.api_key_iv, encryptionKey),
+    })),
+  )
+  return c.json({ id: providerId, label: provider.up_label, api_key: revealed[0]?.api_key ?? null, keys: revealed })
 })
 
-async function publicModelProvider(provider: Record<string, unknown>, encryptionKey: string) {
+async function publicModelProvider(provider: Record<string, unknown>, keyMasked: string) {
   return {
     id: provider.id,
     label: provider.up_label,
     upstream_provider_id: provider.upstream_provider_id,
     upstream_model: provider.upstream_model,
     base_url: provider.base_url,
-    key_masked: await safeKeyMask(provider, encryptionKey),
+    key_masked: keyMasked,
     status: provider.active === 0 ? 'disabled' : provider.up_status,
     last_checked_at: provider.last_checked_at,
     last_error: provider.last_error,

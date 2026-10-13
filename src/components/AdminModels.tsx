@@ -499,7 +499,7 @@ function EditProviderForm({
         Config: {provider.label} → {provider.upstream_model}
       </p>
       <p className="num text-[12px] text-muted sm:col-span-2">
-        {provider.base_url} · key {provider.key_masked} — endpoint and key live on the shared provider; edit them on the Upstream providers tab.
+        {provider.base_url} · {provider.key_masked ?? (provider.key_count === 0 ? 'no keys' : `${provider.key_count} keys`)} — endpoint and keys live on the shared provider; edit them on the Upstream providers tab.
       </p>
       <Field label="Upstream model (must be registered for this provider)">
         <input className="input num" value={upstreamModel} onChange={(e) => setUpstreamModel(e.target.value)} required />

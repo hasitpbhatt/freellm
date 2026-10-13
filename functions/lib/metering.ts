@@ -16,6 +16,7 @@
 
 import { newId } from './crypto'
 import type { ModelRow } from './types'
+import { expirePromoCredits } from './promo-expiry'
 
 const HOLD_STALE_MS = 10 * 60 * 1000
 
@@ -29,6 +30,18 @@ export async function computeSpendable(
   modelId: string,
   excludeRequestId?: string,
 ): Promise<Spendable> {
+  // Lazy promo-expiry sweep: claw back any expired promo grants before the
+  // balance is read, so a hoarded expiring grant can't be spent past its
+  // deadline. Best-effort — a race just defers to the next sweep.
+  await expirePromoCredits(db, userId).catch(() => {})
+  // The passed-in globalBalance is the session-cached value, now potentially
+  // stale after the sweep clawed credits back. Re-read the authoritative
+  // balance so the reserve gate sees the post-expiry figure.
+  const freshUser = await db
+    .prepare('SELECT balance_credits FROM freellm_users WHERE id = ?')
+    .bind(userId)
+    .first<{ balance_credits: number }>()
+  const effectiveGlobal = freshUser?.balance_credits ?? globalBalance
   // The stale-hold sweep and the grant read are independent; the held-sum
   // read must follow the sweep, so only those two are overlapped. One
   // cutoff for both — computing Date.now() twice let a hold created between
@@ -52,8 +65,8 @@ export async function computeSpendable(
 
   const scoped = grant?.credits ?? 0
   const heldAmount = held?.total ?? 0
-  const total = globalBalance + scoped
-  return { global: globalBalance, scoped, held: heldAmount, available: total - heldAmount, total }
+  const total = effectiveGlobal + scoped
+  return { global: effectiveGlobal, scoped, held: heldAmount, available: total - heldAmount, total }
 }
 
 export async function placeHold(db: D1Database, userId: string, requestId: string, amount: number): Promise<void> {

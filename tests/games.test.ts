@@ -32,10 +32,10 @@ after(async () => {
 })
 
 test('rewardForTyping: exact-match speed tiers with cheat windows', () => {
-  // 60 chars in 30s = 24wpm → 250; in 10s = 72wpm → 500; in 5s = 144wpm → 1000
-  assert.equal(rewardForTyping(60, 30), 250)
-  assert.equal(rewardForTyping(60, 10), 500)
-  assert.equal(rewardForTyping(60, 5), 1000)
+  // 60 chars in 30s = 24wpm → 2500; in 10s = 72wpm → 5000; in 5s = 144wpm → 10000
+  assert.equal(rewardForTyping(60, 30), 2500)
+  assert.equal(rewardForTyping(60, 10), 5000)
+  assert.equal(rewardForTyping(60, 5), 10000)
   assert.equal(rewardForTyping(60, 1), null)
   assert.equal(rewardForTyping(60, 200), null)
   assert.equal(rewardForTyping(0, 10), null)
@@ -99,7 +99,7 @@ test('levels: thresholds rise, bonuses stay bounded, max level caps', () => {
 })
 
 test('constants: daily pot and game bounds are sane', () => {
-  assert.ok(ARCADE_GLOBAL_DAILY_BUDGET === 500_000)
+  assert.ok(ARCADE_GLOBAL_DAILY_BUDGET === 1_000_000)
   assert.ok(MEMORY_PAIRS === 6)
   assert.ok(MEMORY_MIN_SECONDS === 15)
   assert.ok(MEMORY_MAX_SECONDS === 600)

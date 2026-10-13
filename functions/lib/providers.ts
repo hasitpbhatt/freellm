@@ -1,9 +1,12 @@
 // Provider multiplexing: resolving a model alias to one of its upstream
 // configs and calling it.
 //
-// Schema (post-migration 20241201120000):
+// Schema (post-0027):
 //   freellm_models              — alias users chat with ("poolside-laguna")
-//   freellm_upstream_providers  — real upstream provider (Poolside, OpenAI)
+//   freellm_upstream_providers  — one endpoint (base_url): label, health rollup
+//   freellm_upstream_keys       — N bearer keys per endpoint, each with its own
+//                                 health/cooldown (a 429 cools one key, not the
+//                                 whole endpoint)
 //   freellm_upstream_models     — canonical model names per provider
 //   freellm_model_providers     — alias -> upstream_provider + upstream_model mapping
 //
@@ -21,13 +24,19 @@
 // refuses the request (5xx/429), which is what makes a degraded pool
 // survivable. A failed config then cools down before it can be selected again.
 //
-// Health/cooldown is now **shared at the upstream provider level**:
-//   - If any config using Poolside fails, the upstream provider cools down
-//   - EWMA latency is per-upstream-provider, so all aliases benefit
-//   - API key stored once, decrypted per request
+// Health is layered:
+//   - A 429 (quota exhausted) cools down the specific *key* that was used, so
+//     the endpoint's other keys keep serving.
+//   - Any other failure (5xx, network) cools down the *provider* — all keys
+//     share the endpoint, so a dead endpoint is a dead endpoint.
+//   - Endpoint-level EWMA latency and status remain a rollup across all keys.
+//
+// API key selection within a provider: least-recently-used usable key (a
+// disabled or cooling key is skipped). `last_used_at` is refreshed at selection
+// time so concurrent traffic spreads across keys.
 
 import { decryptSecret } from './crypto'
-import type { Bindings, ModelProviderRow, ModelRow, UpstreamProviderRow, UpstreamProviderWithModel } from './types'
+import type { Bindings, ModelProviderRow, ModelRow, UpstreamKeyRow, UpstreamProviderRow, UpstreamProviderWithModel } from './types'
 import { assertSafeBaseUrl } from './validate'
 
 /** `capabilities` is a JSON text column; tolerate junk rather than 500. */
@@ -108,11 +117,12 @@ export async function loadAlias(env: Bindings, slug: string): Promise<AliasWithP
   // Join model_providers -> upstream_providers -> upstream_models in one query.
   const rows = await env.DB.prepare(
     `SELECT mp.*, 
-            up.id AS up_id, up.label, up.base_url, up.api_key_ciphertext, up.api_key_iv,
+            up.id AS up_id, up.label, up.base_url,
             up.status, up.avg_latency_ms, up.consecutive_failures, up.cooldown_until,
             up.cooldown_base_ms, up.last_checked_at, up.last_error, 
             up.created_at AS up_created_at, up.updated_at AS up_updated_at,
-            um.capabilities AS um_capabilities
+            um.capabilities AS um_capabilities,
+            um.supports_streaming AS um_supports_streaming
      FROM freellm_model_providers mp
      JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
      LEFT JOIN freellm_upstream_models um
@@ -132,8 +142,6 @@ export async function loadAlias(env: Bindings, slug: string): Promise<AliasWithP
     up_id: string
     label: string
     base_url: string
-    api_key_ciphertext: string
-    api_key_iv: string
     status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled'
     avg_latency_ms: number | null
     consecutive_failures: number
@@ -144,7 +152,28 @@ export async function loadAlias(env: Bindings, slug: string): Promise<AliasWithP
     up_created_at: number
     up_updated_at: number
     um_capabilities: string | null
+    um_supports_streaming: number | null
   }>()
+
+  // Load the key pool for the distinct upstream providers in one query.
+  const upstreamIds = [...new Set(rows.results.map((r) => r.up_id))]
+  const keyRows = upstreamIds.length
+    ? (
+        await env.DB.prepare(
+          `SELECT * FROM freellm_upstream_keys
+           WHERE upstream_provider_id IN (${upstreamIds.map(() => '?').join(',')})
+           ORDER BY priority ASC, COALESCE(last_used_at, 0) ASC`,
+        )
+          .bind(...upstreamIds)
+          .all<UpstreamKeyRow>()
+      ).results
+    : []
+  const keysByProvider = new Map<string, UpstreamKeyRow[]>()
+  for (const key of keyRows) {
+    const list = keysByProvider.get(key.upstream_provider_id) ?? []
+    list.push(key)
+    keysByProvider.set(key.upstream_provider_id, list)
+  }
 
   const providers: Array<ModelProviderRow & { upstream: UpstreamProviderWithModel }> = rows.results.map((r) => ({
     id: r.id,
@@ -160,8 +189,6 @@ export async function loadAlias(env: Bindings, slug: string): Promise<AliasWithP
       id: r.up_id,
       label: r.label,
       base_url: r.base_url,
-      api_key_ciphertext: r.api_key_ciphertext,
-      api_key_iv: r.api_key_iv,
       status: r.status,
       avg_latency_ms: r.avg_latency_ms,
       consecutive_failures: r.consecutive_failures,
@@ -172,6 +199,8 @@ export async function loadAlias(env: Bindings, slug: string): Promise<AliasWithP
       created_at: r.up_created_at,
       updated_at: r.up_updated_at,
       model_capabilities: parseCapabilities(r.um_capabilities),
+      keys: keysByProvider.get(r.up_id) ?? [],
+      supports_streaming: r.um_supports_streaming ?? 1,
     },
   }))
 
@@ -203,8 +232,13 @@ export async function resolveCandidates(
   }
 
   // Cooldown is at the upstream provider level — if the shared provider is cooling,
-  // none of its configs can be selected.
-  const rested = usable.filter((p) => p.upstream.cooldown_until == null || p.upstream.cooldown_until <= now)
+  // none of its configs can be selected. Providers with no usable key are
+  // dropped too (a fully-cooled key pool can't serve).
+  const rested = usable.filter(
+    (p) =>
+      (p.upstream.cooldown_until == null || p.upstream.cooldown_until <= now) &&
+      selectProviderKey(p.upstream.keys, now) !== null,
+  )
   if (rested.length === 0) return []
 
   // Prefer live/unknown, then slow, then down — degraded only when nothing better.
@@ -278,6 +312,21 @@ export function shuffle<T>(items: T[]): T[] {
   return copy
 }
 
+/**
+ * Picks a usable key from an upstream provider's pool: not disabled, not
+ * cooling, then least-recently-used (priority breaks ties) so traffic spreads.
+ * Returns null when every key is disabled or cooling.
+ */
+export function selectProviderKey(keys: UpstreamKeyRow[], now: number): UpstreamKeyRow | null {
+  const usable = keys.filter(
+    (k) => k.status === 'live' && (k.cooldown_until == null || k.cooldown_until <= now),
+  )
+  if (usable.length === 0) return null
+  return [...usable].sort(
+    (a, b) => a.priority - b.priority || (a.last_used_at ?? 0) - (b.last_used_at ?? 0),
+  )[0]
+}
+
 export type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string }
 
 export type UpstreamCall = {
@@ -323,7 +372,7 @@ export async function callProvider(
       messages,
       max_tokens: options.maxTokens,
       stream: options.stream,
-      // Ask OpenAI-compatible routers to include the usage block in the
+      // Ask [OI]-compatible routers to include the usage block in the
       // final SSE chunk — that's our authoritative billing signal.
       ...(options.stream ? { stream_options: { include_usage: true } } : {}),
       // Forward sampling params verbatim when the caller sent them.
@@ -334,84 +383,221 @@ export async function callProvider(
   return { response, provider }
 }
 
-/** Records the outcome of a request against a config (health + impact). */
+/**
+ * Non-streaming version: calls /chat/completions with stream=false and
+ * parses the JSON response for usage. Used as a fallback when streaming
+ * is not supported by the upstream model.
+ */
+export async function callProviderNonStreaming(
+  provider: UpstreamConfig,
+  apiKey: string,
+  messages: ChatMessage[],
+  options: {
+    maxTokens: number
+    sampling?: { temperature?: number; top_p?: number }
+    timeoutMs?: number
+    signal?: AbortSignal
+  },
+): Promise<{
+  response: Response
+  provider: UpstreamConfig
+  usage: { input: number; output: number; total: number } | null
+}> {
+  const base = provider.base_url.replace(/\/+$/, '')
+  assertSafeBaseUrl(base)
+  const signal =
+    options.signal ??
+    (typeof AbortSignal.timeout === 'function'
+      ? AbortSignal.timeout(options.timeoutMs ?? UPSTREAM_TIMEOUT_MS)
+      : undefined)
+  const response = await fetch(`${base}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    ...(signal ? { signal } : {}),
+    body: JSON.stringify({
+      model: provider.upstream_model,
+      messages,
+      max_tokens: options.maxTokens,
+      stream: false,
+      ...(options.sampling?.temperature !== undefined ? { temperature: options.sampling.temperature } : {}),
+      ...(options.sampling?.top_p !== undefined ? { top_p: options.sampling.top_p } : {}),
+    }),
+  })
+
+  let usage: { input: number; output: number; total: number } | null = null
+  if (response.ok) {
+    const data = (await response.json().catch(() => ({} as Record<string, unknown>))) as Record<string, unknown>
+    const u = data.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined
+    if (u && typeof u.prompt_tokens === 'number' && typeof u.completion_tokens === 'number' && typeof u.total_tokens === 'number') {
+      usage = { input: u.prompt_tokens, output: u.completion_tokens, total: u.total_tokens }
+    }
+  }
+
+  return { response, provider, usage }
+}
+
+/**
+ * Selects the least-used usable key from an upstream provider's pool and
+ * decrypts its bearer. Returns null when the provider has no usable key.
+ * Marks the key as used (best-effort) so concurrent traffic spreads.
+ */
+export async function providerApiKey(
+  env: Bindings,
+  upstream: UpstreamProviderWithModel,
+  now: number = Date.now(),
+): Promise<{ key: UpstreamKeyRow; apiKey: string } | null> {
+  const key = selectProviderKey(upstream.keys, now)
+  if (!key) return null
+  const apiKey = await decryptSecret(key.api_key_ciphertext, key.api_key_iv, env.ENCRYPTION_KEY)
+  // Best-effort freshness marker; a stale write must not block the request.
+  await env.DB.prepare('UPDATE freellm_upstream_keys SET last_used_at = ? WHERE id = ?')
+    .bind(now, key.id)
+    .run()
+    .catch(() => {})
+  return { key, apiKey }
+}
+
+/**
+ * Records the outcome of a request against a config. Health is layered:
+ *   - ok: mark the key live/slow, reset its failures/cooldown, and roll the
+ *     endpoint EWMA + clear endpoint failures; bump the config's served count.
+ *   - 429 with a known key: cool down that key only (quota), leave the
+ *     endpoint serving via its other keys.
+ *   - other failure: cool down the whole endpoint (all keys share it).
+ */
 export async function recordOutcome(
   env: Bindings,
   providerId: string,                // upstream provider id
   modelProviderId: string,           // model_provider row id (for messages_served)
-  outcome: { ok: boolean; latencyMs: number; error?: string },
+  outcome: { ok: boolean; latencyMs: number; error?: string; keyId?: string; status?: number },
 ): Promise<void> {
+  const now = Date.now()
+  const error = outcome.error?.slice(0, 300) ?? 'unknown error'
+
   if (outcome.ok) {
+    const status = outcome.latencyMs > SLOW_THRESHOLD_MS ? 'slow' : 'live'
+    const statements = []
+    if (outcome.keyId) {
+      statements.push(
+        env.DB.prepare(
+          `UPDATE freellm_upstream_keys
+           SET status = ?, consecutive_failures = 0, cooldown_until = NULL,
+               last_used_at = ?, last_error = NULL, updated_at = ?
+           WHERE id = ?`,
+        ).bind(status, now, now, outcome.keyId),
+      )
+    }
     // Update upstream provider health (shared across all aliases using it).
-    await env.DB.prepare(
-      `UPDATE freellm_upstream_providers
-       SET status = ?, last_checked_at = ?, last_error = NULL, consecutive_failures = 0,
-           cooldown_until = NULL,
-           avg_latency_ms = CASE WHEN avg_latency_ms IS NULL THEN ?
-                                 ELSE CAST(avg_latency_ms * ? + ? * ? AS INTEGER) END,
-           updated_at = ?
-       WHERE id = ?`,
-    )
-      .bind(
-        outcome.latencyMs > SLOW_THRESHOLD_MS ? 'slow' : 'live',
-        Date.now(),
+    statements.push(
+      env.DB.prepare(
+        `UPDATE freellm_upstream_providers
+         SET status = ?, last_checked_at = ?, last_error = NULL, consecutive_failures = 0,
+             cooldown_until = NULL,
+             avg_latency_ms = CASE WHEN avg_latency_ms IS NULL THEN ?
+                                   ELSE CAST(avg_latency_ms * ? + ? * ? AS INTEGER) END,
+             updated_at = ?
+         WHERE id = ?`,
+      ).bind(
+        status,
+        now,
         outcome.latencyMs,
         ROLLING_AVG_BETA,
         outcome.latencyMs,
         ROLLING_AVG_ALPHA,
-        Date.now(),
+        now,
         providerId,
-      )
-      .run()
-
-    // Also bump messages_served on the specific model_provider row.
-    await env.DB.prepare(
-      `UPDATE freellm_model_providers
-       SET messages_served = messages_served + 1, updated_at = ?
-       WHERE id = ?`,
+      ),
     )
-      .bind(Date.now(), modelProviderId)
-      .run()
-  } else {
-    // Exponential backoff on consecutive failures over the upstream provider's
-    // own base TTL (or the global default when unset).
-    const row = await env.DB.prepare(
-      `SELECT consecutive_failures, cooldown_base_ms
-       FROM freellm_upstream_providers WHERE id = ?`
+    // Also bump messages_served on the specific model_provider row.
+    statements.push(
+      env.DB.prepare(
+        `UPDATE freellm_model_providers
+         SET messages_served = messages_served + 1, updated_at = ?
+         WHERE id = ?`,
+      ).bind(now, modelProviderId),
+    )
+    await env.DB.batch(statements)
+    return
+  }
+
+  // Quota exhaustion on a specific key: cool that key, not the endpoint.
+  if (outcome.keyId && outcome.status === 429) {
+    const keyRow = await env.DB.prepare(
+      `SELECT consecutive_failures FROM freellm_upstream_keys WHERE id = ?`,
+    )
+      .bind(outcome.keyId)
+      .first<{ consecutive_failures: number }>()
+    const providerRow = await env.DB.prepare(
+      `SELECT cooldown_base_ms FROM freellm_upstream_providers WHERE id = ?`,
     )
       .bind(providerId)
-      .first<{ consecutive_failures: number; cooldown_base_ms: number | null }>()
-    const failures = (row?.consecutive_failures ?? 0) + 1
-    const base = row?.cooldown_base_ms ?? FAILED_PROVIDER_COOLDOWN_MS
-    const backoff = cooldownForAttempt(base, failures)
+      .first<{ cooldown_base_ms: number | null }>()
+    const keyFailures = (keyRow?.consecutive_failures ?? 0) + 1
+    const base = providerRow?.cooldown_base_ms ?? FAILED_PROVIDER_COOLDOWN_MS
+    const keyBackoff = cooldownForAttempt(base, keyFailures)
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE freellm_upstream_keys
+         SET status = 'down', consecutive_failures = ?, cooldown_until = ?,
+             last_used_at = ?, last_error = ?, updated_at = ?
+         WHERE id = ?`,
+      ).bind(keyFailures, now + keyBackoff, now, error, now, outcome.keyId),
+      // Record the endpoint error but leave it serving via its other keys.
+      env.DB.prepare(
+        `UPDATE freellm_upstream_providers SET last_checked_at = ?, last_error = ?, updated_at = ? WHERE id = ?`,
+      ).bind(now, error, now, providerId),
+    ])
+    return
+  }
 
-    // Cool down the upstream provider — affects ALL configs using it.
-    await env.DB.prepare(
+  // Infrastructure failure: cool down the whole endpoint, and mark the specific
+  // key down if we know which one failed.
+  const row = await env.DB.prepare(
+    `SELECT consecutive_failures, cooldown_base_ms
+     FROM freellm_upstream_providers WHERE id = ?`,
+  )
+    .bind(providerId)
+    .first<{ consecutive_failures: number; cooldown_base_ms: number | null }>()
+  const failures = (row?.consecutive_failures ?? 0) + 1
+  const base = row?.cooldown_base_ms ?? FAILED_PROVIDER_COOLDOWN_MS
+  const backoff = cooldownForAttempt(base, failures)
+
+  const statements = [
+    env.DB.prepare(
       `UPDATE freellm_upstream_providers
        SET status = 'down', last_checked_at = ?, last_error = ?, consecutive_failures = ?,
            cooldown_until = ?, updated_at = ?
        WHERE id = ?`,
+    ).bind(now, error, failures, now + backoff, now, providerId),
+  ]
+  if (outcome.keyId) {
+    statements.push(
+      env.DB.prepare(
+        `UPDATE freellm_upstream_keys SET status = 'down', last_error = ?, updated_at = ? WHERE id = ?`,
+      ).bind(error, now, outcome.keyId),
     )
-      .bind(Date.now(), outcome.error?.slice(0, 300) ?? 'unknown error', failures, Date.now() + backoff, Date.now(), providerId)
-      .run()
   }
-}
-
-/** Decrypts an upstream provider's bearer for one request. */
-export async function providerApiKey(env: Bindings, upstream: UpstreamProviderRow): Promise<string> {
-  return decryptSecret(upstream.api_key_ciphertext, upstream.api_key_iv, env.ENCRYPTION_KEY)
+  await env.DB.batch(statements)
 }
 
 /**
  * Opens a streaming chat call against an alias, walking its candidate configs
  * until one accepts the request (failover). Health is recorded per attempt.
+ * On success returns the winning provider AND the key that served it, so the
+ * caller can record the success outcome against the same key.
  */
 export async function openStreamingCall(
   env: Bindings,
   alias: AliasWithProviders,
   messages: ChatMessage[],
   options: { maxTokens: number; sampling?: { temperature?: number; top_p?: number }; requiredCapabilities?: string[] },
-): Promise<{ provider: ModelProviderRow & { upstream: UpstreamProviderWithModel }; response: Response } | { error: string }> {
+): Promise<
+  | { provider: ModelProviderRow & { upstream: UpstreamProviderWithModel }; key: UpstreamKeyRow; response: Response }
+  | { error: string }
+> {
   const candidates = await resolveCandidates(env, alias, Date.now(), { requiredCapabilities: options.requiredCapabilities })
   if (candidates.length === 0) return { error: 'no usable provider configs' }
 
@@ -419,20 +605,114 @@ export async function openStreamingCall(
   for (const candidate of candidates) {
     const startedAt = Date.now()
     try {
-      const apiKey = await providerApiKey(env, candidate.upstream)
+      const selected = await providerApiKey(env, candidate.upstream)
+      if (!selected) {
+        lastError = 'no usable keys'
+        continue
+      }
       const { response } = await callProvider(
         { id: candidate.id, base_url: candidate.upstream.base_url, upstream_model: candidate.upstream_model },
-        apiKey,
+        selected.apiKey,
         messages,
         { maxTokens: options.maxTokens, stream: true, sampling: options.sampling },
       )
-      if (response.ok && response.body) return { provider: candidate, response }
+      if (response.ok && response.body) return { provider: candidate, key: selected.key, response }
       lastError = `${response.status} ${response.statusText}`
       const detail = (await response.text().catch(() => '')).slice(0, 200)
       await recordOutcome(env, candidate.upstream.id, candidate.id, {
         ok: false,
         latencyMs: Date.now() - startedAt,
         error: `${lastError} ${detail}`,
+        keyId: selected.key.id,
+        status: response.status,
+      })
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : 'network error'
+      await recordOutcome(env, candidate.upstream.id, candidate.id, {
+        ok: false,
+        latencyMs: Date.now() - startedAt,
+        error: lastError,
+      })
+    }
+  }
+  return { error: lastError || 'all configs failed' }
+}
+
+/**
+ * Opens a chat call against an alias, trying streaming first and falling
+ * back to non-streaming if the upstream doesn't support SSE. Health is
+ * recorded per attempt. On success returns the winning provider, key, and
+ * either a streaming Response (with usage in stream) or a non-streaming
+ * Response with usage parsed from JSON.
+ */
+export async function openCall(
+  env: Bindings,
+  alias: AliasWithProviders,
+  messages: ChatMessage[],
+  options: { maxTokens: number; sampling?: { temperature?: number; top_p?: number }; requiredCapabilities?: string[] },
+): Promise<
+  | { provider: ModelProviderRow & { upstream: UpstreamProviderWithModel }; key: UpstreamKeyRow; response: Response; usage?: { input: number; output: number; total: number } | null; streaming: boolean }
+  | { error: string }
+> {
+  const candidates = await resolveCandidates(env, alias, Date.now(), { requiredCapabilities: options.requiredCapabilities })
+  if (candidates.length === 0) return { error: 'no usable provider configs' }
+
+  let lastError = ''
+  for (const candidate of candidates) {
+    const startedAt = Date.now()
+    try {
+      const selected = await providerApiKey(env, candidate.upstream)
+      if (!selected) {
+        lastError = 'no usable keys'
+        continue
+      }
+
+      const supportsStreaming = candidate.upstream.supports_streaming === 1
+
+      if (supportsStreaming) {
+        // Try streaming first
+        const { response } = await callProvider(
+          { id: candidate.id, base_url: candidate.upstream.base_url, upstream_model: candidate.upstream_model },
+          selected.apiKey,
+          messages,
+          { maxTokens: options.maxTokens, stream: true, sampling: options.sampling },
+        )
+        if (response.ok && response.body) return { provider: candidate, key: selected.key, response, streaming: true }
+        lastError = `${response.status} ${response.statusText}`
+        const detail = (await response.text().catch(() => '')).slice(0, 200)
+        await recordOutcome(env, candidate.upstream.id, candidate.id, {
+          ok: false,
+          latencyMs: Date.now() - startedAt,
+          error: `${lastError} ${detail}`,
+          keyId: selected.key.id,
+          status: response.status,
+        })
+
+        // If the error indicates streaming is not supported, try non-streaming
+        const isStreamingNotSupported = response.status === 400 || response.status === 405 || response.status === 501
+        if (isStreamingNotSupported) {
+          // Fall through to non-streaming attempt below
+        } else {
+          continue
+        }
+      }
+
+      // Non-streaming fallback
+      const { response, usage } = await callProviderNonStreaming(
+        { id: candidate.id, base_url: candidate.upstream.base_url, upstream_model: candidate.upstream_model },
+        selected.apiKey,
+        messages,
+        { maxTokens: options.maxTokens, sampling: options.sampling },
+      )
+      if (response.ok) return { provider: candidate, key: selected.key, response, usage, streaming: false }
+      lastError = `${response.status} ${response.statusText}`
+      const detail = (await response.text().catch(() => '')).slice(0, 200)
+      await recordOutcome(env, candidate.upstream.id, candidate.id, {
+        ok: false,
+        latencyMs: Date.now() - startedAt,
+        error: `${lastError} ${detail}`,
+        keyId: selected.key.id,
+        status: response.status,
       })
     } catch (err) {
       lastError = err instanceof Error ? err.message : 'network error'

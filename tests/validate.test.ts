@@ -1,7 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  assertSafeBaseUrl,
   generateReferralCode,
+  isPrivateHost,
   normalizeEmail,
   normalizeUsername,
   slugify,
@@ -81,4 +83,61 @@ test('generateReferralCode: 8 chars from the unambiguous alphabet', () => {
     const code = generateReferralCode()
     assert.match(code, /^[abcdefghjkmnpqrstuvwxyz23456789]{8}$/)
   }
+})
+
+// ------------------------------------------------------------ SSRF guard
+
+test('isPrivateHost: flags loopback, private, link-local, and metadata space', () => {
+  // IPv4 literals
+  assert.equal(isPrivateHost('127.0.0.1'), true)
+  assert.equal(isPrivateHost('10.0.0.5'), true)
+  assert.equal(isPrivateHost('192.168.1.1'), true)
+  assert.equal(isPrivateHost('172.16.0.1'), true)
+  assert.equal(isPrivateHost('172.31.255.255'), true)
+  assert.equal(isPrivateHost('169.254.169.254'), true, 'cloud metadata IP')
+  assert.equal(isPrivateHost('100.64.0.1'), true, 'CGNAT')
+  assert.equal(isPrivateHost('0.0.0.0'), true)
+  assert.equal(isPrivateHost('224.0.0.1'), true, 'multicast')
+  // public IPv4 is allowed
+  assert.equal(isPrivateHost('8.8.8.8'), false)
+  assert.equal(isPrivateHost('1.1.1.1'), false)
+  assert.equal(isPrivateHost('172.32.0.1'), false, 'just outside 172.16/12')
+  // IPv6 literals
+  assert.equal(isPrivateHost('::1'), true)
+  assert.equal(isPrivateHost('::'), true)
+  assert.equal(isPrivateHost('fe80::1'), true)
+  assert.equal(isPrivateHost('fc00::1'), true)
+  assert.equal(isPrivateHost('fd12::1'), true)
+  assert.equal(isPrivateHost('::ffff:127.0.0.1'), true, 'IPv4-mapped loopback')
+  assert.equal(isPrivateHost('2606:4700:4700::1111'), false, 'public Cloudflare DNS')
+  // hostnames
+  assert.equal(isPrivateHost('localhost'), true)
+  assert.equal(isPrivateHost('metadata.google.internal'), true)
+  assert.equal(isPrivateHost('foo.internal'), true)
+  assert.equal(isPrivateHost('foo.local'), true)
+  assert.equal(isPrivateHost('bar.localhost'), true)
+  assert.equal(isPrivateHost('api.example.com'), false)
+  // bracketed IPv6 from a URL hostname
+  assert.equal(isPrivateHost('[::1]'), true)
+  // empty is treated as private (never fetchable)
+  assert.equal(isPrivateHost(''), true)
+})
+
+test('validateBaseUrl: rejects private hosts at config time unless http is allowed', () => {
+  assert.equal(validateBaseUrl('https://127.0.0.1/v1', false), 'Base URL must not point at a private or internal address.')
+  assert.equal(validateBaseUrl('https://169.254.169.254', false), 'Base URL must not point at a private or internal address.')
+  assert.equal(validateBaseUrl('https://localhost:8080/v1', false), 'Base URL must not point at a private or internal address.')
+  assert.equal(validateBaseUrl('https://api.openai.com/v1', false), null)
+  // dev: http + private host is allowed so local Ollama/vLLM keep working
+  assert.equal(validateBaseUrl('http://localhost:8788/v1', true), null)
+})
+
+test('assertSafeBaseUrl: throws on private/internal URLs, allows public', () => {
+  assert.throws(() => assertSafeBaseUrl('https://127.0.0.1/v1'), /private or internal/)
+  assert.throws(() => assertSafeBaseUrl('http://169.254.169.254/'), /private or internal/)
+  assert.throws(() => assertSafeBaseUrl('http://[::1]:8080/'), /private or internal/)
+  assert.throws(() => assertSafeBaseUrl('ftp://example.com'), /http\(s\)/)
+  assert.throws(() => assertSafeBaseUrl('not-a-url'), /valid absolute URL/)
+  assert.doesNotThrow(() => assertSafeBaseUrl('https://api.example.com/v1'))
+  assert.doesNotThrow(() => assertSafeBaseUrl('http://api.example.com/v1'))
 })

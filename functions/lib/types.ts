@@ -52,13 +52,16 @@ export type ModelRow = {
   updated_at: number
 }
 
-/** Upstream provider (Poolside, OpenAI, etc.) — shared health + credentials. */
+/** Upstream provider (Poolside, OpenAI, etc.) — the shared endpoint.
+ *
+ *  A provider owns N bearer keys in `freellm_upstream_keys` (one base_url can
+ *  be served by several keys, e.g. one per team seat or quota bucket). The
+ *  health columns here are the *endpoint rollup* across its keys; per-key
+ *  health lives on UpstreamKeyRow and is what actually rotates keys. */
 export type UpstreamProviderRow = {
   id: string
   label: string
   base_url: string
-  api_key_ciphertext: string
-  api_key_iv: string
   status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled'
   last_checked_at: number | null
   last_error: string | null
@@ -70,6 +73,24 @@ export type UpstreamProviderRow = {
   updated_at: number
 }
 
+/** One bearer key in an upstream provider's pool. Rotated by health: a key
+ *  that hits a quota (429) cools down on its own without sidelining the rest. */
+export type UpstreamKeyRow = {
+  id: string
+  upstream_provider_id: string
+  label: string
+  api_key_ciphertext: string
+  api_key_iv: string
+  status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled'
+  consecutive_failures: number
+  cooldown_until: number | null
+  last_used_at: number | null
+  last_error: string | null
+  priority: number
+  created_at: number
+  updated_at: number
+}
+
 /** Upstream model catalog entry with capabilities. */
 export type UpstreamModelRow = {
   upstream_provider_id: string
@@ -77,11 +98,14 @@ export type UpstreamModelRow = {
   capabilities: string | null
   context_window: number | null
   max_output_tokens: number | null
+  supports_streaming: number
 }
 
-/** Upstream provider with its model capabilities (for routing). */
+/** Upstream provider with its model capabilities and key pool (for routing). */
 export type UpstreamProviderWithModel = UpstreamProviderRow & {
   model_capabilities: string[]
+  keys: UpstreamKeyRow[]
+  supports_streaming: number
 }
 
 /** Model provider mapping: alias -> upstream provider + upstream_model. */

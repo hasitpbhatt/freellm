@@ -16,6 +16,7 @@ import {
   rewardForMemory,
 } from '../functions/routes/games'
 import { promoRedemptionStatements } from '../functions/routes/promos'
+import { expirePromoCredits } from '../functions/lib/promo-expiry'
 import { qualifyReferrals, REFERRAL_REWARD } from '../functions/routes/economy'
 import { placeHold, settleRequest, type Usage } from '../functions/lib/metering'
 import { createTestDb, seedUser, testModel } from './helpers/db'
@@ -201,8 +202,8 @@ test('clear claim: concurrent claims pay the bonus ONCE', async () => {
   const userId = await seedUser(db, { balanceCredits: 0 })
   const today = Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`)
 
-  // One paid play in each of the three games today.
-  for (const game of ['typing', 'memory', 'chess']) {
+  // One paid play in each of the two arcade games today.
+  for (const game of ['typing', 'memory']) {
     await db
       .prepare(
         `INSERT INTO freellm_game_rounds (id, user_id, game, detail, created_at, claimed_at, reward)
@@ -229,7 +230,7 @@ test('clear claim: concurrent claims pay the bonus ONCE', async () => {
   assert.equal(await ledgerSum(userId, 'game_reward'), 7000)
 })
 
-test('clear claim: without all three games today, nothing inserts or pays', async () => {
+test('clear claim: without both games today, nothing inserts or pays', async () => {
   const userId = await seedUser(db, { balanceCredits: 0 })
   const result = await runBatch(clearClaimStatements(db, { userId, roundId: 'clear_none', timestamp: Date.now() }))
   assert.equal(result[0].meta?.changes, 0)
@@ -325,6 +326,91 @@ test('promo redeem: a second redemption by the same user is denied without burni
   assert.equal(await balanceOf(userId), 5000)
   const count = await db.prepare('SELECT redemption_count FROM freellm_promo_codes WHERE id = ?').bind(promo.id).first<{ redemption_count: number }>()
   assert.equal(count?.redemption_count, 1, 'a denied retry must not burn a redemption slot')
+})
+
+test('promo expiry: an expired global grant is clawed back once, idempotently', async () => {
+  const userId = await seedUser(db, { balanceCredits: 20_000 })
+  const now = Date.now()
+
+  // A redemption that expired in the past, still un-clawed, against a balance
+  // that also holds 15,000cr from other sources. Only the promo's 5,000cr
+  // should be clawed back, leaving the other 15,000 untouched.
+  await db
+    .prepare(
+      `INSERT INTO freellm_promo_codes (id, code, credits, model_id, max_redemptions, redemption_count, per_user_limit, min_account_age_hours, starts_at, expires_at, active, created_at, updated_at)
+       VALUES ('promo_exp', 'EXPIRED', 5000, NULL, NULL, 1, 1, 0, NULL, ?, 0, ?, ?)`,
+    )
+    .bind(now - 1000, now, now)
+    .run()
+  await db
+    .prepare(
+      `INSERT INTO freellm_promo_redemptions (id, promo_code_id, user_id, credits, model_id, created_at, expires_at)
+       VALUES ('red_exp', 'promo_exp', ?, 5000, NULL, ?, ?)`,
+    )
+    .bind(userId, now - 5000, now - 1000)
+    .run()
+
+  const clawed = await expirePromoCredits(db, userId, now)
+  assert.equal(clawed, 5000)
+  assert.equal(await balanceOf(userId), 15_000, 'only the promo grant is clawed back')
+  assert.equal(await ledgerSum(userId, 'promo_expiry'), -5000)
+
+  // Idempotent: a second sweep finds nothing left to claw.
+  assert.equal(await expirePromoCredits(db, userId, now), 0)
+  assert.equal(await balanceOf(userId), 15_000)
+})
+
+test('promo expiry: the unspent portion is bounded by the current balance', async () => {
+  const userId = await seedUser(db, { balanceCredits: 2_000 })
+  const now = Date.now()
+
+  // The user already spent 3,000 of the 5,000 promo grant, leaving 2,000.
+  await db
+    .prepare(
+      `INSERT INTO freellm_promo_codes (id, code, credits, model_id, max_redemptions, redemption_count, per_user_limit, min_account_age_hours, starts_at, expires_at, active, created_at, updated_at)
+       VALUES ('promo_part', 'PARTIAL', 5000, NULL, NULL, 1, 1, 0, NULL, ?, 0, ?, ?)`,
+    )
+    .bind(now - 1000, now, now)
+    .run()
+  await db
+    .prepare(
+      `INSERT INTO freellm_promo_redemptions (id, promo_code_id, user_id, credits, model_id, created_at, expires_at)
+       VALUES ('red_part', 'promo_part', ?, 5000, NULL, ?, ?)`,
+    )
+    .bind(userId, now - 5000, now - 1000)
+    .run()
+
+  assert.equal(await expirePromoCredits(db, userId, now), 2000, 'claw is capped at the remaining balance')
+  assert.equal(await balanceOf(userId), 0)
+  assert.equal(await ledgerSum(userId, 'promo_expiry'), -2000)
+})
+
+test('promo expiry: a scoped grant is clawed from its per-model balance', async () => {
+  const userId = await seedUser(db, { balanceCredits: 0, scopedCredits: 8_000 })
+  const now = Date.now()
+
+  await db
+    .prepare(
+      `INSERT INTO freellm_promo_codes (id, code, credits, model_id, max_redemptions, redemption_count, per_user_limit, min_account_age_hours, starts_at, expires_at, active, created_at, updated_at)
+       VALUES ('promo_scoped', 'SCOPED', 8000, 'model_test', NULL, 1, 1, 0, NULL, ?, 0, ?, ?)`,
+    )
+    .bind(now - 1000, now, now)
+    .run()
+  await db
+    .prepare(
+      `INSERT INTO freellm_promo_redemptions (id, promo_code_id, user_id, credits, model_id, created_at, expires_at)
+       VALUES ('red_scoped', 'promo_scoped', ?, 8000, 'model_test', ?, ?)`,
+    )
+    .bind(userId, now - 5000, now - 1000)
+    .run()
+
+  assert.equal(await expirePromoCredits(db, userId, now), 8000)
+  const grant = await db
+    .prepare('SELECT credits FROM freellm_model_credit_grants WHERE user_id = ? AND model_id = ?')
+    .bind(userId, 'model_test')
+    .first<{ credits: number }>()
+  assert.equal(grant?.credits, 0, 'the per-model grant is drained')
+  assert.equal(await ledgerSum(userId, 'promo_expiry'), -8000)
 })
 
 test('promo redeem: the per-user UNIQUE blocks concurrent redemptions by the same user', async () => {

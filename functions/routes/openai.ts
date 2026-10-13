@@ -15,7 +15,7 @@
 import { Hono } from 'hono'
 import { requireAuthOrToken } from '../lib/middleware'
 import { computeSpendable, estimateReserve, placeHold, settleRequest, type Usage } from '../lib/metering'
-import { loadAlias, openStreamingCall, recordOutcome } from '../lib/providers'
+import { loadAlias, openCall, recordOutcome } from '../lib/providers'
 import { canAccessModel, tierGatedMessage } from '../lib/tiers'
 import { newId } from '../lib/crypto'
 import type { Bindings, Variables } from '../lib/types'
@@ -182,7 +182,7 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
   await placeHold(c.env.DB, user.id, requestId, reserve)
 
   // ---- acquire (failover across provider configs) ----
-  const opened = await openStreamingCall(c.env, alias, messages, { maxTokens, sampling, requiredCapabilities })
+  const opened = await openCall(c.env, alias, messages, { maxTokens, sampling, requiredCapabilities })
   if ('error' in opened) {
     await settleRequest(c.env.DB, {
       userId: user.id,
@@ -198,7 +198,7 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
     )
   }
 
-  const { provider, response } = opened
+  const { provider, key, response, usage: preUsage, streaming } = opened
   const startedAt = Date.now()
   const completionId = `chatcmpl-${requestId.replace(/-/g, '').slice(0, 24)}`
   const created = Math.floor(Date.now() / 1000)
@@ -215,9 +215,9 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
           requestId,
           model: alias.model,
           providerLabel: provider.upstream.label,
-          settlement: kind === 'completed' ? { kind, usage: usage ?? null } : { kind, reason },
+          settlement: kind === 'completed' ? { kind, usage: usage ?? preUsage ?? null } : { kind, reason },
           latencyMs: Date.now() - startedAt,
-          usage,
+          usage: usage ?? preUsage ?? null,
         })
         break
       } catch (err) {
@@ -228,7 +228,7 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
     // already-streamed completion into an error response.
     if (kind === 'completed') {
       try {
-        await recordOutcome(c.env, provider.upstream.id, provider.id, { ok: true, latencyMs: Date.now() - startedAt })
+        await recordOutcome(c.env, provider.upstream.id, provider.id, { ok: true, latencyMs: Date.now() - startedAt, keyId: key.id })
       } catch (err) {
         console.error('[v1] recordOutcome failed', completionId, err)
       }
@@ -249,20 +249,38 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
   if (!stream) {
     let content = ''
     let finishReason: string | null = null
-    let usage: Usage | null = null
-    try {
-      const text = await response.text()
-      for (const line of text.split('\n')) {
-        const parsed = parseSseLine(line)
-        if (!parsed) continue
-        usage = usageFromChunk(parsed) ?? usage
-        const choice = (parsed.choices as Array<{ delta?: { content?: unknown }; finish_reason?: unknown }> | undefined)?.[0]
-        if (typeof choice?.delta?.content === 'string') content += choice.delta.content
-        if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason
+    let usage: Usage | null = preUsage ?? null
+
+    if (streaming) {
+      // Upstream returned a streaming response (SSE), parse it
+      try {
+        const text = await response.text()
+        for (const line of text.split('\n')) {
+          const parsed = parseSseLine(line)
+          if (!parsed) continue
+          usage = usageFromChunk(parsed) ?? usage
+          const choice = (parsed.choices as Array<{ delta?: { content?: unknown }; finish_reason?: unknown }> | undefined)?.[0]
+          if (typeof choice?.delta?.content === 'string') content += choice.delta.content
+          if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason
+        }
+      } catch (err) {
+        await settle('failed', null, err instanceof Error ? err.message : 'upstream stream failed')
+        return c.json(openAiBody('server_error', 'The upstream stream failed — no charge was made.', 'upstream_failed'), 502)
       }
-    } catch (err) {
-      await settle('failed', null, err instanceof Error ? err.message : 'upstream stream failed')
-      return c.json(openAiBody('server_error', 'The upstream stream failed — no charge was made.', 'upstream_failed'), 502)
+    } else {
+      // Upstream returned a non-streaming JSON response - parse it directly
+      try {
+        const data = (await response.json().catch(() => ({} as Record<string, unknown>))) as Record<string, unknown>
+        const choices = data.choices as Array<{ message?: { content?: string }; finish_reason?: string }> | undefined
+        const choice = choices?.[0]
+        if (choice?.message?.content) content = choice.message.content
+        if (choice?.finish_reason) finishReason = choice.finish_reason
+        // usage is already in preUsage from openCall
+        usage = preUsage ?? null
+      } catch (err) {
+        await settle('failed', null, err instanceof Error ? err.message : 'upstream response failed')
+        return c.json(openAiBody('server_error', 'The upstream response failed — no charge was made.', 'upstream_failed'), 502)
+      }
     }
 
     const result = await settle('completed', usage)
