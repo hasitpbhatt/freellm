@@ -318,7 +318,20 @@ for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.
     "messages": [{"role": "user", "content": "hi"}],
     "stream": true,
     "stream_options": {"include_usage": true}
-  }'`}
+  }'}`}
+        />
+        <CodeBlock
+          lang="bash"
+          label="Through your own key (BYOK — free, uses your vault credential)"
+          code={`curl -s ${BASE_URL}/chat/completions \\
+  -H "Authorization: Bearer fl_…" \\
+  -H 'Content-Type: application/json' \\
+  -d '{
+    "model": "${exampleSlug}",
+    "messages": [{"role": "user", "content": "hi"}],
+    "key_mode": "byok",
+    "key_id": "YOUR_VAULT_KEY_ID"
+  }'}`}
         />
       </Section>
 
@@ -341,7 +354,9 @@ for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.
               <code className="num">max_tokens</code>, <code className="num">temperature</code>,{' '}
               <code className="num">top_p</code>, <code className="num">stream</code>,{' '}
               <code className="num">stream_options.include_usage</code>. Auth: Bearer key or session
-              cookie.
+              cookie. Add <code className="num">key_mode: 'byok'</code> with your vault{' '}
+              <code className="num">key_id</code> to dial your own credential (API key or OAuth
+              account) instead of The Pool — free, unmetered, per-user only.
             </span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2.5">

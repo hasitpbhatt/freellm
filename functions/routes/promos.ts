@@ -16,6 +16,7 @@ import { Hono } from 'hono'
 import { requireAdmin, requireAuth } from '../lib/middleware'
 import { newId } from '../lib/crypto'
 import { slugify } from '../lib/validate'
+import { expirePromoCredits } from '../lib/promo-expiry'
 import type { Bindings, ModelRow, Variables } from '../lib/types'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -41,6 +42,13 @@ app.use('/api/balance', requireAuth)
 
 app.get('/api/balance', async (c) => {
   const user = c.get('user')
+  // Lazy promo-expiry sweep so the displayed balance reflects any expired
+  // grants. Best-effort — a race just defers to the next sweep.
+  await expirePromoCredits(c.env.DB, user.id).catch(() => {})
+  const freshUser = await c.env.DB.prepare('SELECT balance_credits FROM freellm_users WHERE id = ?')
+    .bind(user.id)
+    .first<{ balance_credits: number }>()
+  const globalBalance = freshUser?.balance_credits ?? user.balance_credits
   const grants = await c.env.DB.prepare(
     `SELECT g.credits, m.id AS model_id, m.slug, m.label
      FROM freellm_model_credit_grants g JOIN freellm_models m ON m.id = g.model_id
@@ -52,14 +60,14 @@ app.get('/api/balance', async (c) => {
 
   const totalByModel = grants.results.reduce((sum, g) => sum + g.credits, 0)
   return c.json({
-    global: user.balance_credits,
+    global: globalBalance,
     by_model: grants.results.map((g) => ({
       model_id: g.model_id,
       slug: g.slug,
       label: g.label,
       credits: g.credits,
     })),
-    total: user.balance_credits + totalByModel,
+    total: globalBalance + totalByModel,
   })
 })
 
@@ -91,6 +99,7 @@ export function promoRedemptionStatements(
       model_id: string | null
       redemption_count: number
       per_user_limit: number
+      expires_at: number | null
     }
     user: { id: string }
     redemptionId: string
@@ -105,11 +114,12 @@ export function promoRedemptionStatements(
     // under its ceiling AND this user is under their per-user limit. The
     // UNIQUE(promo_code_id, user_id) index is the final word on same-user
     // races; the inline ceiling check is what stops two different users
-    // from both minting a one-shot code.
+    // from both minting a one-shot code. `expires_at` is snapshotted so the
+    // granted credits can expire even if the code's own expiry is edited.
     db
       .prepare(
-        `INSERT INTO freellm_promo_redemptions (id, promo_code_id, user_id, credits, model_id, created_at)
-         SELECT ?, ?, ?, ?, ?, ?
+        `INSERT INTO freellm_promo_redemptions (id, promo_code_id, user_id, credits, model_id, created_at, expires_at)
+         SELECT ?, ?, ?, ?, ?, ?, ?
          WHERE EXISTS (SELECT 1 FROM freellm_promo_codes
                         WHERE id = ? AND (max_redemptions IS NULL OR redemption_count < max_redemptions))
            AND (SELECT COUNT(*) FROM freellm_promo_redemptions
@@ -122,6 +132,7 @@ export function promoRedemptionStatements(
         promo.credits,
         promo.model_id,
         timestamp,
+        promo.expires_at,
         promo.id,
         promo.id,
         user.id,

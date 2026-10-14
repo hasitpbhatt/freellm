@@ -21,7 +21,8 @@ import { Hono } from 'hono'
 import { requireAdmin, requireAuth } from '../lib/middleware'
 import { decryptSecret, decryptForDisplay, encryptSecret, maskSecret, newId } from '../lib/crypto'
 import { pingProvider } from '../lib/ping'
-import { validateBaseUrl, validateBearer, validateUpstreamModel } from '../lib/validate'
+import { CODEX_DEFAULT_ENDPOINT, validateAccountId, validateAuthKind, validateBaseUrl, validateBearer, validateExpiryTimestamp, validateOAuthToken, validateProtocol, validateRefreshToken, validateUpstreamModel } from '../lib/validate'
+import { pingCodex } from '../lib/codex'
 import type { Bindings, ApiKeyRow, Variables } from '../lib/types'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -80,6 +81,13 @@ function publicKey(row: ApiKeyRow, keyMasked: string) {
     base_url: row.base_url,
     upstream_model: row.upstream_model,
     key_masked: keyMasked,
+    // Pre-migration rows have no auth columns; treat them as static bearers.
+    auth_kind: (row.auth_kind ?? 'api_key') as 'api_key' | 'oauth',
+    protocol: (row.protocol ?? 'openai') as 'openai' | 'codex',
+    account_id: row.account_id ?? null,
+    has_refresh_token: row.refresh_ciphertext != null,
+    expires_at: row.expires_at ?? null,
+    expired: row.auth_kind === 'oauth' && row.expires_at != null && row.expires_at <= now(),
     status: row.active === 0 ? ('disabled' as const) : row.status,
     last_checked_at: row.last_checked_at,
     last_error: row.last_error,
@@ -119,74 +127,152 @@ app.post('/api/keys', async (c) => {
     )
   }
 
-  const body = await c.req.json<Record<string, unknown>>().catch(() => null)
+  const body = await c.req.json<Record<string, unknown> | Record<string, unknown>[]>().catch(() => null)
   if (!body) return c.json({ error: 'invalid_body', message: 'Send JSON.' }, 400)
 
-  const label = String(body.label ?? '').trim()
-  if (!label || label.length > 80) {
-    return c.json({ error: 'invalid_input', message: 'A label (max 80 chars) is required.' }, 400)
+  // Support both single key object and array of keys
+  const keysInput = Array.isArray(body) ? body : [body]
+
+  // Validate each key first
+  const validatedKeys: Array<{
+    label: string
+    protocol: 'openai' | 'codex'
+    accountId: string | null
+    baseUrl: string
+    upstreamModel: string
+    authKind: 'api_key' | 'oauth'
+    apiKey: string
+    refreshToken: string | null
+    expiresAt: number | null
+  }> = []
+
+  for (const item of keysInput) {
+    const label = String(item.label ?? '').trim()
+    if (!label || label.length > 80) {
+      return c.json({ error: 'invalid_input', message: 'Each key must have a label (max 80 chars).' }, 400)
+    }
+    const protocol = validateProtocol(item.protocol)
+    if (!protocol) return c.json({ error: 'invalid_input', message: "protocol must be 'openai' or 'codex'." }, 400)
+    const accountId = validateAccountId(item.account_id)
+    if (item.account_id != null && item.account_id !== '' && accountId == null) {
+      return c.json({ error: 'invalid_input', message: 'Account ID must be 1–128 characters.' }, 400)
+    }
+    if (accountId != null && protocol !== 'codex') {
+      return c.json({ error: 'invalid_input', message: 'account_id is only supported for Codex accounts.' }, 400)
+    }
+    const allowHttp = c.env.ENVIRONMENT !== 'production'
+    const rawBaseUrl = protocol === 'codex' && (item.base_url == null || String(item.base_url).trim() === '')
+      ? CODEX_DEFAULT_ENDPOINT
+      : item.base_url
+    const urlError = validateBaseUrl(rawBaseUrl, allowHttp)
+    if (urlError) return c.json({ error: 'invalid_input', message: urlError }, 400)
+    const modelError = validateUpstreamModel(item.upstream_model)
+    if (modelError) return c.json({ error: 'invalid_input', message: modelError }, 400)
+    const authKind = validateAuthKind(item.auth_kind)
+    if (!authKind) return c.json({ error: 'invalid_input', message: "auth_kind must be 'api_key' or 'oauth'." }, 400)
+    if (protocol === 'codex' && authKind !== 'oauth') {
+      return c.json({ error: 'invalid_input', message: 'Codex accounts need auth_kind oauth (your ChatGPT OAuth access token).' }, 400)
+    }
+    const keyError = authKind === 'oauth' ? validateOAuthToken(item.api_key) : validateBearer(item.api_key)
+    if (keyError) return c.json({ error: 'invalid_input', message: keyError }, 400)
+    const refreshError = validateRefreshToken(item.refresh_token)
+    if (refreshError) return c.json({ error: 'invalid_input', message: refreshError }, 400)
+    if (item.refresh_token != null && item.refresh_token !== '' && authKind !== 'oauth') {
+      return c.json({ error: 'invalid_input', message: 'refresh_token is only supported for OAuth accounts.' }, 400)
+    }
+    const expiresAt = validateExpiryTimestamp(item.expires_at)
+    if (expiresAt === 'invalid') return c.json({ error: 'invalid_input', message: 'expires_at must be a unix epoch timestamp in milliseconds.' }, 400)
+    if (expiresAt != null && authKind !== 'oauth') {
+      return c.json({ error: 'invalid_input', message: 'expires_at is only supported for OAuth accounts.' }, 400)
+    }
+
+    const baseUrl = String(rawBaseUrl).trim().replace(/\/+$/, '')
+    const upstreamModel = String(item.upstream_model).trim()
+    const apiKey = String(item.api_key).trim()
+    const refreshToken = item.refresh_token != null && item.refresh_token !== '' ? String(item.refresh_token).trim() : null
+
+    validatedKeys.push({ label, protocol, accountId, baseUrl, upstreamModel, authKind, apiKey, refreshToken, expiresAt })
   }
-  const allowHttp = c.env.ENVIRONMENT !== 'production'
-  const urlError = validateBaseUrl(body.base_url, allowHttp)
-  if (urlError) return c.json({ error: 'invalid_input', message: urlError }, 400)
-  const modelError = validateUpstreamModel(body.upstream_model)
-  if (modelError) return c.json({ error: 'invalid_input', message: modelError }, 400)
-  const keyError = validateBearer(body.api_key)
-  if (keyError) return c.json({ error: 'invalid_input', message: keyError }, 400)
 
-  const baseUrl = String(body.base_url).trim().replace(/\/+$/, '')
-  const upstreamModel = String(body.upstream_model).trim()
-  const apiKey = String(body.api_key).trim()
+  // Rate limit: count each key as one addition
+  if (validatedKeys.length > rateLimit.remaining) {
+    return c.json({ error: 'rate_limited', message: `Can add ${rateLimit.remaining} more keys this minute.` }, 429)
+  }
 
-  // Validate before storing: a dead key is useless in the vault.
-  const ping = await pingProvider(baseUrl, upstreamModel, apiKey)
-
+  // Process each key
   const encryption = requireEncryptionKey(c.env)
   if (!encryption) {
     return c.json({ error: 'not_configured', message: 'ENCRYPTION_KEY is not set on this deployment.' }, 500)
   }
-  const { ciphertext, iv } = await encryptSecret(apiKey, encryption)
 
-  const id = newId()
-  const timestamp = now()
-  await c.env.DB.prepare(
-    `INSERT INTO freellm_api_keys (id, user_id, provider, label, base_url, upstream_model,
-                           key_ciphertext, key_iv, status, last_checked_at, last_error,
-                           avg_latency_ms, active, messages_served, created_at, updated_at)
-     VALUES (?, ?, 'byok', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`,
-  )
-    .bind(
-      id,
-      user.id,
-      label,
-      baseUrl,
-      upstreamModel,
-      ciphertext,
-      iv,
-      ping.ok ? ping.status : 'down',
-      timestamp,
-      ping.error ?? null,
-      ping.latencyMs,
-      timestamp,
-      timestamp,
+  const results = []
+  for (const key of validatedKeys) {
+    const ping = key.protocol === 'codex'
+      ? await pingCodex(key.baseUrl, key.upstreamModel, key.apiKey, key.accountId).then((r) => ({ ...r, mode: 'chat' as const }))
+      : await pingProvider(key.baseUrl, key.upstreamModel, key.apiKey)
+
+    const { ciphertext, iv } = await encryptSecret(key.apiKey, encryption)
+    let refreshCiphertext: string | null = null
+    let refreshIv: string | null = null
+    if (key.refreshToken) {
+      const sealed = await encryptSecret(key.refreshToken, encryption)
+      refreshCiphertext = sealed.ciphertext
+      refreshIv = sealed.iv
+    }
+
+    const id = newId()
+    const timestamp = now()
+    await c.env.DB.prepare(
+      `INSERT INTO freellm_api_keys (id, user_id, provider, label, base_url, upstream_model,
+                             key_ciphertext, key_iv, auth_kind, protocol, account_id,
+                             refresh_ciphertext, refresh_iv, expires_at,
+                             status, last_checked_at, last_error,
+                             avg_latency_ms, active, messages_served, created_at, updated_at)
+         VALUES (?, ?, 'byok', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`,
     )
-    .run()
+      .bind(
+        id,
+        user.id,
+        key.label,
+        key.baseUrl,
+        key.upstreamModel,
+        ciphertext,
+        iv,
+        key.authKind,
+        key.protocol,
+        key.accountId,
+        refreshCiphertext,
+        refreshIv,
+        key.expiresAt,
+        ping.ok ? ping.status : 'down',
+        timestamp,
+        ping.error ?? null,
+        ping.latencyMs,
+        timestamp,
+        timestamp,
+      )
+      .run()
 
-  return c.json(
-    {
+    results.push({
       key: {
         id,
-        label,
-        base_url: baseUrl,
-        upstream_model: upstreamModel,
-        key_masked: maskSecret(apiKey),
+        label: key.label,
+        base_url: key.baseUrl,
+        upstream_model: key.upstreamModel,
+        key_masked: maskSecret(key.apiKey),
+        auth_kind: key.authKind,
+        protocol: key.protocol,
+        account_id: key.accountId,
+        has_refresh_token: refreshCiphertext != null,
+        expires_at: key.expiresAt,
         status: ping.ok ? ping.status : 'down',
         last_error: ping.error ?? null,
       },
       test: ping,
-    },
-    201,
-  )
+    })
+  }
+
+return c.json({ keys: results }, 201)
 })
 
 app.post('/api/keys/:id/test', async (c) => {
@@ -204,13 +290,18 @@ app.post('/api/keys/:id/test', async (c) => {
     .bind(id, user.id)
     .first<ApiKeyRow>()
   if (!row) return c.json({ error: 'not_found', message: 'Key not found.' }, 404)
+  if ((row.auth_kind ?? 'api_key') === 'oauth' && row.expires_at != null && row.expires_at <= now()) {
+    return c.json({ error: 'key_expired', message: 'This OAuth token has expired — replace it before using.' }, 400)
+  }
 
   const encryption = requireEncryptionKey(c.env)
   if (!encryption) {
     return c.json({ error: 'not_configured', message: 'ENCRYPTION_KEY is not set on this deployment.' }, 500)
   }
   const apiKey = await decryptSecret(row.key_ciphertext, row.key_iv, encryption)
-  const ping = await pingProvider(row.base_url, row.upstream_model, apiKey)
+  const ping = (row.protocol ?? 'openai') === 'codex'
+    ? await pingCodex(row.base_url, row.upstream_model, apiKey, row.account_id).then((r) => ({ ...r, mode: 'chat' as const }))
+    : await pingProvider(row.base_url, row.upstream_model, apiKey)
 
   const timestamp = now()
   await c.env.DB.prepare(
@@ -279,6 +370,13 @@ app.post('/api/admin/vault/:id/reveal', async (c) => {
   const id = c.req.param('id')
   const row = await c.env.DB.prepare('SELECT * FROM freellm_api_keys WHERE id = ?').bind(id).first<ApiKeyRow>()
   if (!row) return c.json({ error: 'not_found', message: 'Key not found.' }, 404)
+  // OAuth access tokens belong to the user's own provider account and are
+  // never revealable — not even to the operator. Refresh tokens are never
+  // returned by any endpoint, period.
+  if ((row.auth_kind ?? 'api_key') === 'oauth') {
+    console.warn(`[vault] blocked admin reveal of OAuth credential ${id}`)
+    return c.json({ error: 'forbidden', message: 'OAuth credentials cannot be revealed.' }, 403)
+  }
 
   const encryption = requireEncryptionKey(c.env)
   if (!encryption) {

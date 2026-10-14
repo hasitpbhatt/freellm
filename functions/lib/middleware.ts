@@ -28,24 +28,6 @@ async function loadUserByApiToken(db: D1Database, token: string): Promise<UserRo
   return row
 }
 
-/** Resolves the session when present; attaches `user` or null. Never blocks. */
-export const resolveUser = createMiddleware<Env>(async (c, next) => {
-  const cookieHeader = c.req.header('cookie')
-  const session = await getSession(c.env.freellm_sessions, cookieHeader)
-  const user = session ? await loadUser(c.env.DB, session.userId) : null
-  if (session && !user) {
-    // Orphaned KV entry (user deleted) — purge so it can't linger 30 days.
-    const { sessionTokenFromCookies } = await import('./session')
-    const token = sessionTokenFromCookies(cookieHeader)
-    if (token) {
-      const { sha256Hex: hash } = await import('./crypto')
-      await c.env.freellm_sessions.delete(`sess:${await hash(token)}`).catch(() => {})
-    }
-  }
-  c.set('user', (user ?? undefined) as Variables['user'])
-  await next()
-})
-
 /** 401s unless a valid session exists. */
 export const requireAuth = createMiddleware<Env>(async (c, next) => {
   const cookieHeader = c.req.header('cookie')

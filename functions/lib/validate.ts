@@ -186,6 +186,62 @@ export function validateBearer(key: unknown): string | null {
   return null
 }
 
+/** 'api_key' (static bearer) or 'oauth' (user-supplied OAuth access token). */
+export function validateAuthKind(kind: unknown): 'api_key' | 'oauth' | null {
+  if (kind === undefined || kind === null || kind === '') return 'api_key'
+  if (kind === 'api_key' || kind === 'oauth') return kind
+  return null
+}
+
+/**
+ * User-supplied OAuth access token. Bound looser than a static bearer
+ * (providers issue large JWTs) but still capped so the vault can't be used
+ * as blob storage.
+ */
+export function validateOAuthToken(token: unknown): string | null {
+  if (typeof token !== 'string' || token.trim() === '') return 'OAuth access token is required.'
+  if (token.length > 2048) return 'OAuth access token is too long.'
+  return null
+}
+
+/** Optional OAuth refresh token (encrypted at rest, never revealable). */
+export function validateRefreshToken(token: unknown): string | null {
+  if (token === undefined || token === null || token === '') return null
+  if (typeof token !== 'string') return 'Refresh token must be a string.'
+  if (token.length > 2048) return 'Refresh token is too long.'
+  return null
+}
+
+/** 'openai' (Chat Completions) or 'codex' (Responses API). Defaults to openai. */
+export function validateProtocol(protocol: unknown): 'openai' | 'codex' | null {
+  if (protocol === undefined || protocol === null || protocol === '') return 'openai'
+  if (protocol === 'openai' || protocol === 'codex') return protocol
+  return null
+}
+
+/** Default Codex backend endpoint when the user leaves base URL empty. */
+export const CODEX_DEFAULT_ENDPOINT = 'https://chatgpt.com/backend-api/codex/responses'
+
+/**
+ * Optional ChatGPT account binding (sent as ChatGPT-Account-ID so several
+ * personal Codex accounts never cross-bind). Plain identifier, not a secret.
+ */
+export function validateAccountId(value: unknown): string | null {
+  if (value === undefined || value === null || value === '') return null
+  if (typeof value !== 'string') return 'Account ID must be a string.'
+  const trimmed = value.trim()
+  if (trimmed === '' || trimmed.length > 128) return 'Account ID must be 1–128 characters.'
+  return trimmed
+}
+
+/** Optional unix-epoch-ms expiry for an OAuth access token. */
+export function validateExpiryTimestamp(value: unknown): number | null | 'invalid' {
+  if (value === undefined || value === null || value === '') return null
+  const ms = typeof value === 'number' ? value : Number(value)
+  if (!Number.isInteger(ms) || ms <= 0) return 'invalid'
+  return ms
+}
+
 const CAPABILITY_RE = /^[a-z0-9-]{2,24}$/
 
 export function validateCapabilities(capabilities: unknown): string | null {

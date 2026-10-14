@@ -21,6 +21,7 @@ export type ModelProvider = {
   upstream_model: string
   base_url: string
   key_masked: string
+  key_count?: number
   status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled'
   last_checked_at: number | null
   last_error: string | null
@@ -31,13 +32,12 @@ export type ModelProvider = {
   cooldown_base_ms: number | null
 }
 
-/** A shared upstream provider (Poolside, OpenAI, …) — one key, one base URL, many aliases. */
+/** A shared upstream provider (Poolside, OpenAI, …) — one base URL, N bearer
+ *  keys, many aliases. Health columns are the endpoint rollup across its keys. */
 export type UpstreamProvider = {
   id: string
   label: string
   base_url: string
-  api_key_ciphertext: string
-  api_key_iv: string
   status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled'
   last_checked_at: number | null
   last_error: string | null
@@ -47,7 +47,27 @@ export type UpstreamProvider = {
   cooldown_base_ms: number | null
   created_at: number
   updated_at: number
+  /** Masked primary (first) key, for the compact provider row. */
   key_masked?: string
+  /** How many keys the provider's pool holds. */
+  key_count?: number
+  /** The full key pool (masked), when the response includes it. */
+  keys?: UpstreamKey[]
+}
+
+/** One bearer key in an upstream provider's pool. A 429 cools only this key. */
+export type UpstreamKey = {
+  id: string
+  label: string
+  status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled'
+  key_masked?: string
+  consecutive_failures: number
+  cooldown_until: number | null
+  last_used_at: number | null
+  last_error: string | null
+  priority: number
+  /** Plaintext key, only present on reveal endpoints. */
+  api_key?: string
 }
 
 /** A canonical model name registered under an upstream provider. */
@@ -57,6 +77,7 @@ export type UpstreamModel = {
   capabilities: string | null
   context_window: number | null
   max_output_tokens: number | null
+  supports_streaming: number
   provider_label?: string
 }
 

@@ -14,7 +14,7 @@ import { requireAuth } from '../lib/middleware'
 import { newId } from '../lib/crypto'
 import { getSession } from '../lib/session'
 import { computeSpendable, estimateReserve, placeHold, settleRequest } from '../lib/metering'
-import { loadAlias, openStreamingCall, recordOutcome, shuffle, type AliasWithProviders, type ChatMessage } from '../lib/providers'
+import { loadAlias, openCall, recordOutcome, shuffle, type AliasWithProviders, type ChatMessage } from '../lib/providers'
 import { canAccessModel, tierGatedMessage } from '../lib/tiers'
 import { eloBattle } from '../lib/elo'
 import type { Bindings, Variables } from '../lib/types'
@@ -150,7 +150,7 @@ app.post('/api/battles', requireAuth, async (c) => {
 
     await placeHold(c.env.DB, user.id, requestId, reserve)
 
-    const opened = await openStreamingCall(c.env, alias, messages, { maxTokens: alias.model.max_output_tokens })
+    const opened = await openCall(c.env, alias, messages, { maxTokens: alias.model.max_output_tokens })
     if ('error' in opened) {
       const result = await settleRequest(c.env.DB, {
         userId: user.id,
@@ -167,8 +167,32 @@ app.post('/api/battles', requireAuth, async (c) => {
       return
     }
 
-    const { provider, response } = opened
+    const { provider, key, response } = opened
     const streamStart = Date.now()
+
+    // If the upstream doesn't support streaming, handle it without streaming
+    if (!opened.streaming) {
+      const text = await response.text()
+      let parsed: any = {}
+      try { parsed = JSON.parse(text) } catch {}
+      const content = parsed.choices?.[0]?.message?.content ?? ''
+      const usage = parsed.usage ? { input: parsed.usage.prompt_tokens, output: parsed.usage.completion_tokens, total: parsed.usage.total_tokens } : null
+      send({ type: 'delta', label, content })
+      const result = await settleRequest(c.env.DB, {
+        userId: user.id,
+        requestId,
+        model: alias.model,
+        providerLabel: provider.upstream.label,
+        settlement: { kind: 'completed', usage },
+        latencyMs: Date.now() - streamStart,
+        battleId,
+      })
+      await recordOutcome(c.env, provider.upstream.id, provider.id, { ok: true, latencyMs: Date.now() - streamStart, keyId: key.id })
+      answers[label] = { slug: alias.model.slug, content: content.slice(0, MAX_ANSWER_CHARS) }
+      send({ type: 'settled', label, credits: result.creditsCharged, source: result.source, usage })
+      return
+    }
+
     let content = ''
     let usage: { input: number; output: number; total: number } | null = null
     let buffer = ''
@@ -241,7 +265,7 @@ app.post('/api/battles', requireAuth, async (c) => {
       battleId,
     })
 
-    await recordOutcome(c.env, provider.upstream.id, provider.id, { ok: true, latencyMs: Date.now() - streamStart })
+    await recordOutcome(c.env, provider.upstream.id, provider.id, { ok: true, latencyMs: Date.now() - streamStart, keyId: key.id })
 
     answers[label] = { slug: alias.model.slug, content: content.slice(0, MAX_ANSWER_CHARS) }
     send({

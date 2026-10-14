@@ -121,10 +121,10 @@ export default function ArcadePanel() {
           {clear === null ? (
             <p className="text-[13px] text-muted" role="status">Checking today's progress…</p>
           ) : clear.done ? (
-            <p className="text-[13px] text-gain" role="status">Cleared today — all three games finished. Come back tomorrow.</p>
+            <p className="text-[13px] text-gain" role="status">Cleared today — all games finished. Come back tomorrow.</p>
           ) : clear.ready ? (
             <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-              <p className="text-[13px] text-gain">All three games finished today — claim it.</p>
+              <p className="text-[13px] text-gain">All games finished today — claim it.</p>
               <Button disabled={claiming} onClick={() => void claimClear()} className="w-full sm:w-auto">
                 {claiming ? 'Claiming…' : `Claim +${clear.reward} cr`}
               </Button>

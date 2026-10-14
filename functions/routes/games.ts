@@ -1,6 +1,6 @@
-// Arcade: skill games paying bounded Pool credits — typing proficiency, a
-// memory-match board, and chess tactics. The 10-second reflex games were cut:
-// they read as childish and paid like real work.
+// Arcade: skill games paying bounded Pool credits — typing proficiency and a
+// memory-match board. The 10-second reflex games were cut: they read as
+// childish and paid like real work. Chess tactics were also descoped.
 //
 // Norman design notes (why they look this way):
 // - Few controls, labeled states each, fouls forgiven with zero penalty.
@@ -10,10 +10,12 @@
 // Tokenomics (bounded on both axes, effort-proportional):
 // - Server issues every round and validates the result; rewards are computed
 //   server-side, never trusted from the client.
-// - Per game per user per day: typing 3, memory 2, chess 2. Global daily pot
-//   500,000cr shared by all games. Solved-all bonus 7,000cr for finishing all
-//   three (once/day). A full clear pays ~43,000cr max — the multi-minute games
-//   (memory, chess) pay the most, effort-proportional.
+// - Per game per user per day: typing 3, memory 2. Global daily pot
+//   1,000,000cr shared by all games. Solved-all bonus 7,000cr for finishing
+//   both (once/day). A full clear pays ~61,000cr max (typing 3x10k + memory
+//   2x12k + 7k clear) — roughly one day of check-ins for real skilled play.
+//   Typing pays per-play less than memory (seconds of work vs minutes), but
+//   every tier beats the 2,000cr flat-rate chat so a win always buys messages.
 
 import { Hono } from 'hono'
 import { requireAuth } from '../lib/middleware'
@@ -27,17 +29,17 @@ const now = () => Date.now()
 // ------------------------------------------------------------------ tuning
 
 /** Shared daily mint cap across all arcade games. */
-export const ARCADE_GLOBAL_DAILY_BUDGET = 500_000
+export const ARCADE_GLOBAL_DAILY_BUDGET = 1_000_000
 
 export type GameKind = 'typing' | 'memory'
 
 const GAME_DAILY_CAPS: Record<GameKind, number> = { typing: 3, memory: 2 }
 
-/** WPM tiers for typing: [minimum wpm, reward]. */
+/** WPM tiers for typing: [minimum wpm, reward]. Top tier = 5 flat-rate chats. */
 export const TYPING_TIERS: { minWpm: number; reward: number }[] = [
-  { minWpm: 80, reward: 1000 },
-  { minWpm: 50, reward: 500 },
-  { minWpm: 0, reward: 250 },
+  { minWpm: 80, reward: 10000 },
+  { minWpm: 50, reward: 5000 },
+  { minWpm: 0, reward: 2500 },
 ]
 export const TYPING_MIN_SECONDS = 2
 export const TYPING_MAX_SECONDS = 120
@@ -224,7 +226,7 @@ async function claimBlockReason(
     if (clearToday) {
       return { error: 'already_claimed', message: 'Clear bonus already claimed today.' }
     }
-    return { error: 'not_cleared', message: 'Finish all three games today to claim the clear bonus.' }
+    return { error: 'not_cleared', message: 'Finish both games today to claim the clear bonus.' }
   }
   const used = await paidPlaysToday(db, userId, game)
   if (used >= GAME_DAILY_CAPS[game]) {
@@ -321,9 +323,9 @@ export function gameClaimStatements(
 
 /**
  * The clear-bonus claim + payout batch. The INSERT ... SELECT form is the
- * guard: the row only lands when today's three paid plays exist and no
- * clear bonus was claimed yet today, so two concurrent claims insert one
- * row and pay once. The ledger id is per user per day, so even a
+ * guard: the row only lands when today's paid plays in every arcade game
+ * exist and no clear bonus was claimed yet today, so two concurrent claims
+ * insert one row and pay once. The ledger id is per user per day, so even a
  * same-millisecond collision rolls the loser back.
  */
 export function clearClaimStatements(
@@ -450,10 +452,8 @@ app.post('/api/games/:game/start', requireAuth, async (c) => {
     return c.json({ round_id: id, pairs: MEMORY_PAIRS }, 201)
   }
 
-  // Chess: the puzzle id is dealt from a static bank. The bank is empty for
-  // now, so starting a chess round is a clean "not available" rather than a
-  // silently unplayable state.
-  return c.json({ error: 'not_available', message: 'Chess tactics is not live yet.' }, 404)
+  // parseGame() only admits the two live games; this is unreachable.
+  return c.json({ error: 'not_found', message: 'Unknown game.' }, 404)
 })
 
 // -------------------------------------------------------------------- flip
@@ -526,8 +526,8 @@ app.post('/api/games/:game/claim', requireAuth, async (c) => {
 
   // Per-game server-side scoring. Every score input is either compared to
   // a server-held value (typing) or read from a counter the server
-  // maintains (memory flips, chess attempts) — the client's own counts are
-  // ignored, so the tier cannot be understated.
+  // maintains (memory flips) — the client's own counts are ignored, so the
+  // tier cannot be understated.
   let reward: number | null = null
   let detail = ''
   if (game === 'typing') {
@@ -604,9 +604,9 @@ app.post('/api/games/clear/claim', requireAuth, async (c) => {
   const gate = verifiedGate(user)
   if (gate) return c.json(gate, 403)
 
-  // The insert itself is the guard: the row only lands when today's three
-  // paid plays exist and no clear bonus was claimed yet today, so two
-  // concurrent claims insert one row and pay once — the old
+  // The insert itself is the guard: the row only lands when today's paid
+  // plays in every arcade game exist and no clear bonus was claimed yet
+  // today, so two concurrent claims insert one row and pay once — the old
   // check-then-insert let both through.
   const timestamp = now()
   const roundId = newId()

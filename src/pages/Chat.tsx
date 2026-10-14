@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { streamChat, type ChatSseEvent } from '../lib/chat'
 import { api, normalizeCatalogModel, type CatalogModel } from '../lib/api'
 import { useAuth } from '../lib/auth'
-import { Button, Card, Credits } from '../components/ui'
+import { Button, Card, Credits, Select } from '../components/ui'
 
 type Model = CatalogModel
 
@@ -152,16 +152,13 @@ export default function Chat() {
 
   const messageCount = messages.length
   useEffect(() => {
-    // New bubbles stick to the bottom instantly. Per-token scrolling is
-    // handled directly (without smooth animation) in the stream flush path.
-    stickRef.current = true
-    setPinned(true)
     const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [messageCount])
+    if (el && stickRef.current) {
+      el.scrollTop = el.scrollHeight
+    }
+  }, [messageCount, stickRef])
 
   useEffect(() => {
-    // Abort in-flight stream + drop scheduled paint on unmount.
     return () => {
       abortRef.current?.abort()
       abortRef.current = null
@@ -186,7 +183,6 @@ export default function Chat() {
       prev.map((m) => (m.id === assistantId ? { ...m, content: m.content + text } : m)),
     )
     if (stickRef.current) {
-      // Scroll after paint so the new height is already laid out.
       requestAnimationFrame(() => {
         const el = scrollRef.current
         if (el && stickRef.current) el.scrollTop = el.scrollHeight
@@ -224,7 +220,6 @@ export default function Chat() {
     lastInputRef.current = content
     setRetryAvailable(false)
 
-    // Never overlap streams sharing pendingRef/rafRef — abort stale first.
     abortRef.current?.abort()
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current)
@@ -239,7 +234,6 @@ export default function Chat() {
     const requestModelSlug = mode === 'pool' ? (model?.slug ?? null) : null
     const requestModelLabel =
       mode === 'pool' ? (model?.label ?? 'assistant') : (selectedKey?.label ?? 'your key')
-    const requestFlatRate = mode === 'pool' ? (model?.flat_rate_credits ?? 0) : 0
     const startedAt = requestClock()
     let firstTokenMs: number | null = null
     let latestUsage: { input: number | null; output: number | null; total: number | null; source: string } | null = null
@@ -330,11 +324,10 @@ export default function Chat() {
 
     abortRef.current = null
     setBusy(false)
-    // Paint any text still buffered before marking the bubble done.
     flushPending(assistantId)
     if (result.completed) {
-      // A successful stream always leaves streaming mode, even if the final
-      // billing event was lost before the connection closed.
+      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)))
+    } else {
       setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)))
     }
     await refresh()
@@ -367,8 +360,11 @@ export default function Chat() {
       if (mode === 'byok') {
         setBanner({ kind: 'warn', text: 'Stream stopped — no charge in Your Key mode.' })
       } else {
-        setBanner({ kind: 'warn', text: `Stream stopped — ${requestFlatRate.toLocaleString('en-US')} cr flat rate charged.` })
+        setBanner({ kind: 'warn', text: 'Stream stopped — no charge.' })
       }
+    } else if (!result.completed) {
+      // stream completed without settled (e.g., no usage block) — still stop streaming UI
+      setRetryAvailable(false)
     }
   }
 
@@ -411,7 +407,7 @@ export default function Chat() {
   const sendBlockReason =
     mode === 'byok'
       ? !selectedKey
-        ? 'Pick one of your keys on the left to send.'
+        ? 'Pick a key from the dropdown to send.'
         : ''
       : !model
         ? 'Waiting for the model catalog to load.'
@@ -421,180 +417,176 @@ export default function Chat() {
             ? `${model.label} is down right now — pick another model; failed requests are never charged.`
             : ''
 
+  // Build dropdown options
+  interface PoolOption {
+    value: string
+    label: string
+    disabled: boolean
+    status: 'unknown' | 'live' | 'slow' | 'down'
+    tier: string
+    flatRate: number
+    [key: string]: unknown
+  }
+  interface ByokOption {
+    value: string
+    label: string
+    status: 'live' | 'slow' | 'down' | 'unknown' | 'disabled'
+    keyMasked: string
+    latency: number | null
+    [key: string]: unknown
+  }
+
+  const poolOptions: PoolOption[] = models.map((m) => ({
+    value: m.slug,
+    label: m.label,
+    disabled: m.access_tier !== 'free' && user.role !== 'admin' && userTierRank < modelTierRank(m.access_tier),
+    status: m.status,
+    tier: m.access_tier,
+    flatRate: m.flat_rate_credits,
+  }))
+  const byokOptions: ByokOption[] = byokKeys.map((k) => ({
+    value: k.id,
+    label: `${k.label} · ${k.upstream_model}`,
+    status: k.status,
+    keyMasked: k.key_masked,
+    latency: k.avg_latency_ms,
+  }))
+
   return (
-    <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[220px_1fr]">
-      <div className="order-2 flex flex-col gap-3 lg:order-1">
-        <Card className="p-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2">Mode</p>
-          <div className="flex gap-2" role="radiogroup" aria-label="Chat mode">
+    <div className="flex flex-col h-[calc(100vh-4rem)] lg:h-[calc(100vh-5rem)]">
+      {/* Header with mode switch and model/key dropdown */}
+      <header className="flex flex-col gap-3 p-4 bg-surface border-b border-line lg:flex-row lg:items-center lg:justify-between lg:px-6">
+        <div className="flex items-center gap-3">
+          <h1 className="text-lg font-semibold">Chat</h1>
+          <div className="flex items-center gap-2" role="radiogroup" aria-label="Chat mode">
             <button
               role="radio"
               aria-checked={mode === 'pool'}
               onClick={() => { setMode('pool'); setSelectedKeyId('') }}
-              className={`flex-1 px-3 py-2 text-[12px] font-medium rounded transition-colors ${
+              className={`px-3 py-1.5 text-[12px] font-medium rounded transition-colors ${
                 mode === 'pool'
                   ? 'bg-accent text-white border-accent'
                   : 'bg-surface-2 text-content hover:bg-surface-3 border-transparent'
               }`}
             >
-              <span className="flex items-center gap-1.5">
-                <span className={`h-1.5 w-1.5 rounded-full ${mode === 'pool' ? 'bg-white' : 'bg-muted'}`} />
-                The Pool
-              </span>
+              The Pool
             </button>
             <button
               role="radio"
               aria-checked={mode === 'byok'}
               onClick={() => setMode('byok')}
-              className={`flex-1 px-3 py-2 text-[12px] font-medium rounded transition-colors ${
+              className={`px-3 py-1.5 text-[12px] font-medium rounded transition-colors ${
                 mode === 'byok'
                   ? 'bg-accent text-white border-accent'
                   : 'bg-surface-2 text-content hover:bg-surface-3 border-transparent'
               }`}
             >
-              <span className="flex items-center gap-1.5">
-                <span className={`h-1.5 w-1.5 rounded-full ${mode === 'byok' ? 'bg-white' : 'bg-muted'}`} />
-                Your Key
-              </span>
+              Your Key
             </button>
           </div>
-          <p className="mt-2 text-[11px] text-muted text-center">
-            {mode === 'pool'
-              ? 'Community models · 1 cr = 1 token'
-              : 'Your endpoint · Your key · Free'}
-          </p>
-        </Card>
+        </div>
 
-        <h2 className="text-[12px] font-semibold uppercase tracking-wide text-muted">
-          {mode === 'pool' ? 'The Pool' : 'Your Keys'}
-        </h2>
-
-        {/* Mobile: horizontal chip strip so the composer stays visible without
-            scrolling past the whole catalog. Desktop keeps the card list. */}
-        {mode === 'pool' ? (
-          <>
-            {models.length === 0 && (
-              <p className="text-[13px] text-muted">
-                The Pool is empty right now — check back soon.
-              </p>
-            )}
-            <div className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible lg:pb-0">
-            {models.map((m) => (
-              <button
-                key={m.slug}
-                onClick={() => setSelected(m.slug)}
-                aria-pressed={selected === m.slug}
-                title={
-                  m.access_tier !== 'free'
-                    ? `${m.label} — needs ${m.access_tier} tier`
-                    : m.status === 'down'
-                      ? `${m.label} — down right now`
-                      : m.label
-                }
-                className={`card flex min-h-[44px] shrink-0 flex-col gap-1 p-3 text-left transition-colors lg:shrink ${
-                  selected === m.slug ? 'border-accent' : 'hover:border-muted'
-                }`}
-              >
-                <span className="flex items-center gap-2">
-                  <span className={`h-2 w-2 rounded-full ${statusDot[m.status]}`} aria-hidden="true" />
-                  <span className="whitespace-nowrap text-[13px] font-medium lg:whitespace-normal">{m.label}</span>
-                  <span className="sr-only">{m.status}</span>
-                  {m.access_tier !== 'free' && (
-                    <span className="rounded bg-accent/10 px-1 py-0.5 text-[10px] font-medium text-accent">
-                      🔒 {m.access_tier}
+        <div className="flex items-center gap-3 lg:ml-auto">
+          {mode === 'pool' ? (
+            <div className="w-full sm:w-64 lg:w-72">
+              <Select
+                value={selected}
+                onChange={setSelected}
+                placeholder="Select a model…"
+                options={poolOptions}
+                renderOption={(opt) => (
+                  <div className="flex items-center gap-2">
+                    <span className={`h-2 w-2 rounded-full ${statusDot[opt.status]}`} aria-hidden="true" />
+                    <span className="font-medium">{opt.label}</span>
+                    {opt.tier !== 'free' && (
+                      <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                        🔒 {opt.tier}
+                      </span>
+                    )}
+                    {opt.disabled && <span className="text-[11px] text-muted ml-auto">locked</span>}
+                    <span className="num text-[11px] text-muted ml-auto">
+                      flat {opt.flatRate.toLocaleString('en-US')} cr
                     </span>
-                  )}
-                </span>
-                <span className="num hidden text-[11px] text-muted lg:block">
-                  flat {m.flat_rate_credits.toLocaleString('en-US')} cr · {m.provider_count} config{m.provider_count === 1 ? '' : 's'}
-                </span>
-                {m.capabilities.length > 0 && (
-                  <span className="hidden flex-wrap gap-1 lg:flex">
-                    {m.capabilities.slice(0, 3).map((tag) => (
-                      <span key={tag} className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">{tag}</span>
-                    ))}
-                  </span>
+                  </div>
                 )}
-              </button>
-            ))}
+              />
             </div>
-          </>
-        ) : (
-          <>
-            {byokLoading ? (
-              <p className="text-[13px] text-muted text-center py-4">Loading your keys…</p>
-            ) : byokKeys.length === 0 ? (
-              <div className="flex flex-col gap-2 p-4 text-center">
-                <p className="text-[13px] text-muted">No keys yet.</p>
-                <Button variant="primary" size="sm" onClick={() => navigate('/keys')}>Add a key</Button>
-              </div>
-            ) : (
-              <div className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible lg:pb-0">
-              {byokKeys.map((k) => (
-                <button
-                  key={k.id}
-                  onClick={() => setSelectedKeyId(k.id)}
-                  aria-pressed={selectedKeyId === k.id}
-                  className={`card flex min-h-[44px] shrink-0 flex-col gap-1 p-3 text-left transition-colors lg:shrink ${
-                    selectedKeyId === k.id ? 'border-accent' : 'hover:border-muted'
-                  }`}
-                >
-                  <span className="flex items-center gap-2">
-                    <span className={`h-2 w-2 rounded-full ${statusDot[k.status]}`} aria-hidden="true" />
-                    <span className="whitespace-nowrap text-[13px] font-medium lg:whitespace-normal">{k.label}</span>
-                    <span className="sr-only">{k.status}</span>
-                  </span>
-                  <span className="num hidden text-[11px] text-muted lg:block">
-                    {formatLatency(k.avg_latency_ms)} · {k.upstream_model}
-                  </span>
-                  <span className="num hidden font-mono text-[11px] text-muted lg:block">{k.key_masked}</span>
-                </button>
-              ))}
-              </div>
-            )}
-          </>
-        )}
-      </div>
+          ) : (
+            <div className="w-full sm:w-64 lg:w-72">
+              <Select
+                value={selectedKeyId}
+                onChange={setSelectedKeyId}
+                placeholder="Select a key…"
+                options={byokOptions}
+                disabled={byokLoading}
+                renderOption={(opt) => (
+                  <div className="flex items-center gap-2">
+                    <span className={`h-2 w-2 rounded-full ${statusDot[opt.status]}`} aria-hidden="true" />
+                    <span className="font-medium truncate">{opt.label}</span>
+                    <span className="num text-[11px] text-muted font-mono ml-auto">{opt.keyMasked}</span>
+                    {opt.latency != null && (
+                      <span className="num text-[11px] text-muted">{formatLatency(opt.latency)}</span>
+                    )}
+                  </div>
+                )}
+              />
+            </div>
+          )}
+        </div>
+      </header>
 
-      <div className="order-1 flex min-h-[70vh] flex-col gap-3 lg:order-2">
-        {mode === 'pool' && model && (
-          <Card className="flex flex-wrap items-center gap-3 px-4 py-2.5">
-            <span className={`h-2 w-2 rounded-full ${statusDot[model.status]}`} />
-            <span className="text-[13px] font-semibold">{model.label}</span>
-            <span className="text-[12px] text-muted">The Pool</span>
-            <span className="num ml-auto text-[12px] text-muted">
-              flat {model.flat_rate_credits.toLocaleString('en-US')} cr if usage unreported
-            </span>
-            {modelLocked && (
-              <span className="text-[12px] text-warn">requires {model.access_tier} tier — upgrade not available yet</span>
-            )}
-            {model.scoped_only === 1 && (
-              <span className="text-[12px] text-muted">scoped credits only — global balance can't buy this model</span>
-            )}
-            {model.status === 'down' && (
-              <span className="text-[12px] text-warn">all configs down — requests will fail free</span>
-            )}
-          </Card>
-        )}
-        {mode === 'byok' && selectedKey && (
-          <Card className="flex flex-wrap items-center gap-3 px-4 py-2.5 border-gain/30">
-            <span className={`h-2 w-2 rounded-full ${statusDot[selectedKey.status]}`} />
-            <span className="text-[13px] font-semibold">{selectedKey.label}</span>
-            <span className="text-[12px] text-gain font-medium">Your Key (free)</span>
-            <span className="num ml-auto text-[12px] text-muted font-mono">{selectedKey.key_masked}</span>
-          </Card>
-        )}
+      {/* Main chat area */}
+      <main className="flex-1 flex flex-col overflow-hidden">
+        {/* Active model/key info banner */}
+        <div className="px-4 py-2 border-b border-line bg-surface-2/50 flex-shrink-0">
+          {mode === 'pool' && model && (
+            <div className="flex flex-wrap items-center gap-3 text-[13px]">
+              <span className={`h-2 w-2 rounded-full ${statusDot[model.status]}`} />
+              <span className="font-semibold">{model.label}</span>
+              <span className="text-muted">The Pool</span>
+              <span className="num ml-auto text-muted">
+                usage-based · 1 cr = 1 token
+              </span>
+              {modelLocked && (
+                <span className="text-warn">requires {model.access_tier} tier — upgrade not available yet</span>
+              )}
+              {model.scoped_only === 1 && (
+                <span className="text-muted">scoped credits only — global balance can't buy this model</span>
+              )}
+              {model.status === 'down' && (
+                <span className="text-warn">all configs down — requests will fail free</span>
+              )}
+            </div>
+          )}
+          {mode === 'byok' && selectedKey && (
+            <div className="flex flex-wrap items-center gap-3 text-[13px] border-gain/30">
+              <span className={`h-2 w-2 rounded-full ${statusDot[selectedKey.status]}`} />
+              <span className="font-semibold">{selectedKey.label}</span>
+              <span className="text-gain font-medium">Your Key (free)</span>
+              <span className="num ml-auto text-muted font-mono">{selectedKey.key_masked}</span>
+            </div>
+          )}
+        </div>
 
-        <div ref={scrollRef} onScroll={handleScroll} role="log" aria-label="Chat messages" aria-busy={busy} tabIndex={0} className="card relative flex-1 overflow-y-auto p-4">
+        {/* Messages */}
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          role="log"
+          aria-label="Chat messages"
+          aria-busy={busy}
+          tabIndex={0}
+          className="flex-1 overflow-y-auto p-4 space-y-4"
+        >
           {messages.length === 0 ? (
-            <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
-              <p className="text-[13px] text-muted">
+            <div className="flex h-full flex-col items-center justify-center gap-4 text-center text-muted px-4">
+              <p className="text-[13px] max-w-md">
                 What is freellm.hasit.in? A community-owned arena for indie AI models. Bring your own key and chat free, or spend credits (1 cr = 1 token) on models in The Pool.
               </p>
-              <p className="text-[13px] text-muted">
+              <p className="text-[13px]">
                 Ask {mode === 'pool' ? (model?.label ?? 'a model') : (selectedKey?.label ?? 'your key')} anything.
               </p>
-              <p className="num text-[12px] text-muted max-w-md">
+              <p className="num text-[12px] max-w-md">
                 {mode === 'pool'
                   ? 'Billing uses the provider\'s reported token counts; the flat rate applies only when usage is unreported or a stream is stopped early.'
                   : 'Free — no balance check, no metering. Your key, your endpoint, your cost.'}
@@ -606,40 +598,42 @@ export default function Chat() {
           ) : (
             <div className="flex flex-col gap-4">
               {messages.map((m) => (
-                <div key={m.id} className={m.role === 'user' ? 'text-right' : ''}>
-                  {m.role === 'assistant' && (
-                    <p className="mb-1 text-[12px] font-semibold text-accent">
-                      {m.model ?? (mode === 'pool' ? (model?.label ?? 'assistant') : (selectedKey?.label ?? 'your key'))}
-                    </p>
-                  )}
-                  <div
-                    className={`inline-block max-w-[85%] whitespace-pre-wrap rounded-lg px-3 py-2 text-left text-[13px] ${
-                      m.role === 'user' ? 'bg-accent/15' : 'bg-surface-2'
-                    }`}
-                  >
-                    {m.content || (m.streaming ? <span role="status" className="text-muted">thinking…</span> : null)}
-                    {m.error && <span className="text-loss">{m.error}</span>}
+                <div key={m.id} className={m.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
+                  <div className="flex flex-col gap-1 max-w-[85%]">
+                    {m.role === 'assistant' && (
+                      <p className="text-[12px] font-semibold text-accent ml-1">
+                        {m.model ?? (mode === 'pool' ? (model?.label ?? 'assistant') : (selectedKey?.label ?? 'your key'))}
+                      </p>
+                    )}
+                    <div
+                      className={`inline-block max-w-full whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-[13px] ${
+                        m.role === 'user' ? 'bg-accent/15 rounded-tr-sm' : 'bg-surface-2 rounded-tl-sm'
+                      }`}
+                    >
+                      {m.content || (m.streaming ? <span role="status" className="text-muted">thinking…</span> : null)}
+                      {m.error && <span className="text-loss">{m.error}</span>}
+                    </div>
+                    {m.cost && (
+                      <p className="num text-[11px] text-muted ml-1">
+                        {m.cost.credits == null
+                          ? 'billing pending — no charge recorded'
+                          : `${m.cost.credits.toLocaleString('en-US')} cr`}
+                        {m.cost.input != null && m.cost.output != null
+                          ? ` — ${m.cost.input.toLocaleString('en-US')} in · ${m.cost.output.toLocaleString('en-US')} out`
+                          : ''}
+                        {mode === 'byok' ? ' · Free — your key' : m.cost.status === 'aborted'
+                          ? ' · flat rate — stream stopped'
+                          : m.cost.source === 'reported'
+                          ? ` · reported by ${m.cost.model ?? 'provider'}`
+                          : m.cost.source === 'flat_rate'
+                          ? ' · flat rate — usage unreported'
+                          : ''}
+                        {m.cost.latencyMs != null ? ` · ${(m.cost.latencyMs / 1000).toFixed(2)}s` : ''}
+                        {m.cost.firstTokenMs != null ? ` · first token ${(m.cost.firstTokenMs / 1000).toFixed(2)}s` : ''}
+                        {m.cost.tokensPerSec != null ? ` · ${Math.round(m.cost.tokensPerSec)} tok/s` : ''}
+                      </p>
+                    )}
                   </div>
-                  {m.cost && (
-                    <p className="num mt-1 text-[12px] text-muted">
-                      {m.cost.credits == null
-                        ? 'billing pending — no charge recorded'
-                        : `${m.cost.credits.toLocaleString('en-US')} cr`}
-                      {m.cost.input != null && m.cost.output != null
-                        ? ` — ${m.cost.input.toLocaleString('en-US')} in · ${m.cost.output.toLocaleString('en-US')} out`
-                        : ''}
-                      {mode === 'byok' ? ' · Free — your key' : m.cost.status === 'aborted'
-                        ? ' · flat rate — stream stopped'
-                        : m.cost.source === 'reported'
-                        ? ` · reported by ${m.cost.model ?? 'provider'}`
-                        : m.cost.source === 'flat_rate'
-                        ? ' · flat rate — usage unreported'
-                        : ''}
-                      {m.cost.latencyMs != null ? ` · ${(m.cost.latencyMs / 1000).toFixed(2)}s` : ''}
-                      {m.cost.firstTokenMs != null ? ` · first token ${(m.cost.firstTokenMs / 1000).toFixed(2)}s` : ''}
-                      {m.cost.tokensPerSec != null ? ` · ${Math.round(m.cost.tokensPerSec)} tok/s` : ''}
-                    </p>
-                  )}
                 </div>
               ))}
             </div>
@@ -652,45 +646,45 @@ export default function Chat() {
                 const el = scrollRef.current
                 if (el) el.scrollTop = el.scrollHeight
               }}
-              className="btn-secondary sticky bottom-2 z-[5] self-center shadow-lg"
+              className="btn-secondary self-center shadow-lg"
             >
               Jump to latest ↓
             </button>
           )}
         </div>
 
+        {/* Banner */}
         {banner && (
-          <p role="alert" className={`flex flex-wrap items-center gap-2 text-[13px] ${banner.kind === 'err' ? 'text-loss' : 'text-warn'}`}>
-            <span className="flex-1">{banner.text}</span>
+          <div className={`flex flex-wrap items-center gap-2 px-4 py-2 border-t border-line ${banner.kind === 'err' ? 'text-loss' : 'text-warn'} bg-surface/50 flex-shrink-0`}>
+            <span className="flex-1 text-[13px]">{banner.text}</span>
             {banner.action && (
               <Link to={banner.action.to} className="text-accent hover:underline">{banner.action.label}</Link>
             )}
             {!busy && retryAvailable && (
-              <button onClick={() => void send(undefined, lastInputRef.current)} className="text-accent hover:underline">
+              <button onClick={() => void send(undefined, lastInputRef.current)} className="text-accent hover:underline text-[13px]">
                 Retry
               </button>
             )}
             <button onClick={() => setBanner(null)} className="min-h-[44px] px-2 text-muted hover:text-content" aria-label="Dismiss message">
               Dismiss
             </button>
-          </p>
+          </div>
         )}
 
+        {/* Low balance warning */}
         {mode === 'pool' && user.balance_credits < 100_000 && (
-          <p className="flex flex-wrap items-center gap-2 text-[13px] text-warn">
+          <div className="flex flex-wrap items-center gap-2 px-4 py-2 border-t border-line text-warn text-[13px] bg-surface/50 flex-shrink-0">
             <span>Low balance: <Credits value={user.balance_credits} /> cr — your streak check-in gives +50,000 cr.</span>
             <Link to="/earn" className="text-accent hover:underline">Earn more</Link>
-          </p>
+          </div>
         )}
 
-        {!busy && !canSend && input.trim() && (
-          <p className="text-[13px] text-muted" role="status">{sendBlockReason}</p>
-        )}
-        <form className="flex items-end gap-2" onSubmit={send}>
+        {/* Composer - sticky at bottom */}
+        <form className="flex items-end gap-2 p-4 border-t border-line bg-surface/50 flex-shrink-0" onSubmit={send}>
           <label className="sr-only" htmlFor="chat-input">Message</label>
           <textarea
             id="chat-input"
-            className="input min-h-[48px] flex-1 resize-none text-[16px] sm:text-[13px]"
+            className="input min-h-[48px] max-h-[200px] flex-1 resize-none text-[16px] sm:text-[13px]"
             rows={1}
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -702,6 +696,7 @@ export default function Chat() {
             }}
             placeholder={mode === 'pool' ? (model ? `Ask ${model.label}…` : 'Ask anything…') : selectedKey ? `Ask via ${selectedKey.label}…` : 'Add a key on /keys…'}
             disabled={mode === 'byok' && !selectedKey}
+            style={{ height: 'auto' }}
           />
           {busy ? (
             <Button type="button" variant="secondary" onClick={stop} title="Stop (Esc)">Stop</Button>
@@ -709,14 +704,14 @@ export default function Chat() {
             <Button type="submit" disabled={!canSend} title={canSend ? 'Send (Enter)' : sendBlockReason}>Send</Button>
           )}
         </form>
-        <p className="num text-[12px] text-muted">
+        <p className="num text-[11px] text-muted px-4 pb-4 flex-shrink-0">
           {mode === 'pool' ? (
             <>spendable: <Credits value={user.balance_credits} /> cr · Enter sends, Shift+Enter for a new line · Esc stops</>
           ) : (
             <>Your Key mode — free · Enter sends, Shift+Enter for a new line · Esc stops</>
           )}
         </p>
-      </div>
+      </main>
     </div>
   )
 }

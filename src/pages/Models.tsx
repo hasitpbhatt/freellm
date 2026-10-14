@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, normalizeCatalogModel, type CatalogModel } from '../lib/api'
-import { Card, Credits } from '../components/ui'
+import { Card } from '../components/ui'
 
 type Model = CatalogModel
 
@@ -101,9 +101,9 @@ export default function Models() {
               ))}
             </div>
             <dl className="num mt-1 grid grid-cols-1 gap-y-1 text-[12px] text-muted min-[380px]:grid-cols-2">
-              <dt>Flat rate (credits per request when usage unreported)</dt>
+              <dt>Billing</dt>
               <dd className="text-left text-content min-[380px]:text-right">
-                <Credits value={model.flat_rate_credits} /> cr
+                Usage-based · 1 cr = 1 token
               </dd>
               <dt>Provider configs</dt>
               <dd className="text-left text-content min-[380px]:text-right">{model.provider_count}</dd>

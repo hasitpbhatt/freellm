@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import { api } from './api'
 import type { User } from './types'
 
-type AuthState = {
+export type AuthState = {
   user: User | null
   loading: boolean
   logout: () => Promise<void>
@@ -12,17 +12,17 @@ type AuthState = {
 const AuthContext = createContext<AuthState | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [user, setUserState] = useState<User | null>(null)
+  const [loading, setLoadingState] = useState(true)
 
   const refresh = useCallback(async () => {
     try {
       const data = await api.get<{ user: User | null }>('/me')
-      setUser(data.user)
+      setUserState(data.user)
     } catch {
-      setUser(null)
+      setUserState(null)
     } finally {
-      setLoading(false)
+      setLoadingState(false)
     }
   }, [])
 
@@ -32,7 +32,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     await api.post('/auth/logout')
-    setUser(null)
+    setUserState(null)
   }, [])
 
   return (

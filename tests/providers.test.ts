@@ -12,7 +12,7 @@ import {
   sortByLatency,
 } from '../functions/lib/providers'
 import { encryptSecret } from '../functions/lib/crypto'
-import type { Bindings, ModelProviderRow, UpstreamProviderRow, UpstreamProviderWithModel } from '../functions/lib/types'
+import type { Bindings, ModelProviderRow, UpstreamProviderRow, UpstreamProviderWithModel, UpstreamKeyRow } from '../functions/lib/types'
 import { createTestDb, testModel } from './helpers/db'
 
 let db: D1Database
@@ -39,15 +39,15 @@ afterEach(async () => {
 /** Create a test upstream provider row. */
 async function createUpstreamProvider(
   id: string,
-  overrides: Partial<UpstreamProviderWithModel> = {}
+  overrides: Partial<UpstreamProviderWithModel> & { encryptionKey?: string } = {}
 ): Promise<UpstreamProviderWithModel> {
   const now = Date.now()
+  const key = overrides.encryptionKey ?? Buffer.alloc(32).toString('base64')
+  const encrypted = await encryptSecret('test-key', key)
   const row: UpstreamProviderWithModel = {
     id,
     label: id,
     base_url: 'https://provider.example/v1',
-    api_key_ciphertext: 'ciphertext',
-    api_key_iv: 'iv',
     status: 'live',
     last_checked_at: null,
     last_error: null,
@@ -58,20 +58,34 @@ async function createUpstreamProvider(
     created_at: now,
     updated_at: now,
     model_capabilities: [],
+    keys: [{
+      id: `key-${id}`,
+      upstream_provider_id: id,
+      label: 'default',
+      api_key_ciphertext: encrypted.ciphertext,
+      api_key_iv: encrypted.iv,
+      status: 'live',
+      consecutive_failures: 0,
+      cooldown_until: null,
+      last_used_at: null,
+      last_error: null,
+      priority: 0,
+      created_at: now,
+      updated_at: now,
+    }],
+    supports_streaming: 1,
     ...overrides,
   }
   await db.prepare(
-    `INSERT OR REPLACE INTO freellm_upstream_providers (id, label, base_url, api_key_ciphertext, api_key_iv,
+    `INSERT OR REPLACE INTO freellm_upstream_providers (id, label, base_url,
                                              status, avg_latency_ms, consecutive_failures,
                                              cooldown_until, cooldown_base_ms, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       row.id,
       row.label,
       row.base_url,
-      row.api_key_ciphertext,
-      row.api_key_iv,
       row.status,
       row.avg_latency_ms,
       row.consecutive_failures,
@@ -80,6 +94,14 @@ async function createUpstreamProvider(
       row.created_at,
       row.updated_at,
     )
+    .run()
+  // Insert the key into the key pool
+  await db.prepare(
+    `INSERT OR REPLACE INTO freellm_upstream_keys (id, upstream_provider_id, label, api_key_ciphertext, api_key_iv,
+                                     status, consecutive_failures, cooldown_until, priority, created_at, updated_at)
+     VALUES (?, ?, 'default', ?, ?, 'live', 0, NULL, 0, ?, ?)`
+  )
+    .bind(row.keys[0].id, row.id, encrypted.ciphertext, encrypted.iv, now, now)
     .run()
   // Also create upstream_models entry for 'test-upstream' to satisfy FK
   await db.prepare(
@@ -142,8 +164,6 @@ function upstreamProviderRow(id: string, overrides: Partial<UpstreamProviderWith
     id,
     label: id,
     base_url: 'https://provider.example/v1',
-    api_key_ciphertext: 'ciphertext',
-    api_key_iv: 'iv',
     status: 'live',
     last_checked_at: null,
     last_error: null,
@@ -154,6 +174,22 @@ function upstreamProviderRow(id: string, overrides: Partial<UpstreamProviderWith
     created_at: now,
     updated_at: now,
     model_capabilities: [],
+    keys: [{
+      id: `key-${id}`,
+      upstream_provider_id: id,
+      label: 'default',
+      api_key_ciphertext: 'ciphertext',
+      api_key_iv: 'iv',
+      status: 'live',
+      consecutive_failures: 0,
+      cooldown_until: null,
+      last_used_at: null,
+      last_error: null,
+      priority: 0,
+      created_at: now,
+      updated_at: now,
+    }],
+    supports_streaming: 1,
     ...overrides,
   }
 }
@@ -175,10 +211,35 @@ async function storedModelProviders(): Promise<ModelProviderRow[]> {
 }
 
 async function storedUpstreamProviders(): Promise<UpstreamProviderWithModel[]> {
-  const rows = await db
+  const providerRows = await db
     .prepare('SELECT *, NULL AS model_capabilities FROM freellm_upstream_providers ORDER BY label')
     .all<UpstreamProviderWithModel>()
-  return rows.results
+  const providers = providerRows.results
+  
+  // Load key pools for all providers
+  const upstreamIds = [...new Set(providers.map((p) => p.id))]
+  const keyRows = upstreamIds.length
+    ? (
+        await db.prepare(
+          `SELECT * FROM freellm_upstream_keys
+           WHERE upstream_provider_id IN (${upstreamIds.map(() => '?').join(',')})
+           ORDER BY priority ASC, COALESCE(last_used_at, 0) ASC`,
+        )
+          .bind(...upstreamIds)
+          .all<UpstreamKeyRow>()
+      ).results
+    : []
+  const keysByProvider = new Map<string, UpstreamKeyRow[]>()
+  for (const key of keyRows) {
+    const list = keysByProvider.get(key.upstream_provider_id) ?? []
+    list.push(key)
+    keysByProvider.set(key.upstream_provider_id, list)
+  }
+  
+  return providers.map((p) => ({
+    ...p,
+    keys: keysByProvider.get(p.id) ?? [],
+  }))
 }
 
 test('failed providers cool down for 30 minutes while healthy providers stay eligible', async () => {
@@ -263,7 +324,6 @@ test('failed providers cool down for 30 minutes while healthy providers stay eli
 
 test('openStreamingCall tries the next provider after an upstream refusal', async () => {
   const key = Buffer.alloc(32).toString('base64')
-  const encrypted = await encryptSecret('test-key', key)
   const env = { DB: db, ENCRYPTION_KEY: key } as unknown as Bindings
   const now = Date.now()
   
@@ -272,8 +332,8 @@ test('openStreamingCall tries the next provider after an upstream refusal', asyn
      VALUES ('model_failover', 'failover-model', 'Failover Model', '[]', 2000, 'failover', 1, 0, ?, ?)`,
   ).bind(now, now).run()
 
-  const upA = await createUpstreamProvider('upstream-fail-a', { base_url: 'https://a.example/v1', api_key_ciphertext: encrypted.ciphertext, api_key_iv: encrypted.iv })
-  const upB = await createUpstreamProvider('upstream-fail-b', { base_url: 'https://b.example/v1', api_key_ciphertext: encrypted.ciphertext, api_key_iv: encrypted.iv })
+  const upA = await createUpstreamProvider('upstream-fail-a', { base_url: 'https://a.example/v1', encryptionKey: key })
+  const upB = await createUpstreamProvider('upstream-fail-b', { base_url: 'https://b.example/v1', encryptionKey: key })
   
   const mpA = await createModelProvider('fail-a', 'upstream-fail-a', 0)
   const mpB = await createModelProvider('fail-b', 'upstream-fail-b', 1)

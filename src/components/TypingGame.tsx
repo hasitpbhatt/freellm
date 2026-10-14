@@ -5,11 +5,21 @@ import { useAuth } from '../lib/auth'
 
 type Phase = { name: 'idle' } | { name: 'typing'; roundId: string } | { name: 'done'; text: string; kind: 'ok' | 'err' }
 
+type TypingTier = { min_wpm: number; reward: number }
+
+// Fallback matches the server TYPING_TIERS — replaced by /games/status on load.
+const FALLBACK_TIERS: TypingTier[] = [
+  { min_wpm: 80, reward: 10000 },
+  { min_wpm: 50, reward: 5000 },
+  { min_wpm: 0, reward: 2500 },
+]
+
 // Typing sprint: the server deals a phrase — retype it exactly, fast.
 // The claim only pays on an exact server-side match, so pasting foreign
 // text or gibberish scores nothing. 3 paid plays a day.
 export default function TypingGame() {
   const [playsLeft, setPlaysLeft] = useState<number | null>(null)
+  const [tiers, setTiers] = useState<TypingTier[]>(FALLBACK_TIERS)
   const [phrase, setPhrase] = useState<string | null>(null)
   const [roundId, setRoundId] = useState<string | null>(null)
   const [typed, setTyped] = useState('')
@@ -19,8 +29,9 @@ export default function TypingGame() {
 
   const load = async () => {
     try {
-      const s = await api.get<{ games: Record<string, { plays_left: number }> }>('/games/status')
+      const s = await api.get<{ games: Record<string, { plays_left: number }>; typing_tiers?: TypingTier[] }>('/games/status')
       setPlaysLeft(s.games.typing.plays_left)
+      if (Array.isArray(s.typing_tiers) && s.typing_tiers.length > 0) setTiers(s.typing_tiers)
     } catch {
       // leave unknown
     }
@@ -83,7 +94,7 @@ export default function TypingGame() {
       />
       <div className="flex flex-col gap-3 p-4">
         <p className="text-[13px] text-muted">
-          Retype the dealt phrase exactly — 80+ wpm pays 100 cr, 50+ pays 50 cr, a finish pays 25 cr.
+          Retype the dealt phrase exactly — {tiers.map((t) => `${t.min_wpm}+ wpm pays ${t.reward.toLocaleString('en-US')} cr`).join(', ')}.
         </p>
         {phase.name === 'idle' && (
           <Button onClick={() => void start()} className="w-full sm:w-auto sm:self-start">

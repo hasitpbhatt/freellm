@@ -1,24 +1,30 @@
 // The OpenAI-compatible surface — /v1.
 //
 //   GET  /v1/models              the catalog in OpenAI's shape (public)
-//   POST /v1/chat/completions    chat through The Pool, billed 1:1 on tokens
+//   POST /v1/chat/completions    chat through The Pool, billed 1:1 on tokens;
+//                                or through your own vault credential with
+//                                key_mode=byok + key_id (free, unmetered)
 //
 // Auth: session cookie OR `Authorization: Bearer fl_…` (see routes/apikeys.ts).
 // The wire contract is OpenAI's, so the OpenAI SDKs and every
 // OpenAI-compatible tool work unchanged with:
 //   new OpenAI({ baseURL: 'https://freellm.hasit.in/v1', apiKey: 'fl_…' })
 //
-// Billing reuses the pool metering path exactly — reserve, failover across
-// provider configs, settle on provider-reported usage (flat rate as the
-// fallback). BYOK stays on the native POST /api/chat.
+// Pool billing reuses the pool metering path exactly — reserve, failover
+// across provider configs, settle on provider-reported usage (flat rate as
+// the fallback). BYOK dials the caller's own vault row (api_key or oauth,
+// one of possibly several personal accounts) and settles free with
+// key_mode='byok' — it never touches The Pool or any shared credential.
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { requireAuthOrToken } from '../lib/middleware'
 import { computeSpendable, estimateReserve, placeHold, settleRequest, type Usage } from '../lib/metering'
-import { loadAlias, openStreamingCall, recordOutcome } from '../lib/providers'
+import { callProvider, loadAlias, openCall, recordOutcome } from '../lib/providers'
+import { openByokCodexCall } from '../lib/codex'
 import { canAccessModel, tierGatedMessage } from '../lib/tiers'
-import { newId } from '../lib/crypto'
-import type { Bindings, Variables } from '../lib/types'
+import { decryptSecret, encryptSecret, newId } from '../lib/crypto'
+import { getOAuthProviderConfig } from '../lib/oauth'
+import type { ApiKeyRow, Bindings, Variables } from '../lib/types'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -89,6 +95,8 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
       temperature?: unknown
       top_p?: unknown
       required_capabilities?: unknown
+      key_mode?: unknown
+      key_id?: unknown
     }>()
     .catch(() => null)
 
@@ -152,6 +160,22 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
     top_p: typeof payload?.top_p === 'number' ? payload.top_p : undefined,
   }
 
+  // ---- BYOK: the caller's own vault credential, free and unmetered ----
+  // Same contract as POST /api/chat with key_mode=byok: the model slug still
+  // selects the alias (output cap + usage attribution), but the request dials
+  // the user's own endpoint with their own token and settles with charge 0.
+  if (payload?.key_mode === 'byok') {
+    return chatWithByok(c, {
+      user,
+      alias,
+      messages,
+      maxTokens,
+      stream,
+      includeUsage,
+      keyId: typeof payload.key_id === 'string' ? payload.key_id : '',
+    })
+  }
+
   // ---- reserve ----
   const requestId = newId()
   const reserve = estimateReserve(messages, maxTokens)
@@ -182,7 +206,7 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
   await placeHold(c.env.DB, user.id, requestId, reserve)
 
   // ---- acquire (failover across provider configs) ----
-  const opened = await openStreamingCall(c.env, alias, messages, { maxTokens, sampling, requiredCapabilities })
+  const opened = await openCall(c.env, alias, messages, { maxTokens, sampling, requiredCapabilities })
   if ('error' in opened) {
     await settleRequest(c.env.DB, {
       userId: user.id,
@@ -198,7 +222,7 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
     )
   }
 
-  const { provider, response } = opened
+  const { provider, key, response, usage: preUsage, streaming } = opened
   const startedAt = Date.now()
   const completionId = `chatcmpl-${requestId.replace(/-/g, '').slice(0, 24)}`
   const created = Math.floor(Date.now() / 1000)
@@ -215,9 +239,9 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
           requestId,
           model: alias.model,
           providerLabel: provider.upstream.label,
-          settlement: kind === 'completed' ? { kind, usage: usage ?? null } : { kind, reason },
+          settlement: kind === 'completed' ? { kind, usage: usage ?? preUsage ?? null } : { kind, reason },
           latencyMs: Date.now() - startedAt,
-          usage,
+          usage: usage ?? preUsage ?? null,
         })
         break
       } catch (err) {
@@ -228,7 +252,7 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
     // already-streamed completion into an error response.
     if (kind === 'completed') {
       try {
-        await recordOutcome(c.env, provider.upstream.id, provider.id, { ok: true, latencyMs: Date.now() - startedAt })
+        await recordOutcome(c.env, provider.upstream.id, provider.id, { ok: true, latencyMs: Date.now() - startedAt, keyId: key.id })
       } catch (err) {
         console.error('[v1] recordOutcome failed', completionId, err)
       }
@@ -249,20 +273,38 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
   if (!stream) {
     let content = ''
     let finishReason: string | null = null
-    let usage: Usage | null = null
-    try {
-      const text = await response.text()
-      for (const line of text.split('\n')) {
-        const parsed = parseSseLine(line)
-        if (!parsed) continue
-        usage = usageFromChunk(parsed) ?? usage
-        const choice = (parsed.choices as Array<{ delta?: { content?: unknown }; finish_reason?: unknown }> | undefined)?.[0]
-        if (typeof choice?.delta?.content === 'string') content += choice.delta.content
-        if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason
+    let usage: Usage | null = preUsage ?? null
+
+    if (streaming) {
+      // Upstream returned a streaming response (SSE), parse it
+      try {
+        const text = await response.text()
+        for (const line of text.split('\n')) {
+          const parsed = parseSseLine(line)
+          if (!parsed) continue
+          usage = usageFromChunk(parsed) ?? usage
+          const choice = (parsed.choices as Array<{ delta?: { content?: unknown }; finish_reason?: unknown }> | undefined)?.[0]
+          if (typeof choice?.delta?.content === 'string') content += choice.delta.content
+          if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason
+        }
+      } catch (err) {
+        await settle('failed', null, err instanceof Error ? err.message : 'upstream stream failed')
+        return c.json(openAiBody('server_error', 'The upstream stream failed — no charge was made.', 'upstream_failed'), 502)
       }
-    } catch (err) {
-      await settle('failed', null, err instanceof Error ? err.message : 'upstream stream failed')
-      return c.json(openAiBody('server_error', 'The upstream stream failed — no charge was made.', 'upstream_failed'), 502)
+    } else {
+      // Upstream returned a non-streaming JSON response - parse it directly
+      try {
+        const data = (await response.json().catch(() => ({} as Record<string, unknown>))) as Record<string, unknown>
+        const choices = data.choices as Array<{ message?: { content?: string }; finish_reason?: string }> | undefined
+        const choice = choices?.[0]
+        if (choice?.message?.content) content = choice.message.content
+        if (choice?.finish_reason) finishReason = choice.finish_reason
+        // usage is already in preUsage from openCall
+        usage = preUsage ?? null
+      } catch (err) {
+        await settle('failed', null, err instanceof Error ? err.message : 'upstream response failed')
+        return c.json(openAiBody('server_error', 'The upstream response failed — no charge was made.', 'upstream_failed'), 502)
+      }
     }
 
     const result = await settle('completed', usage)
@@ -383,5 +425,391 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
     },
   })
 })
+
+// ------------------------------------------------------------- BYOK completions
+// Dials the caller's own vault credential (one of their personal api_key or
+// oauth accounts) instead of The Pool. No reserve, no hold, no charge — the
+// usage event records key_mode='byok' for attribution only.
+
+/** Refreshes an expired OAuth token using the stored refresh token. */
+async function refreshOAuthToken(
+  c: Context<{ Bindings: Bindings; Variables: Variables }>,
+  row: ApiKeyRow
+): Promise<{ apiKey: string; updatedFields: { key_ciphertext: string; key_iv: string; refresh_ciphertext?: string; refresh_iv?: string; expires_at?: number } }> {
+  if (!c.env.ENCRYPTION_KEY) {
+    throw new Error('ENCRYPTION_KEY not set')
+  }
+
+  // Determine provider from base_url or label
+  let providerId: string | null = null
+  const baseUrl = row.base_url.toLowerCase()
+  const label = row.label.toLowerCase()
+
+  if (baseUrl.includes('chatgpt.com') || label.includes('codex')) {
+    providerId = 'codex'
+  } else if (baseUrl.includes('googleapis.com') || label.includes('gemini') || label.includes('google')) {
+    providerId = 'google'
+  } else if (baseUrl.includes('qoder') || label.includes('qoder')) {
+    providerId = 'qoder'
+  } else if (baseUrl.includes('meta.com') || label.includes('antigravity')) {
+    providerId = 'antigravity'
+  } else if (baseUrl.includes('x.ai') || label.includes('grok')) {
+    providerId = 'grok'
+  }
+
+  if (!providerId) {
+    throw new Error('Cannot determine OAuth provider for this key')
+  }
+
+  const config = getOAuthProviderConfig(providerId)
+  if (!config) {
+    throw new Error(`Provider ${providerId} not configured`)
+  }
+
+  const refreshToken = await decryptSecret(row.refresh_ciphertext!, row.refresh_iv!, c.env.ENCRYPTION_KEY)
+
+  const response = await fetch(config.tokenUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Accept': 'application/json'
+    },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: config.clientId
+    })
+  })
+
+  if (!response.ok) {
+    const error = await response.text()
+    throw new Error(`Token refresh failed: ${error}`)
+  }
+
+  interface TokenResponse {
+    access_token: string
+    refresh_token?: string
+    expires_in?: number
+    token_type?: string
+  }
+  const tokens = await response.json() as TokenResponse
+
+  // Encrypt new access token
+  const { ciphertext: keyCiphertext, iv: keyIv } = await encryptSecret(tokens.access_token, c.env.ENCRYPTION_KEY)
+
+  const updatedFields: {
+    key_ciphertext: string
+    key_iv: string
+    refresh_ciphertext?: string
+    refresh_iv?: string
+    expires_at?: number
+  } = { key_ciphertext: keyCiphertext, key_iv: keyIv }
+
+  // Update refresh token if provided
+  if (tokens.refresh_token) {
+    const sealed = await encryptSecret(tokens.refresh_token, c.env.ENCRYPTION_KEY)
+    updatedFields.refresh_ciphertext = sealed.ciphertext
+    updatedFields.refresh_iv = sealed.iv
+  }
+
+  // Update expiry
+  if (tokens.expires_in) {
+    updatedFields.expires_at = Date.now() + tokens.expires_in * 1000
+  }
+
+  // Persist to database
+  await c.env.DB.prepare(
+    `UPDATE freellm_api_keys 
+     SET key_ciphertext = ?, key_iv = ?, refresh_ciphertext = ?, refresh_iv = ?, expires_at = ?, updated_at = ?
+     WHERE id = ?`
+  ).bind(
+    keyCiphertext,
+    keyIv,
+    updatedFields.refresh_ciphertext ?? row.refresh_ciphertext,
+    updatedFields.refresh_iv ?? row.refresh_iv,
+    updatedFields.expires_at ?? row.expires_at,
+    Date.now(),
+    row.id
+  ).run()
+
+  return { apiKey: tokens.access_token, updatedFields }
+}
+
+async function chatWithByok(
+  c: Context<{ Bindings: Bindings; Variables: Variables }>,
+  opts: {
+    user: { id: string; balance_credits: number }
+    alias: NonNullable<Awaited<ReturnType<typeof loadAlias>>>
+    messages: { role: 'system' | 'user' | 'assistant'; content: string }[]
+    maxTokens: number
+    stream: boolean
+    includeUsage: boolean
+    keyId: string
+  },
+): Promise<Response> {
+  const { user, alias, messages, maxTokens, stream, includeUsage, keyId } = opts
+  if (!keyId) {
+    return c.json(openAiBody('invalid_request_error', 'key_id is required when key_mode=byok.'), 400)
+  }
+  const row = await c.env.DB.prepare('SELECT * FROM freellm_api_keys WHERE id = ? AND user_id = ?')
+    .bind(keyId, user.id)
+    .first<ApiKeyRow>()
+  if (!row) {
+    return c.json(openAiBody('invalid_request_error', 'Key not found or access denied.', 'key_not_found'), 404)
+  }
+  if (!c.env.ENCRYPTION_KEY) {
+    return c.json(openAiBody('server_error', 'ENCRYPTION_KEY is not set on this deployment.', 'not_configured'), 500)
+  }
+  
+  // Auto-refresh OAuth token if expired and refresh token exists
+  let apiKey: string
+  let updatedRow = row
+  if ((row.auth_kind ?? 'api_key') === 'oauth' && row.expires_at != null && row.expires_at <= Date.now()) {
+    if (row.refresh_ciphertext && row.refresh_iv) {
+      try {
+        const refreshed = await refreshOAuthToken(c, row)
+        apiKey = refreshed.apiKey
+        updatedRow = { ...row, ...refreshed.updatedFields }
+      } catch (err) {
+        return c.json(
+          openAiBody('invalid_request_error', `OAuth token expired and refresh failed: ${err instanceof Error ? err.message : 'unknown error'}. Replace it on /keys.`, 'key_expired'),
+          400,
+        )
+      }
+    } else {
+      return c.json(
+        openAiBody('invalid_request_error', 'This OAuth token has expired — replace it on /keys before chatting.', 'key_expired'),
+        400,
+      )
+    }
+  } else {
+    apiKey = await decryptSecret(row.key_ciphertext, row.key_iv, c.env.ENCRYPTION_KEY)
+  }
+
+  const requestId = newId()
+  const startedAt = Date.now()
+  const completionId = `chatcmpl-${requestId.replace(/-/g, '').slice(0, 24)}`
+  const created = Math.floor(Date.now() / 1000)
+  const isCodex = (updatedRow.protocol ?? 'openai') === 'codex'
+
+  let upstream: Response
+  try {
+    if (isCodex) {
+      // Responses API via the adapter: always streams upstream, translated to
+      // OpenAI Chat Completions SSE — the reshape/aggregate paths below work
+      // unchanged for both client stream modes.
+      upstream = await openByokCodexCall(c.env, row, messages)
+    } else {
+      const call = await callProvider(
+        { id: `byok:${row.id}`, base_url: row.base_url, upstream_model: row.upstream_model },
+        apiKey,
+        messages,
+        { maxTokens, stream },
+      )
+      upstream = call.response
+    }
+  } catch (err) {
+    await settleRequest(c.env.DB, {
+      userId: user.id,
+      requestId,
+      model: alias.model,
+      providerLabel: row.label,
+      settlement: { kind: 'failed', reason: err instanceof Error ? err.message : 'network error' },
+      latencyMs: Date.now() - startedAt,
+      free: true,
+    })
+    return c.json(
+      openAiBody('server_error', `Your key (${row.label}) is unreachable: ${err instanceof Error ? err.message : 'network error'}`, 'upstream_failed'),
+      502,
+    )
+  }
+  if (!upstream.ok) {
+    const errText = (await upstream.text().catch(() => '')).slice(0, 300)
+    await settleRequest(c.env.DB, {
+      userId: user.id,
+      requestId,
+      model: alias.model,
+      providerLabel: row.label,
+      settlement: { kind: 'failed', reason: `${upstream.status} ${errText}` },
+      latencyMs: Date.now() - startedAt,
+      free: true,
+    })
+    return c.json(
+      openAiBody('server_error', `Your key (${row.label}) returned ${upstream.status}: ${errText}`, 'upstream_failed'),
+      502,
+    )
+  }
+
+  const settle = async (kind: 'completed' | 'aborted' | 'failed', usage?: Usage | null, reason?: string) => {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        return await settleRequest(c.env.DB, {
+          userId: user.id,
+          requestId,
+          model: alias.model,
+          providerLabel: row.label,
+          settlement: kind === 'completed' ? { kind, usage: usage ?? null } : { kind, reason },
+          latencyMs: Date.now() - startedAt,
+          usage: usage ?? null,
+          free: true,
+        })
+      } catch (err) {
+        console.error('[v1:byok] settleRequest failed (attempt %d)', attempt, completionId, err)
+      }
+    }
+    return null
+  }
+
+  const baseChunk = {
+    id: completionId,
+    object: 'chat.completion.chunk' as const,
+    created,
+    model: alias.model.slug,
+  }
+  const sse = (choices: unknown[], extra: Record<string, unknown> = {}) =>
+    `data: ${JSON.stringify({ ...baseChunk, choices, ...extra })}\n\n`
+
+  // ---- non-streaming: aggregate the upstream body into one completion ----
+  if (!stream) {
+    let content = ''
+    let finishReason: string | null = null
+    let usage: Usage | null = null
+    try {
+      if (isCodex) {
+        // Translated OpenAI SSE — same aggregation as the pool path.
+        const text = await upstream.text()
+        for (const line of text.split('\n')) {
+          const parsed = parseSseLine(line)
+          if (!parsed) continue
+          usage = usageFromChunk(parsed) ?? usage
+          const choice = (parsed.choices as Array<{ delta?: { content?: unknown }; finish_reason?: unknown }> | undefined)?.[0]
+          if (typeof choice?.delta?.content === 'string') content += choice.delta.content
+          if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason
+        }
+      } else {
+        const data = (await upstream.json().catch(() => ({} as Record<string, unknown>))) as Record<string, unknown>
+        const choices = data.choices as Array<{ message?: { content?: string }; finish_reason?: string }> | undefined
+        const choice = choices?.[0]
+        if (choice?.message?.content) content = choice.message.content
+        if (choice?.finish_reason) finishReason = choice.finish_reason
+        const u = data.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined
+        if (u && typeof u.prompt_tokens === 'number' && typeof u.completion_tokens === 'number' && typeof u.total_tokens === 'number') {
+          usage = { input: u.prompt_tokens, output: u.completion_tokens, total: u.total_tokens }
+        }
+      }
+    } catch (err) {
+      await settle('failed', null, err instanceof Error ? err.message : 'upstream response failed')
+      return c.json(openAiBody('server_error', 'The upstream response failed — no charge was made.', 'upstream_failed'), 502)
+    }
+    const result = await settle('completed', usage)
+    return c.json({
+      id: completionId,
+      object: 'chat.completion',
+      created,
+      model: alias.model.slug,
+      choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: finishReason ?? 'stop' }],
+      usage: usage
+        ? { prompt_tokens: usage.input, completion_tokens: usage.output, total_tokens: usage.total }
+        : undefined,
+      freellm: {
+        request_id: requestId,
+        key_mode: 'byok',
+        credits_charged: result ? result.creditsCharged : null,
+        billed_source: result?.source ?? null,
+        provider: row.label,
+      },
+    })
+  }
+
+  // ---- streaming: pass upstream chunks through, capture usage ----
+  const body = upstream.body
+  if (!body) {
+    await settle('failed', null, 'upstream returned no body')
+    return c.json(openAiBody('server_error', 'Empty upstream response.', 'upstream_failed'), 502)
+  }
+
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+  let buffer = ''
+  let usage: Usage | null = null
+  let roleSent = false
+  let finishReason: string | null = null
+  let settled = false
+
+  const flushChunks = (controller: TransformStreamDefaultController<Uint8Array>) => {
+    if (!roleSent) {
+      controller.enqueue(encoder.encode(sse([{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }])))
+    }
+    controller.enqueue(
+      encoder.encode(
+        sse([{ index: 0, delta: {}, finish_reason: finishReason ?? 'stop' }], includeUsage ? {} : usage ? { usage: { prompt_tokens: usage.input, completion_tokens: usage.output, total_tokens: usage.total } } : {}),
+      ),
+    )
+    if (includeUsage) {
+      controller.enqueue(
+        encoder.encode(
+          sse([], { usage: usage ? { prompt_tokens: usage.input, completion_tokens: usage.output, total_tokens: usage.total } : null }),
+        ),
+      )
+    }
+    controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+  }
+
+  const transform = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      buffer += decoder.decode(chunk, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) {
+        const parsed = parseSseLine(line)
+        if (!parsed) continue
+        usage = usageFromChunk(parsed) ?? usage
+        const choice = (
+          parsed.choices as Array<{ delta?: { role?: unknown; content?: unknown }; finish_reason?: unknown }> | undefined
+        )?.[0]
+        if (!choice) continue
+
+        if (!roleSent && (typeof choice.delta?.role === 'string' || typeof choice.delta?.content === 'string')) {
+          roleSent = true
+          controller.enqueue(
+            encoder.encode(sse([{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }])),
+          )
+        }
+        if (typeof choice.delta?.content === 'string' && choice.delta.content.length > 0) {
+          controller.enqueue(
+            encoder.encode(sse([{ index: 0, delta: { content: choice.delta.content }, finish_reason: null }])),
+          )
+        }
+        if (typeof choice.finish_reason === 'string' && finishReason === null) {
+          finishReason = choice.finish_reason
+        }
+      }
+    },
+    async flush(controller) {
+      if (settled) return
+      settled = true
+      try {
+        await settle('completed', usage)
+      } catch (err) {
+        console.error('[v1:byok] settle failed in flush', completionId, err)
+      }
+      flushChunks(controller)
+    },
+    cancel() {
+      if (settled) return
+      settled = true
+      void settle('aborted', usage, 'client disconnected')
+    },
+  })
+
+  return new Response(body.pipeThrough(transform), {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Freellm-Completion-Id': completionId,
+    },
+  })
+}
 
 export default app

@@ -13,11 +13,12 @@
 
 import { Hono } from 'hono'
 import { requireAuth } from '../lib/middleware'
-import { estimateReserve, computeSpendable, placeHold, settleRequest } from '../lib/metering'
-import { callProvider, loadAlias, providerApiKey, recordOutcome, resolveCandidates, type UpstreamConfig, type ModelProviderRow, type UpstreamProviderWithModel } from '../lib/providers'
+import { estimateReserve, computeSpendable, placeHold, settleRequest, type Usage } from '../lib/metering'
+import { callProvider, loadAlias, openCall, recordOutcome, resolveCandidates, type UpstreamConfig, type ModelProviderRow, type UpstreamProviderWithModel } from '../lib/providers' // up_labels is unused and can be removed in future
+import { openByokCodexCall } from '../lib/codex'
 import { canAccessModel, tierGatedMessage } from '../lib/tiers'
 import { decryptSecret } from '../lib/crypto'
-import type { Bindings, ApiKeyRow, Variables } from '../lib/types'
+import type { Bindings, ApiKeyRow, UpstreamKeyRow, Variables } from '../lib/types'
 
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -134,6 +135,7 @@ app.post('/api/chat', requireAuth, async (c) => {
 
   // ---- Step 1: Acquire the upstream call (BYOK or Pool) ----
   let call: Awaited<ReturnType<typeof callProvider>> | null = null
+  let response: Response | null = null
   let providerLabel = ''
   let startedAt = Date.now()
   let isByok = false
@@ -141,8 +143,9 @@ app.post('/api/chat', requireAuth, async (c) => {
   // loop so the success path can record health + impact. BYOK leaves it null
   // (recordOutcome is skipped for BYOK anyway).
   let selectedProvider: (ModelProviderRow & { upstream: UpstreamProviderWithModel }) | null = null
-
-  const clientGone = () => c.req.raw.signal?.aborted === true
+  // The key that served the winning Pool candidate, so the success outcome is
+  // recorded against the same key that was used.
+  let selectedKey: UpstreamKeyRow | null = null
 
   if (keyMode === 'byok') {
     // --- BYOK path: single configured key, free, no reserve/hold ---
@@ -157,6 +160,9 @@ app.post('/api/chat', requireAuth, async (c) => {
     }
     if (row.active === 0) {
       return c.json({ error: 'key_disabled', message: 'This key is disabled.' }, 403)
+    }
+    if ((row.auth_kind ?? 'api_key') === 'oauth' && row.expires_at != null && row.expires_at <= Date.now()) {
+      return c.json({ error: 'key_expired', message: 'This OAuth token has expired — replace it on /keys before chatting.' }, 400)
     }
 
     const encryption = c.env.ENCRYPTION_KEY
@@ -175,7 +181,17 @@ app.post('/api/chat', requireAuth, async (c) => {
         base_url: row.base_url,
         upstream_model: row.upstream_model,
       }
-      call = await callProvider(candidate, apiKey, messages, { maxTokens, stream: true })
+      if ((row.protocol ?? 'openai') === 'codex') {
+        // Responses API via the adapter: the body comes back already shaped
+        // as OpenAI Chat Completions SSE, so everything below (passthrough,
+        // usage parse, settle) works unchanged.
+        const codexResponse = await openByokCodexCall(c.env, row, messages)
+        call = { response: codexResponse, provider: candidate }
+        response = codexResponse
+      } else {
+        call = await callProvider(candidate, apiKey, messages, { maxTokens, stream: true })
+        response = call.response
+      }
       if (!call.response.ok || !call.response.body) {
         const errText = (await call.response.text().catch(() => '')).slice(0, 300)
         await settleRequest(c.env.DB, {
@@ -249,83 +265,96 @@ app.post('/api/chat', requireAuth, async (c) => {
       return c.json({ error: 'model_unavailable', message: 'All provider configs for this model are down.' }, 503)
     }
 
-    startedAt = Date.now()
-    let lastError = ''
-
-    for (const candidate of candidates) {
-      if (clientGone()) break
-      const attemptStart = Date.now()
-      try {
-        const apiKey = await providerApiKey(c.env, candidate.upstream)
-        call = await callProvider({ id: candidate.id, base_url: candidate.upstream.base_url, upstream_model: candidate.upstream_model }, apiKey, messages, { maxTokens, stream: true })
-        if (call.response.ok && call.response.body) {
-          providerLabel = candidate.upstream.label
-          selectedProvider = candidate
-          break
-        }
-        lastError = `${call.response.status} ${call.response.statusText}`
-        const detail = (await call.response.text().catch(() => '')).slice(0, 200)
-        await recordOutcome(c.env, candidate.upstream.id, candidate.id, { ok: false, latencyMs: Date.now() - attemptStart, error: `${lastError} ${detail}` })
-        call = null
-      } catch (err) {
-        lastError = err instanceof Error ? err.message : 'network error'
-        await recordOutcome(c.env, candidate.upstream.id, candidate.id, { ok: false, latencyMs: Date.now() - attemptStart, error: lastError })
-        call = null
-      }
-    }
-
-    if (clientGone()) {
-      await settleRequest(c.env.DB, {
-        userId: user.id,
-        requestId,
-        model: alias.model,
-        providerLabel: 'client-disconnect',
-        settlement: { kind: 'aborted', reason: lastError || 'client disconnected' },
-        latencyMs: Date.now() - startedAt,
-      })
-      return new Response(JSON.stringify({ error: 'client_closed', message: 'Request aborted by client.' }), {
-        status: 499,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }
-
-    if (!call) {
+    // Use openCall for failover with streaming + non-streaming fallback
+    const opened = await openCall(c.env, alias, messages, { maxTokens, sampling: undefined, requiredCapabilities })
+    if ('error' in opened) {
       await settleRequest(c.env.DB, {
         userId: user.id,
         requestId,
         model: alias.model,
         providerLabel: 'all-configs-failed',
-        settlement: { kind: 'failed', reason: lastError },
-        latencyMs: Date.now() - startedAt,
+        settlement: { kind: 'failed', reason: opened.error },
+        latencyMs: 0,
       })
       return c.json(
         {
           error: 'upstream_failed',
-          message: `${alias.model.label} is unavailable right now${lastError ? ` (upstream ${lastError})` : ''} — no charge. Try again shortly.`,
+          message: `${alias.model.label} is unavailable right now — no charge. Try again shortly.`,
         },
         502,
       )
     }
 
+    const { provider, key, response: openedResponse, usage: preUsage, streaming } = opened
+    response = openedResponse
+    providerLabel = provider.upstream.label
+    selectedProvider = provider
+    selectedKey = key
+    startedAt = Date.now()
+
+    // If non-streaming, handle it directly without the TransformStream
+    if (!streaming) {
+      const text = await response.text()
+      let content = ''
+      let finishReason = 'stop'
+      let usage: Usage | null = preUsage ?? null
+      try {
+        const data = JSON.parse(text)
+        content = data.choices?.[0]?.message?.content ?? ''
+        finishReason = data.choices?.[0]?.finish_reason ?? 'stop'
+      } catch {}
+      // Inline settle for non-streaming case to avoid temporal dead zone.
+      // The settlement result is returned so JSON clients can render a
+      // truthful receipt (actual reported usage or fallback charge).
+      const settled = await settleRequest(c.env.DB, {
+        userId: user.id,
+        requestId,
+        model: alias.model,
+        providerLabel,
+        settlement: { kind: 'completed', usage },
+        latencyMs: Date.now() - startedAt,
+        usage,
+        free: false,
+      })
+      // Record outcome for the key
+      if (selectedKey) {
+        recordOutcome(c.env, provider.upstream.id, provider.id, { ok: true, latencyMs: Date.now() - startedAt, keyId: selectedKey.id }).catch(() => {})
+      }
+      return c.json({
+        choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: finishReason }],
+        usage: usage
+          ? { prompt_tokens: usage.input, completion_tokens: usage.output, total_tokens: usage.total }
+          : undefined,
+        billing: {
+          credits_charged: settled.creditsCharged,
+          balance: settled.balance,
+          status: settled.status,
+          source: settled.source,
+          model: alias.model.slug,
+          provider: providerLabel,
+          latency_ms: Date.now() - startedAt,
+          request_id: requestId,
+        },
+      })
+    }
+
   }
 
   // ---- Step 2: Shared streaming + settle ----
-  // Both paths either return early or set `call` to a non-null upstream call,
-  // but TS can't narrow a `let` across the if/else boundary — guard it once.
-  if (!call) {
+  // For Pool path, `response` is from `opened`. For BYOK, `call.response` is set.
+  const upstream = isByok ? call?.response : response
+  if (!upstream) {
     return c.json({ error: 'upstream_failed', message: 'No upstream response.' }, 502)
   }
-  // `call.response` is the streaming Response on both paths. `selectedProvider`
-  // is the winning Pool candidate (with its upstream); it stays null on the
+  // `provider` is the winning Pool candidate (with its upstream); it stays null on the
   // BYOK path, where health bookkeeping is skipped anyway.
-  const provider = selectedProvider
-  const upstream = call.response
+  const prov = selectedProvider
+  const streamStart = Date.now()
 
   let usage: { input: number; output: number; total: number } | null = null
   let buffer = ''
   let settled = false
   const decoder = new TextDecoder()
-  const streamStart = Date.now()
 
   const settle = async (kind: 'completed' | 'aborted' | 'failed', reason?: string): Promise<Awaited<ReturnType<typeof settleRequest>> | null> => {
     if (settled) return null
@@ -349,8 +378,8 @@ app.post('/api/chat', requireAuth, async (c) => {
           free: isByok,
         })
         const outcomePromise =
-          kind === 'completed' && !isByok && provider
-            ? recordOutcome(c.env, provider.upstream.id, provider.id, { ok: true, latencyMs: Date.now() - streamStart }).catch((err) => {
+          kind === 'completed' && !isByok && prov
+            ? recordOutcome(c.env, prov.upstream.id, prov.id, { ok: true, latencyMs: Date.now() - streamStart, keyId: selectedKey?.id }).catch((err) => {
                 console.error('[chat] recordOutcome failed', requestId, err)
               })
             : Promise.resolve()

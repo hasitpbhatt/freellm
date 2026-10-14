@@ -72,6 +72,12 @@ export default function Earn() {
     if (user) void load()
   }, [user, load])
 
+  useEffect(() => {
+    if (user?.email_verified === 1) {
+      void load()
+    }
+  }, [user?.email_verified, load])
+
   async function run(action: string, fn: () => Promise<unknown>, success: string) {
     setBusyAction(action)
     setBanner(null)

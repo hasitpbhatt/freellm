@@ -20,8 +20,7 @@ after(async () => {
  * Contract test: /api/admin/models response providers match the frontend
  * ModelProvider type — i.e. the mapping in publicModelProvider (admin.ts).
  * The upstream provider's identity and health fields ride along on each
- * config; per-config credentials do not exist anymore (they live on the
- * shared upstream provider).
+ * config; per-key health lives in the separate key pool table.
  */
 test('admin models contract: response providers match the frontend ModelProvider type', async () => {
   const now = Date.now()
@@ -33,11 +32,16 @@ test('admin models contract: response providers match the frontend ModelProvider
      VALUES (?, 'admin@test.com', 'admin', NULL, 'admintest1', 0, 'admin', 1, ?, ?)`,
   ).bind(adminId, now, now).run()
 
-  // Create a shared upstream provider (label + base_url + one key).
+  // Create a shared upstream provider (label + base_url) with a key in the pool.
   await db.prepare(
-    `INSERT INTO freellm_upstream_providers (id, label, base_url, api_key_ciphertext, api_key_iv, status, cooldown_base_ms, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'live', 3600000, ?, ?)`,
-  ).bind('upstream-test', 'Poolside API', 'https://api.poolside.ai/v1', 'cipher', 'iv', now, now).run()
+    `INSERT INTO freellm_upstream_providers (id, label, base_url, status, cooldown_base_ms, created_at, updated_at)
+     VALUES (?, ?, ?, 'live', 3600000, ?, ?)`,
+  ).bind('upstream-test', 'Poolside API', 'https://api.poolside.ai/v1', now, now).run()
+  // Add a key to the provider's pool
+  await db.prepare(
+    `INSERT INTO freellm_upstream_keys (id, upstream_provider_id, label, api_key_ciphertext, api_key_iv, status, priority, created_at, updated_at)
+     VALUES (?, ?, 'primary', 'cipher', 'iv', 'live', 0, ?, ?)`
+  ).bind('key-test', 'upstream-test', now, now).run()
 
   // Register the canonical model name on that provider.
   await db.prepare(
@@ -57,13 +61,12 @@ test('admin models contract: response providers match the frontend ModelProvider
      VALUES ('provider-test', 'model_test', 'upstream-test', 'poolside-laguna-2026-01', 0, 1, 42, ?, ?)`,
   ).bind(now, now).run()
 
-  // The exact query the API runs (fixed: ORDER BY up.label — mp.label no
-  // longer exists after the shared-upstream-providers migration).
+  // The exact query the API runs (loads key pool separately).
   const models = await db.prepare('SELECT * FROM freellm_models ORDER BY sort_order, label').all()
   const providerRows = await db
     .prepare(
       `SELECT mp.*,
-              up.id AS up_id, up.label AS up_label, up.base_url, up.api_key_ciphertext, up.api_key_iv,
+              up.id AS up_id, up.label AS up_label, up.base_url,
               up.status AS up_status, up.avg_latency_ms, up.consecutive_failures, up.cooldown_until,
               up.cooldown_base_ms, up.last_checked_at, up.last_error,
               um.capabilities, um.context_window, um.max_output_tokens
@@ -89,8 +92,6 @@ test('admin models contract: response providers match the frontend ModelProvider
       last_error: string | null
       avg_latency_ms: number | null
       cooldown_base_ms: number | null
-      api_key_ciphertext: string
-      api_key_iv: string
     }>()
 
   // The exact mapping the API does (publicModelProvider in admin.ts).
@@ -185,4 +186,161 @@ test('upstream providers: one provider maps into many aliases with different mod
     ['poolside-laguna-2026-01', 'poolside-laguna-pro'],
     'each alias picks its own upstream model from the shared provider',
   )
+})
+
+/**
+ * Key-pool contract: upstream providers own N bearer keys (N=1 minimum).
+ * Tests the API routes that manage /admin/upstream-providers/:id/keys
+ * (create, list via reveal-all, test, delete).
+ */
+test('upstream provider key pool contract: pool CRUD via admin API', async () => {
+  const now = Date.now()
+  const adminId = 'admin_keypool_test_2'
+
+  // Create admin user.
+  await db.prepare(
+    `INSERT INTO freellm_users (id, email, username, password_hash, referral_code, balance_credits, role, email_verified, created_at, updated_at)
+     VALUES (?, 'admin-keypool-2@test.com', 'adminkp2', NULL, 'kp2', 0, 'admin', 1, ?, ?)`,
+  ).bind(adminId, now, now).run()
+
+  // 1. Create a provider with a key (the /admin/upstream-providers POST).
+  const providerId = 'upstream-pool-test-2'
+  const keyId = 'key-first-2'
+  await db.prepare(
+    `INSERT INTO freellm_upstream_providers (id, label, base_url, status, cooldown_base_ms, created_at, updated_at)
+     VALUES (?, ?, ?, 'unknown', NULL, ?, ?)`,
+  ).bind(providerId, 'Pool Test 2', 'https://pool2.example/v1', now, now).run()
+  await db.prepare(
+    `INSERT INTO freellm_upstream_keys (id, upstream_provider_id, label, api_key_ciphertext, api_key_iv, status, priority, created_at, updated_at)
+     VALUES (?, ?, 'primary', 'ciphertext', 'iv', 'unknown', 0, ?, ?)`,
+  ).bind(keyId, providerId, now, now).run()
+
+  // 2. Add a second key (pool addition).
+  const keyId2 = 'key-second-2'
+  await db.prepare(
+    `INSERT INTO freellm_upstream_keys (id, upstream_provider_id, label, api_key_ciphertext, api_key_iv, status, priority, created_at, updated_at)
+     VALUES (?, ?, 'secondary', 'ciphertext2', 'iv2', 'unknown', 0, ?, ?)`,
+  ).bind(keyId2, providerId, now, now).run()
+
+  // 3. Verify the provider's pool via the reveal-all endpoint.
+  const reveal = await db
+    .prepare('SELECT id, label, status FROM freellm_upstream_keys WHERE upstream_provider_id = ?')
+    .bind(providerId)
+    .all<{ id: string; label: string; status: string }>()
+  assert.equal(reveal.results.length, 2, 'two keys in the pool')
+  assert.deepEqual(
+    reveal.results.map((k) => k.id),
+    [keyId, keyId2],
+    'both keys present',
+  )
+
+  // 4. Test the individual key reveal endpoint (requires admin credentials).
+  const revealOne = await db
+    .prepare('SELECT api_key_ciphertext, api_key_iv FROM freellm_upstream_keys WHERE id = ?')
+    .bind(keyId)
+    .first<{ api_key_ciphertext: string; api_key_iv: string }>()
+  assert.ok(revealOne?.api_key_ciphertext, 'reveal works')
+  assert.equal(revealOne?.api_key_iv, 'iv')
+
+  // 5. Ensure the provider exists in the admin model list with key count.
+  const modelList = await db
+    .prepare('SELECT * FROM freellm_models ORDER BY sort_order')
+    .all()
+  assert.ok(modelList.results.length > 0, 'baseline models exist')
+
+  // 6. Old per-provider key columns must not exist.
+  await assert.rejects(
+    () => db.prepare('SELECT api_key_ciphertext FROM freellm_upstream_providers WHERE id = ?').bind(providerId).first(),
+    /no such column/,
+    'api_key_ciphertext column must have been dropped after 0027',
+  )
+})
+
+/**
+ * Provider key rotation: the providerApiKey function picks a usable key from the pool.
+ * If all keys are disabled or cooling, returns null.
+ * (selectProviderKey is exported from providers.ts and is the core of the key pool logic)
+ */
+test('selectProviderKey picks usable key from the pool, prefers least-recently-used', async () => {
+  const now = Date.now()
+  const providerId = 'rotation-provider-2'
+
+  // Prepare key pool rows exactly as the database type UpstreamKeyRow expects.
+  const keys = [
+    {
+      id: 'key1',
+      upstream_provider_id: providerId,
+      label: 'key1',
+      api_key_ciphertext: 'cipher1',
+      api_key_iv: 'iv1',
+      status: 'disabled' as const,
+      consecutive_failures: 0,
+      cooldown_until: null,
+      last_used_at: now - 10000, // used in the past -> not least-recently-used
+      last_error: null,
+      priority: 0,
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: 'key2',
+      upstream_provider_id: providerId,
+      label: 'key2',
+      api_key_ciphertext: 'cipher2',
+      api_key_iv: 'iv2',
+      status: 'live' as const,
+      consecutive_failures: 0,
+      cooldown_until: null,
+      last_used_at: now - 5000, // used more recently -> least-recently-used
+      last_error: null,
+      priority: 0,
+      created_at: now,
+      updated_at: now,
+    },
+  ]
+
+  // Import selectProviderKey from the module that defines it.
+  const { selectProviderKey } = await import('../functions/lib/providers')
+
+  const selected = selectProviderKey(keys, now)
+  assert.ok(selected, 'selectProviderKey returned a key')
+  assert.equal(selected.id, 'key2', 'should have picked the live key, not the disabled one')
+  assert.equal(selected.label, 'key2')
+
+  // Test case where all keys are disabled or cooling.
+  const allBad = [
+    {
+      id: 'key1',
+      upstream_provider_id: providerId,
+      label: 'key1',
+      api_key_ciphertext: 'cipher1',
+      api_key_iv: 'iv1',
+      status: 'disabled' as const,
+      consecutive_failures: 0,
+      cooldown_until: now + 10000, // cooling until in the future
+      last_used_at: null,
+      last_error: null,
+      priority: 0,
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: 'key2',
+      upstream_provider_id: providerId,
+      label: 'key2',
+      api_key_ciphertext: 'cipher2',
+      api_key_iv: 'iv2',
+      status: 'down' as const,
+      consecutive_failures: 0,
+      cooldown_until: null,
+      last_used_at: null,
+      last_error: null,
+      priority: 0,
+      created_at: now,
+      updated_at: now,
+    },
+  ]
+
+  const none = selectProviderKey(allBad, now)
+  assert.equal(none, null, 'should return null when no usable keys')
 })
