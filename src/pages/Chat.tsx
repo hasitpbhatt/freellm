@@ -38,6 +38,18 @@ type Message = {
   }
 }
 
+// One human-readable note for a finished message's footer: Your Key calls stay
+// free, and a Pool call is described by how it was billed — the provider's
+// reported usage, the flat rate when usage never arrived, or the flat rate
+// charged for a stream the caller stopped early.
+function billingNote(mode: 'pool' | 'byok', cost: NonNullable<Message['cost']>): string {
+  if (mode === 'byok') return ' · Free — your key'
+  if (cost.status === 'aborted') return ' · flat rate — stream stopped'
+  if (cost.source === 'reported') return ` · reported by ${cost.model ?? 'provider'}`
+  if (cost.source === 'flat_rate') return ' · flat rate — usage unreported'
+  return ''
+}
+
 const statusDot: Record<string, string> = {
   live: 'bg-gain',
   slow: 'bg-warn',
@@ -239,6 +251,7 @@ export default function Chat() {
     const requestModelSlug = mode === 'pool' ? (model?.slug ?? null) : null
     const requestModelLabel =
       mode === 'pool' ? (model?.label ?? 'assistant') : (selectedKey?.label ?? 'your key')
+    const requestFlatRate = mode === 'pool' ? (model?.flat_rate_credits ?? 0) : 0
     const startedAt = requestClock()
     let firstTokenMs: number | null = null
     let latestUsage: { input: number | null; output: number | null; total: number | null; source: string } | null = null
@@ -367,7 +380,7 @@ export default function Chat() {
       if (mode === 'byok') {
         setBanner({ kind: 'warn', text: 'Stream stopped — no charge in Your Key mode.' })
       } else {
-        setBanner({ kind: 'warn', text: 'Stream stopped — no charge.' })
+        setBanner({ kind: 'warn', text: `Stream stopped — ${requestFlatRate.toLocaleString('en-US')} cr flat rate charged.` })
       }
     } else if (!result.completed) {
       // stream completed without settled (e.g., no usage block) — still stop streaming UI
@@ -431,6 +444,7 @@ export default function Chat() {
     disabled: boolean
     status: 'unknown' | 'live' | 'slow' | 'down'
     tier: string
+    flatRate: number
     [key: string]: unknown
   }
   interface ByokOption {
@@ -448,6 +462,7 @@ export default function Chat() {
     disabled: m.access_tier !== 'free' && user.role !== 'admin' && userTierRank < modelTierRank(m.access_tier),
     status: m.status,
     tier: m.access_tier,
+    flatRate: m.flat_rate_credits,
   }))
   const byokOptions: ByokOption[] = byokKeys.map((k) => ({
     value: k.id,
@@ -509,6 +524,9 @@ export default function Chat() {
                       </span>
                     )}
                     {opt.disabled && <span className="text-[11px] text-muted ml-auto">locked</span>}
+                    <span className="num text-[11px] text-muted ml-auto">
+                      flat {opt.flatRate.toLocaleString('en-US')} cr
+                    </span>
                   </div>
                 )}
               />
@@ -547,7 +565,7 @@ export default function Chat() {
               <span className="font-semibold">{model.label}</span>
               <span className="text-muted">The Pool</span>
               <span className="num ml-auto text-muted">
-                usage-based · 1 cr = 1 token
+                flat {model.flat_rate_credits.toLocaleString('en-US')} cr if usage unreported
               </span>
               {modelLocked && (
                 <span className="text-warn">requires {model.access_tier} tier — upgrade not available yet</span>
@@ -590,7 +608,7 @@ export default function Chat() {
               </p>
               <p className="num text-[12px] max-w-md">
                 {mode === 'pool'
-                  ? 'Billing uses the provider\'s reported token counts (1 cr = 1 token).'
+                  ? 'Billing uses the provider\'s reported token counts; the flat rate applies only when usage is unreported or a stream is stopped early.'
                   : 'Free — no balance check, no metering. Your key, your endpoint, your cost.'}
               </p>
               {mode === 'byok' && !selectedKey && (
@@ -623,7 +641,7 @@ export default function Chat() {
                         {m.cost.input != null && m.cost.output != null
                           ? ` — ${m.cost.input.toLocaleString('en-US')} in · ${m.cost.output.toLocaleString('en-US')} out`
                           : ''}
-                        {mode === 'byok' ? ' · Free — your key' : ''}
+                        {billingNote(mode, m.cost)}
                         {m.cost.latencyMs != null ? ` · ${(m.cost.latencyMs / 1000).toFixed(2)}s` : ''}
                         {m.cost.firstTokenMs != null ? ` · first token ${(m.cost.firstTokenMs / 1000).toFixed(2)}s` : ''}
                         {m.cost.tokensPerSec != null ? ` · ${Math.round(m.cost.tokensPerSec)} tok/s` : ''}
