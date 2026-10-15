@@ -7,17 +7,17 @@ import { useState } from 'react'
 export function GoogleButton({
   label = 'Continue with Google',
   next,
-  ref,
+  referral,
 }: {
   label?: string
   /** Where to land after a successful callback. Must be a same-site path. */
   next?: string
   /** Referral code to attribute if this sign-in creates the account. */
-  ref?: string | null
+  referral?: string | null
 }) {
   const [navigating, setNavigating] = useState(false)
   const safeNext = next && /^\/[^/\\]/.test(next) ? next : null
-  const safeRef = ref && /^[a-z0-9]{2,32}$/i.test(ref) ? ref.toLowerCase() : null
+  const safeRef = referral && /^[a-z0-9]{2,32}$/i.test(referral) ? referral.toLowerCase() : null
   const params = new URLSearchParams()
   if (safeNext) params.set('next', safeNext)
   if (safeRef) params.set('ref', safeRef)

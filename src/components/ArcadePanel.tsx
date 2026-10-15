@@ -41,6 +41,7 @@ export default function ArcadePanel() {
   }, [])
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- arcade status load on mount
     void load()
   }, [load])
 

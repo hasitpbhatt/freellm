@@ -43,6 +43,7 @@ export default function AdminModels() {
   }, [])
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- model catalog load on mount
     void load()
   }, [load])
 

@@ -1,6 +1,9 @@
+import { useState } from 'react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
 import { Credits } from '../components/ui'
-import { useAuth } from '../lib/auth'
+import { useAuth } from '../lib/useAuth'
+import { MobileBottomNav } from './nav/MobileBottomNav'
+import { MobileMenu } from './nav/MobileMenu'
 
 const navItems = [
   { to: '/dashboard', label: 'Dashboard' },
@@ -14,18 +17,20 @@ const navItems = [
 
 export default function AppShell() {
   const { user, loading, logout } = useAuth()
+  const [menuOpen, setMenuOpen] = useState(false)
 
   return (
     <div className="min-h-screen bg-bg">
       <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-2 focus:z-20 focus:rounded-md focus:bg-surface-2 focus:px-3 focus:py-1.5 focus:text-[13px]">
         Skip to content
       </a>
-      <header className="sticky top-0 z-10 border-b border-line bg-bg/90 backdrop-blur">
+      <header className="sticky top-0 z-30 border-b border-line bg-bg/90 backdrop-blur">
         <div className="mx-auto flex min-h-[48px] max-w-6xl flex-wrap items-center gap-x-4 gap-y-1 px-4 py-1">
           <Link to="/" className="flex min-h-[44px] items-center gap-2 font-semibold">
             <span className="text-accent" aria-hidden="true">◈</span> freellm
           </Link>
-          <nav aria-label="Primary" className="-mx-1 flex max-w-full flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap px-1 text-[13px] [scrollbar-width:thin]">
+          {/* Desktop: horizontal top nav. Mobile: the hamburger + bottom tabs below. */}
+          <nav aria-label="Primary" className="-mx-1 hidden max-w-full flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap px-1 text-[13px] [scrollbar-width:thin] md:flex">
             {navItems.map((item) => (
               <NavLink
                 key={item.to}
@@ -67,14 +72,27 @@ export default function AppShell() {
                   className="flex min-h-[44px] items-center gap-1.5 text-[13px] hover:text-content"
                 >
                   <span className="text-accent" aria-hidden="true">◇</span>
-                  <Credits value={user.balance_credits} /> <span className="text-muted">credits</span>
+                  <Credits value={user.balance_credits} /> <span className="hidden text-muted sm:inline">credits</span>
                 </Link>
-                <span className="hidden text-[13px] text-muted sm:inline">{user.username}</span>
+                <span className="hidden text-[13px] text-muted lg:inline">{user.username}</span>
                 <button
                   onClick={() => void logout()}
-                  className="min-h-[44px] px-1 text-[13px] text-muted hover:text-content"
+                  className="hidden min-h-[44px] px-1 text-[13px] text-muted hover:text-content md:block"
                 >
                   Sign out
+                </button>
+                {/* Mobile: hamburger opens the drawer with secondary items + account. */}
+                <button
+                  type="button"
+                  onClick={() => setMenuOpen(true)}
+                  className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-md text-muted hover:bg-surface-2 hover:text-content md:hidden"
+                  aria-label="Open menu"
+                  aria-expanded={menuOpen}
+                  aria-controls="mobile-menu"
+                >
+                  <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+                  </svg>
                 </button>
               </>
             ) : (
@@ -85,9 +103,13 @@ export default function AppShell() {
           </div>
         </div>
       </header>
-      <main id="main-content" className="mx-auto max-w-6xl px-4 py-6">
+      <main id="main-content" className="mx-auto max-w-6xl px-4 py-6 pb-[calc(5rem_+_env(safe-area-inset-bottom))] md:pb-6">
         <Outlet />
       </main>
+      <MobileBottomNav />
+      <div id="mobile-menu">
+        <MobileMenu open={menuOpen} onClose={() => setMenuOpen(false)} />
+      </div>
     </div>
   )
 }

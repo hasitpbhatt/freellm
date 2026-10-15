@@ -12,7 +12,7 @@ import {
   sortByLatency,
 } from '../functions/lib/providers'
 import { encryptSecret } from '../functions/lib/crypto'
-import type { Bindings, ModelProviderRow, UpstreamProviderRow, UpstreamProviderWithModel, UpstreamKeyRow } from '../functions/lib/types'
+import type { Bindings, ModelProviderRow, UpstreamProviderWithModel, UpstreamKeyRow } from '../functions/lib/types'
 import { createTestDb, testModel } from './helpers/db'
 
 let db: D1Database
@@ -202,14 +202,6 @@ function kvMock(initial = '') {
   }
 }
 
-async function storedModelProviders(): Promise<ModelProviderRow[]> {
-  const rows = await db
-    .prepare('SELECT * FROM freellm_model_providers WHERE model_id = ? ORDER BY priority')
-    .bind('model_test')
-    .all<ModelProviderRow>()
-  return rows.results
-}
-
 async function storedUpstreamProviders(): Promise<UpstreamProviderWithModel[]> {
   const providerRows = await db
     .prepare('SELECT *, NULL AS model_capabilities FROM freellm_upstream_providers ORDER BY label')
@@ -252,19 +244,15 @@ test('failed providers cool down for 30 minutes while healthy providers stay eli
   ).bind(now, now).run()
 
   // Create two upstream providers
-  const upA = await createUpstreamProvider('upstream-a')
-  const upB = await createUpstreamProvider('upstream-b')
+  await createUpstreamProvider('upstream-a')
+  await createUpstreamProvider('upstream-b')
   
   // Create two model providers linking to them
   const mpA = await createModelProvider('provider-a', 'upstream-a', 0)
   const mpB = await createModelProvider('provider-b', 'upstream-b', 1)
 
   await recordOutcome(env, 'upstream-a', 'provider-a', { ok: false, latencyMs: 12, error: '502 upstream' })
-  
-  const storedMps = await storedModelProviders()
-  const failedMp = storedMps.find(r => r.id === 'provider-a')!
-  const healthyMp = storedMps.find(r => r.id === 'provider-b')!
-  
+
   const storedUps = await storedUpstreamProviders()
   const failedUp = storedUps.find(r => r.id === 'upstream-a')!
   assert.equal(failedUp.status, 'down')
@@ -502,11 +490,10 @@ test('cooldownForAttempt: daily-quota base (llm7.io style) ladders 1d, 2d, cappe
 
 test('recordOutcome: provider cooldown_base_ms overrides the global base', async () => {
   const env = { DB: db } as unknown as Bindings
-  const now = Date.now()
   const day = 24 * 60 * 60 * 1000
   
-  const upCustom = await createUpstreamProvider('upstream-cooldown-custom', { cooldown_base_ms: day })
-  const mpCustom = await createModelProvider('cooldown-custom', 'upstream-cooldown-custom', 0)
+  await createUpstreamProvider('upstream-cooldown-custom', { cooldown_base_ms: day })
+  await createModelProvider('cooldown-custom', 'upstream-cooldown-custom', 0)
 
   const before = Date.now()
   await recordOutcome(env, 'upstream-cooldown-custom', 'cooldown-custom', { ok: false, latencyMs: 10, error: 'quota exhausted' })
@@ -591,8 +578,8 @@ test('consecutive failures back off exponentially up to the cap', async () => {
      VALUES ('model_backoff', 'backoff-model', 'Backoff Model', '[]', 2000, 'failover', 1, 0, ?, ?)`,
   ).bind(now, now).run()
   
-  const upBackoff = await createUpstreamProvider('upstream-backoff-a')
-  const mpBackoff = await createModelProvider('backoff-a', 'upstream-backoff-a', 0)
+  await createUpstreamProvider('upstream-backoff-a')
+  await createModelProvider('backoff-a', 'upstream-backoff-a', 0)
 
   const before1 = Date.now()
   await recordOutcome(env, 'upstream-backoff-a', 'backoff-a', { ok: false, latencyMs: 10, error: 'boom' })

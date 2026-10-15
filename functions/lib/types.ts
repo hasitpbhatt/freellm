@@ -10,6 +10,11 @@ export type Bindings = {
   RESEND_API_KEY?: string
   GOOGLE_CLIENT_ID?: string
   GOOGLE_CLIENT_SECRET?: string
+  /** BYOK OAuth client credentials — checked before any bundled fallback. */
+  GOOGLE_OAUTH_CLIENT_ID?: string
+  GOOGLE_OAUTH_CLIENT_SECRET?: string
+  ANTIGRAVITY_OAUTH_CLIENT_ID?: string
+  ANTIGRAVITY_OAUTH_CLIENT_SECRET?: string
   PUBLIC_ORIGIN?: string
 }
 
@@ -121,21 +126,44 @@ export type ModelProviderRow = {
   updated_at: number
 }
 
-export type ApiKeyRow = {
+/**
+ * A connection: the user's own OpenAI-compatible endpoint config, backed by
+ * `freellm_connections` (0033). This ONE table replaces `freellm_api_keys` and
+ * carries both static keys and OAuth grants, personal or shared.
+ */
+export type ConnectionRow = {
   id: string
-  user_id: string
-  provider: 'byok'
+  /** Owner user id for scope='personal'; NULL for admin-managed shared rows. */
+  owner_id: string | null
+  scope: 'personal' | 'shared'
+  /** OAuth provider id ('kilo','codex','google','grok',…) or 'byok' for manual keys. */
+  provider: string
   label: string
   base_url: string
   upstream_model: string
   key_ciphertext: string
   key_iv: string
+  /** 'api_key' = static bearer, 'oauth' = user-supplied OAuth access token. */
+  auth_kind: 'api_key' | 'oauth'
+  /** Wire protocol: 'openai' (Chat Completions) or 'codex' (Responses API). */
+  protocol: 'openai' | 'codex'
+  /** Optional ChatGPT-Account-ID binding for multi-account Codex users. */
+  account_id: string | null
+  /** Encrypted OAuth refresh token. Never revealable via any endpoint. */
+  refresh_ciphertext: string | null
+  refresh_iv: string | null
+  /** Unix epoch ms when the OAuth access token expires (NULL = unknown). */
+  expires_at: number | null
   status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled'
   last_checked_at: number | null
   last_error: string | null
   avg_latency_ms: number | null
   active: number
   messages_served: number
+  contributed: number
+  contribution_reward_paid: number
+  last_alive_at: number | null
+  extra_headers_json: string | null
   created_at: number
   updated_at: number
 }

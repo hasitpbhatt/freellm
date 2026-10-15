@@ -54,6 +54,7 @@ export default function AdminPromos() {
   }, [])
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- promo list load on mount
     void load()
   }, [load])
 
@@ -169,16 +170,17 @@ function RedemptionList({ promoId }: { promoId: string }) {
   const [redemptions, setRedemptions] = useState<Redemption[] | null>(null)
   const [error, setError] = useState(false)
 
-  const load = () => {
+  const load = useCallback(() => {
     setError(false)
     void api.get<{ redemptions: Redemption[] }>(`/admin/promos/${promoId}/redemptions`).then((data) =>
       setRedemptions(data.redemptions),
     ).catch(() => setError(true))
-  }
+  }, [promoId])
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- redemption list load when the row expands
     load()
-  }, [promoId])
+  }, [load])
 
   return (
     <div className="border-t border-line">

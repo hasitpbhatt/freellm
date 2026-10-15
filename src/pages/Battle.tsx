@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { api, ApiError } from '../lib/api'
 import { streamBattle, type BattleStreamEvent } from '../lib/arena'
-import { useAuth } from '../lib/auth'
+import { useAuth } from '../lib/useAuth'
 import { Button, Card, CardHeader } from '../components/ui'
 
 type ArenaModel = {
@@ -72,34 +72,39 @@ export default function Battle() {
         api.get<{ leaderboard: LeaderRow[]; recent_battles: RecentBattle[] }>('/arena'),
         api.get<{ models: { slug: string; label: string; status: string }[] }>('/models'),
       ])
-      setLeaderboard(arena.leaderboard)
-      setRecent(arena.recent_battles)
-      const bySlug = new Map(catalog.models.map((m) => [m.slug, m]))
-      const merged: ArenaModel[] = arena.leaderboard.map((row) => ({
-        ...row,
-        status: (bySlug.get(row.slug)?.status ?? 'unknown') as ArenaModel['status'],
-      }))
-      setModels(
-        merged.length > 0
-          ? merged
-          : catalog.models.map((m) => ({
-              slug: m.slug,
-              label: m.label,
-              status: m.status as ArenaModel['status'],
-              elo: 1500,
-              games: 0,
-              wins: 0,
-              win_rate: null,
-              configs: 0,
-            })),
-      )
+      return { leaderboard: arena.leaderboard, recent: arena.recent_battles, models: arena.leaderboard.length > 0
+        ? arena.leaderboard.map((row) => ({
+            ...row,
+            status: (new Map(catalog.models.map((m) => [m.slug, m])).get(row.slug)?.status ?? 'unknown') as ArenaModel['status'],
+          }))
+        : catalog.models.map((m) => ({
+            slug: m.slug,
+            label: m.label,
+            status: m.status as ArenaModel['status'],
+            elo: 1500,
+            games: 0,
+            wins: 0,
+            win_rate: null,
+            configs: 0,
+          })),
+      }
     } catch {
-      setError('Could not load the arena.')
+      return { error: 'Could not load the arena.' }
     }
   }, [])
 
   useEffect(() => {
-    void loadArena()
+    async function load() {
+      const result = await loadArena()
+      if ('error' in result) {
+        setError(result.error as string)
+        return
+      }
+      setLeaderboard(result.leaderboard)
+      setRecent(result.recent)
+      setModels(result.models)
+    }
+    void load()
   }, [loadArena])
 
   function toggleModel(slug: string) {

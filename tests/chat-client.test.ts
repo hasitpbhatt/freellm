@@ -53,6 +53,70 @@ test('streamChat parses split SSE chunks, tolerant deltas, and a final event wit
   assert.equal(settled.length, 1)
 })
 
+test('streamChat consumes the non-streaming JSON fallback with server billing', async () => {
+  const deltas: string[] = []
+  const usages: unknown[] = []
+  const settled: unknown[] = []
+  const previousFetch = globalThis.fetch
+  globalThis.fetch = (async () =>
+    ({
+      ok: true,
+      // Non-null body: the client treats (ok + body) as a live response and
+      // branches on content-type from there.
+      body: {} as unknown as ReadableStream<Uint8Array>,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({
+        choices: [{ index: 0, message: { role: 'assistant', content: 'Hello JSON' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+        billing: {
+          credits_charged: 14,
+          balance: { global: 999986, scoped: 0 },
+          status: 'completed',
+          source: 'reported',
+          model: 'gemini-flash',
+          provider: 'Google',
+        },
+      }),
+    })) as unknown as typeof fetch
+
+  try {
+    const result = await streamChat(
+      {
+        model: 'gemini-flash',
+        request_id: '00000000-0000-4000-8000-000000000002',
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+      {
+        onDelta: (content) => {
+          deltas.push(content)
+        },
+        onUsage: (usage) => {
+          usages.push(usage)
+        },
+        onSettled: (event) => {
+          settled.push(event)
+        },
+      },
+    )
+
+    assert.equal(result.completed, true)
+    assert.deepEqual(deltas, ['Hello JSON'])
+    assert.deepEqual(usages, [{ input: 10, output: 4, total: 14, source: 'reported' }])
+    assert.deepEqual(settled, [
+      {
+        type: 'settled',
+        credits_charged: 14,
+        balance: { global: 999986, scoped: 0 },
+        status: 'completed',
+        model: 'gemini-flash',
+        provider: 'Google',
+      },
+    ])
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+})
+
 test('streamChat returns HTTP failures instead of throwing', async () => {
   globalThis.fetch = (async () =>
     ({

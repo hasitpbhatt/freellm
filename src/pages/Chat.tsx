@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { streamChat, type ChatSseEvent } from '../lib/chat'
 import { api, normalizeCatalogModel, type CatalogModel } from '../lib/api'
-import { useAuth } from '../lib/auth'
+import { useAuth } from '../lib/useAuth'
 import { Button, Card, Credits, Select } from '../components/ui'
 
 type Model = CatalogModel
@@ -36,6 +36,18 @@ type Message = {
     firstTokenMs: number | null
     tokensPerSec: number | null
   }
+}
+
+// One human-readable note for a finished message's footer: Your Key calls stay
+// free, and a Pool call is described by how it was billed — the provider's
+// reported usage, the flat rate when usage never arrived, or the flat rate
+// charged for a stream the caller stopped early.
+function billingNote(mode: 'pool' | 'byok', cost: NonNullable<Message['cost']>): string {
+  if (mode === 'byok') return ' · Free — your key'
+  if (cost.status === 'aborted') return ' · flat rate — stream stopped'
+  if (cost.source === 'reported') return ` · reported by ${cost.model ?? 'provider'}`
+  if (cost.source === 'flat_rate') return ' · flat rate — usage unreported'
+  return ''
 }
 
 const statusDot: Record<string, string> = {
@@ -122,6 +134,7 @@ export default function Chat() {
   }, [user, selectedKeyId])
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- catalog load on mount/user change
     void loadModels()
   }, [loadModels])
 
@@ -129,6 +142,7 @@ export default function Chat() {
     const modeParam = searchParams.get('mode')
     const keyParam = searchParams.get('key')
     if (modeParam === 'byok' || modeParam === 'pool') {
+      // oxlint-disable-next-line react/set-state-in-effect -- URL params are an external store to sync from
       setMode(modeParam)
     }
     if (keyParam) {
@@ -138,7 +152,10 @@ export default function Chat() {
   }, [searchParams])
 
   useEffect(() => {
-    if (mode === 'byok') void loadByokKeys()
+    if (mode === 'byok') {
+      // oxlint-disable-next-line react/set-state-in-effect -- vault keys load when BYOK mode is entered
+      void loadByokKeys()
+    }
   }, [mode, loadByokKeys])
 
   useEffect(() => {
@@ -152,11 +169,11 @@ export default function Chat() {
 
   const messageCount = messages.length
   useEffect(() => {
-    stickRef.current = true
-    setPinned(true)
     const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [messageCount])
+    if (el && stickRef.current) {
+      el.scrollTop = el.scrollHeight
+    }
+  }, [messageCount, stickRef])
 
   useEffect(() => {
     return () => {
@@ -251,10 +268,12 @@ export default function Chat() {
     abortRef.current = controller
 
     const payload = {
-      model: requestModelSlug ?? '',
+      // Connection mode dials the caller's own credential, so the model slug is
+      // optional — the stored upstream_model is the default. Pool mode requires it.
+      model: requestModelSlug ?? selectedKey?.upstream_model ?? '',
       request_id: requestId,
       messages: history.map((m) => ({ role: m.role, content: m.content })),
-      ...(mode === 'byok' && selectedKey ? { key_mode: 'byok' as const, key_id: selectedKey.id } : {}),
+      ...(mode === 'byok' && selectedKey ? { connection_id: selectedKey.id } : {}),
     }
 
     const result = await streamChat(
@@ -328,6 +347,8 @@ export default function Chat() {
     flushPending(assistantId)
     if (result.completed) {
       setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)))
+    } else {
+      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)))
     }
     await refresh()
 
@@ -361,6 +382,9 @@ export default function Chat() {
       } else {
         setBanner({ kind: 'warn', text: `Stream stopped — ${requestFlatRate.toLocaleString('en-US')} cr flat rate charged.` })
       }
+    } else if (!result.completed) {
+      // stream completed without settled (e.g., no usage block) — still stop streaming UI
+      setRetryAvailable(false)
     }
   }
 
@@ -413,7 +437,6 @@ export default function Chat() {
             ? `${model.label} is down right now — pick another model; failed requests are never charged.`
             : ''
 
-  // Build dropdown options
   // Build dropdown options
   interface PoolOption {
     value: string
@@ -618,13 +641,7 @@ export default function Chat() {
                         {m.cost.input != null && m.cost.output != null
                           ? ` — ${m.cost.input.toLocaleString('en-US')} in · ${m.cost.output.toLocaleString('en-US')} out`
                           : ''}
-                        {mode === 'byok' ? ' · Free — your key' : m.cost.status === 'aborted'
-                          ? ' · flat rate — stream stopped'
-                          : m.cost.source === 'reported'
-                          ? ` · reported by ${m.cost.model ?? 'provider'}`
-                          : m.cost.source === 'flat_rate'
-                          ? ' · flat rate — usage unreported'
-                          : ''}
+                        {billingNote(mode, m.cost)}
                         {m.cost.latencyMs != null ? ` · ${(m.cost.latencyMs / 1000).toFixed(2)}s` : ''}
                         {m.cost.firstTokenMs != null ? ` · first token ${(m.cost.firstTokenMs / 1000).toFixed(2)}s` : ''}
                         {m.cost.tokensPerSec != null ? ` · ${Math.round(m.cost.tokensPerSec)} tok/s` : ''}

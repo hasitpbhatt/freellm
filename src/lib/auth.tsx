@@ -1,38 +1,31 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { api } from './api'
+import { AuthContext } from './authContext'
 import type { User } from './types'
 
-type AuthState = {
-  user: User | null
-  loading: boolean
-  logout: () => Promise<void>
-  refresh: () => Promise<void>
-}
-
-const AuthContext = createContext<AuthState | null>(null)
-
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [user, setUserState] = useState<User | null>(null)
+  const [loading, setLoadingState] = useState(true)
 
   const refresh = useCallback(async () => {
     try {
       const data = await api.get<{ user: User | null }>('/me')
-      setUser(data.user)
+      setUserState(data.user)
     } catch {
-      setUser(null)
+      setUserState(null)
     } finally {
-      setLoading(false)
+      setLoadingState(false)
     }
   }, [])
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- session hydration on mount, synchronizing with an external system
     void refresh()
   }, [refresh])
 
   const logout = useCallback(async () => {
     await api.post('/auth/logout')
-    setUser(null)
+    setUserState(null)
   }, [])
 
   return (
@@ -40,10 +33,4 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       {children}
     </AuthContext.Provider>
   )
-}
-
-export function useAuth(): AuthState {
-  const context = useContext(AuthContext)
-  if (!context) throw new Error('useAuth must be used inside <AuthProvider>')
-  return context
 }

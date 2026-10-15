@@ -62,6 +62,7 @@ export default function AdminUpstreamProviders() {
   }, [])
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- provider list load on mount
     void load()
   }, [load])
 
@@ -272,6 +273,7 @@ function ProviderForm({
   // Re-sync when a different provider is opened for editing.
   useEffect(() => {
     if (!provider) return
+    // oxlint-disable-next-line react/set-state-in-effect -- syncing from external prop object, not a derived local state
     setLabel(provider.label)
     setBaseUrl(provider.base_url)
     setApiKey('')
@@ -418,13 +420,11 @@ function ModelCatalog({
   const [upstreamModel, setUpstreamModel] = useState('')
   const [contextWindow, setContextWindow] = useState('')
   const [maxOutput, setMaxOutput] = useState('')
+  const [supportsStreaming, setSupportsStreaming] = useState(true)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
-  // Find other providers with the same base_url (same API, likely same models)
-  const sameUrlProviders = allProviders.filter(
-    (p) => p.id !== provider.id && p.base_url === provider.base_url
-  )
+  const sameUrlProviders = allProviders.filter((p) => p.id !== provider.id && p.base_url === provider.base_url)
 
   async function add(event: FormEvent) {
     event.preventDefault()
@@ -442,13 +442,28 @@ function ModelCatalog({
         capabilities: [],
         context_window: contextWindow.trim() ? Number(contextWindow) : null,
         max_output_tokens: maxOutput.trim() ? Number(maxOutput) : null,
+        supports_streaming: supportsStreaming,
       })
       setUpstreamModel('')
       setContextWindow('')
       setMaxOutput('')
+      setSupportsStreaming(true)
       await onChanged()
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to add model.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function setStreaming(model: UpstreamModel, enabled: boolean) {
+    setBusy(true)
+    setError('')
+    try {
+      await api.patch(`/admin/upstream-models/${provider.id}/${encodeURIComponent(model.upstream_model)}`, { supports_streaming: enabled })
+      await onChanged()
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to update streaming support.')
     } finally {
       setBusy(false)
     }
@@ -471,6 +486,7 @@ function ModelCatalog({
           capabilities: m.capabilities,
           context_window: m.context_window,
           max_output_tokens: m.max_output_tokens,
+          supports_streaming: m.supports_streaming,
         })
       }
       await onChanged()
@@ -504,27 +520,17 @@ function ModelCatalog({
         <>
           {sameUrlProviders.length > 0 ? (
             <div className="flex flex-col gap-2">
-              <p className="text-[13px] text-muted">
-                No models registered yet. Other providers with the same base URL have models — copy them:
-              </p>
+              <p className="text-[13px] text-muted">No models registered yet. Other providers with the same base URL have models — copy them:</p>
               <div className="flex flex-wrap gap-2">
                 {sameUrlProviders.map((sp) => (
-                  <Button
-                    key={sp.id}
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => void copyModelsFrom(sp)}
-                    disabled={busy}
-                  >
+                  <Button key={sp.id} variant="secondary" size="sm" onClick={() => void copyModelsFrom(sp)} disabled={busy}>
                     Copy from {sp.label} ({models.filter((m) => m.upstream_provider_id === sp.id).length} models)
                   </Button>
                 ))}
               </div>
               <p className="text-[13px] text-muted">Or add manually below:</p>
             </div>
-          ) : (
-            <p className="text-[13px] text-muted">No models registered yet — add the first below.</p>
-          )}
+          ) : <p className="text-[13px] text-muted">No models registered yet — add the first below.</p>}
         </>
       ) : (
         <div className="flex flex-col divide-y divide-line">
@@ -533,23 +539,20 @@ function ModelCatalog({
               <code className="num rounded bg-surface-2 px-2 py-1 text-[12px]">{m.upstream_model}</code>
               {m.context_window != null && <span className="num text-[12px] text-muted">{m.context_window.toLocaleString('en-US')} ctx</span>}
               {m.max_output_tokens != null && <span className="num text-[12px] text-muted">{m.max_output_tokens.toLocaleString('en-US')} max out</span>}
-              <Button variant="ghost" size="sm" className="ml-auto text-loss" onClick={() => void remove(m)} disabled={busy}>
-                Remove
-              </Button>
+              <label className="flex items-center gap-2 text-[12px] text-muted">
+                <input type="checkbox" checked={m.supports_streaming !== 0} disabled={busy} onChange={(event) => void setStreaming(m, event.target.checked)} />
+                Supports streaming
+              </label>
+              <Button variant="ghost" size="sm" className="ml-auto text-loss" onClick={() => void remove(m)} disabled={busy}>Remove</Button>
             </div>
           ))}
         </div>
       )}
       <form className="flex flex-wrap items-end gap-2" onSubmit={add}>
-        <Field label="Model name">
-          <input className="input num w-56" value={upstreamModel} onChange={(e) => setUpstreamModel(e.target.value)} placeholder="poolside-laguna-2026-01" />
-        </Field>
-        <Field label="Context window (optional)">
-          <input className="input num w-32" value={contextWindow} onChange={(e) => setContextWindow(e.target.value)} inputMode="numeric" placeholder="128000" />
-        </Field>
-        <Field label="Max output (optional)">
-          <input className="input num w-32" value={maxOutput} onChange={(e) => setMaxOutput(e.target.value)} inputMode="numeric" placeholder="32000" />
-        </Field>
+        <Field label="Model name"><input className="input num w-56" value={upstreamModel} onChange={(e) => setUpstreamModel(e.target.value)} placeholder="gemini-2.5-flash" /></Field>
+        <Field label="Context window (optional)"><input className="input num w-32" value={contextWindow} onChange={(e) => setContextWindow(e.target.value)} inputMode="numeric" placeholder="128000" /></Field>
+        <Field label="Max output (optional)"><input className="input num w-32" value={maxOutput} onChange={(e) => setMaxOutput(e.target.value)} inputMode="numeric" placeholder="32000" /></Field>
+        <label className="flex items-center gap-2 py-2 text-[12px] text-muted"><input type="checkbox" checked={supportsStreaming} onChange={(event) => setSupportsStreaming(event.target.checked)} />Supports streaming</label>
         <Button type="submit" disabled={busy}>{busy ? 'Adding…' : 'Add model'}</Button>
       </form>
       {error && <p className="text-[12px] text-loss">{error}</p>}

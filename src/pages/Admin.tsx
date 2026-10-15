@@ -1,5 +1,5 @@
 import { Link, useSearchParams } from 'react-router-dom'
-import { useAuth } from '../lib/auth'
+import { useAuth } from '../lib/useAuth'
 import AdminModels from '../components/AdminModels'
 import AdminPromos from '../components/AdminPromos'
 import AdminVault from '../components/AdminVault'

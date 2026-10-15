@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, ApiError } from '../lib/api'
 import { Button, Card, CardHeader } from '../components/ui'
-import { useAuth } from '../lib/auth'
+import { useAuth } from '../lib/useAuth'
 
 type Phase = { name: 'idle' } | { name: 'typing'; roundId: string } | { name: 'done'; text: string; kind: 'ok' | 'err' }
 
@@ -38,6 +38,7 @@ export default function TypingGame() {
   }
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- typing-game status load on mount
     void load()
   }, [])
 

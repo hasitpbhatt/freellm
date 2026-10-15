@@ -27,7 +27,7 @@ interface ErrorBody {
  * upstream `data: {...}` chunks are decoded for delta content.
  */
 export async function streamChat(
-  payload: { model: string; messages: { role: string; content: string }[]; request_id: string; max_tokens?: number; key_mode?: 'byok'; key_id?: string },
+  payload: { model: string; messages: { role: string; content: string }[]; request_id: string; max_tokens?: number; connection_id?: string },
   handlers: StreamHandlers,
   signal?: AbortSignal,
 ): Promise<StreamResult> {
@@ -55,6 +55,49 @@ export async function streamChat(
       shortfall: typeof body?.shortfall === 'number' ? body.shortfall : undefined,
       retryable: typeof body?.retryable === 'boolean' ? body.retryable : undefined,
     }
+  }
+
+  const contentType =
+    typeof response.headers?.get === 'function' ? (response.headers.get('content-type') ?? '') : ''
+  if (contentType.includes('application/json')) {
+    const body = await response.json().catch(() => null) as {
+      choices?: { message?: { content?: unknown } }[]
+      usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown }
+      billing?: {
+        credits_charged?: unknown
+        balance?: { global?: unknown; scoped?: unknown }
+        status?: unknown
+        source?: unknown
+        model?: unknown
+        provider?: unknown
+      }
+    } | null
+    const content = body?.choices?.[0]?.message?.content
+    if (typeof content === 'string' && content) handlers.onDelta(content)
+    const usage = body?.usage
+    const numeric = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value) && value >= 0 ? value : null
+    const input = numeric(usage?.prompt_tokens)
+    const output = numeric(usage?.completion_tokens)
+    const total = numeric(usage?.total_tokens)
+    const billing = body?.billing
+    const source = billing?.source === 'reported' || billing?.source === 'flat_rate' ? billing.source : total !== null ? 'reported' : 'flat_rate'
+    if (input !== null || output !== null || total !== null) {
+      handlers.onUsage?.({ input, output, total, source })
+    }
+    const credits = numeric(billing?.credits_charged) ?? total
+    const balanceGlobal = numeric(billing?.balance?.global) ?? 0
+    const balanceScoped = numeric(billing?.balance?.scoped) ?? 0
+    handlers.onSettled({
+      type: 'settled',
+      credits_charged: credits,
+      balance: { global: balanceGlobal, scoped: balanceScoped },
+      status: typeof billing?.status === 'string' ? billing.status : 'completed',
+      model: typeof billing?.model === 'string' ? billing.model : undefined,
+      provider: typeof billing?.provider === 'string' ? billing.provider : undefined,
+    })
+    // HTTP 200 + parsed JSON means the server settled the request; an empty
+    // content string is an upstream content issue, not a transport failure.
+    return { completed: body !== null }
   }
 
   const reader = response.body.getReader()

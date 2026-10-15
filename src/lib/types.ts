@@ -77,6 +77,7 @@ export type UpstreamModel = {
   capabilities: string | null
   context_window: number | null
   max_output_tokens: number | null
+  supports_streaming: number
   provider_label?: string
 }
 

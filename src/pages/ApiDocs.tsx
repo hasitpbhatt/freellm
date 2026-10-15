@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, ApiError, normalizeCatalogModel, type CatalogModel } from '../lib/api'
-import { useAuth } from '../lib/auth'
+import { useAuth } from '../lib/useAuth'
 import { Button, Card, CardHeader, Input } from '../components/ui'
 
 /** Base URL follows the deployment — prod, preview, or local emulator. */
@@ -73,7 +73,10 @@ export default function ApiDocs() {
   }, [])
 
   useEffect(() => {
-    if (!authLoading && user) void loadTokens()
+    if (!authLoading && user) {
+      // oxlint-disable-next-line react/set-state-in-effect -- API token list load once the session resolves
+      void loadTokens()
+    }
   }, [authLoading, user, loadTokens])
 
   useEffect(() => {
@@ -318,6 +321,31 @@ for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.
     "messages": [{"role": "user", "content": "hi"}],
     "stream": true,
     "stream_options": {"include_usage": true}
+  }'}`}
+        />
+        <CodeBlock
+          lang="bash"
+          label="Through your own key (BYOK — free, uses your vault credential)"
+          code={`# Bind an API token to a connection once —
+#   POST /api/tokens  {"label": "laptop", "connection_id": "YOUR_CONNECTION_ID"}
+# — then every call is plain OpenAI. No extra fields: model is passed
+# straight to your endpoint.
+curl -s ${BASE_URL}/chat/completions \\
+  -H "Authorization: Bearer fl_…" \\
+  -H 'Content-Type: application/json' \\
+  -d '{
+    "model": "${exampleSlug}",
+    "messages": [{"role": "user", "content": "hi"}]
+  }'
+
+# One-off, without binding a token: name the connection explicitly.
+curl -s ${BASE_URL}/chat/completions \\
+  -H "Authorization: Bearer fl_…" \\
+  -H 'Content-Type: application/json' \\
+  -d '{
+    "model": "${exampleSlug}",
+    "messages": [{"role": "user", "content": "hi"}],
+    "connection_id": "YOUR_CONNECTION_ID"
   }'`}
         />
       </Section>
@@ -341,7 +369,10 @@ for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.
               <code className="num">max_tokens</code>, <code className="num">temperature</code>,{' '}
               <code className="num">top_p</code>, <code className="num">stream</code>,{' '}
               <code className="num">stream_options.include_usage</code>. Auth: Bearer key or session
-              cookie.
+              cookie. By default it draws from The Pool. To dial your own credential (API key or OAuth
+              account) instead — free, unmetered, per-user only — bind an API token to a connection
+              when you create it, or pass <code className="num">connection_id</code>. No other fields
+              change; <code className="num">model</code> goes straight to your endpoint.
             </span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2.5">
@@ -355,8 +386,7 @@ for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.
             <span className="text-[13px]">
               Native metering endpoint (session cookie only): explicit <code className="num">request_id</code>{' '}
               idempotency, <code className="num">usage</code>/<code className="num">settled</code> SSE events, and
-              BYOK mode (<code className="num">key_mode: 'byok'</code> with a vault{' '}
-              <code className="num">key_id</code>).
+              BYOK via <code className="num">connection_id</code> (a vault credential).
             </span>
           </div>
         </div>

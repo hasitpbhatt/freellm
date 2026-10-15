@@ -55,7 +55,10 @@ export async function createTestDb(): Promise<{ db: D1Database; dispose: () => P
 function splitStatements(sql: string): string[] {
   const withoutComments = sql
     .split('\n')
-    .map((line) => line.replace(/--.*$/, ''))
+    // Strip a trailing CR first: on CRLF checkouts `.` never matches `\r`,
+    // so the `--` strip below would silently keep every comment line and
+    // newer workerd builds reject the resulting comment-only statements.
+    .map((line) => line.replace(/\r$/, '').replace(/--.*$/, ''))
     .join('\n')
   return withoutComments
     .split(';')

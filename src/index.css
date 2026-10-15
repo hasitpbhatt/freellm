@@ -106,8 +106,25 @@
   }
 }
 
+@keyframes slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    max-height: 500px;
+  }
+}
+
 .animate-slide-up {
   animation: slide-up 0.2s ease-out;
+}
+
+.animate-slide-down {
+  animation: slide-down 0.2s ease-out;
 }
 
 .modal-overlay {
@@ -124,6 +141,9 @@
 
 @media (max-width: 640px) {
   .toast-container {
-    @apply left-4 right-4 bottom-4;
+    left: 1rem;
+    right: 1rem;
+    /* Clear the fixed bottom tab bar (~56px) plus any safe-area inset. */
+    bottom: calc(4.5rem + env(safe-area-inset-bottom));
   }
 }

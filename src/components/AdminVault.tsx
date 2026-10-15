@@ -70,6 +70,7 @@ export default function AdminVault() {
   }, [])
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- vault list load on mount
     void load()
   }, [load])
 

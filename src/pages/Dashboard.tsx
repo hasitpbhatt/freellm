@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
-import { useAuth } from '../lib/auth'
+import { useAuth } from '../lib/useAuth'
 import { Button, Card, CardHeader } from '../components/ui'
 import { formatDelta } from '../lib/format'
 
@@ -33,7 +33,8 @@ export default function Dashboard() {
   const [loadError, setLoadError] = useState(false)
   const [checkingIn, setCheckingIn] = useState(false)
 
-  const load = useCallback(async () => {
+  const loadData = useCallback(async () => {
+    if (!user) return
     try {
       const [ledgerData, earnData] = await Promise.all([
         api.get<{ entries: LedgerEntry[] }>('/ledger'),
@@ -46,11 +47,15 @@ export default function Dashboard() {
       // if the session died mid-load the shell redirects to sign-in
       setLoadError(true)
     }
-  }, [])
+  }, [user])
 
+  // Load data on user change - only run once when user changes
   useEffect(() => {
-    if (user) void load()
-  }, [user, load])
+    if (user && !loading) {
+      // oxlint-disable-next-line react/set-state-in-effect -- dashboard data load when the session resolves
+      void loadData()
+    }
+  }, [user, loading, loadData])
 
   if (loading) return <p className="py-12 text-center text-[13px] text-muted">Loading…</p>
   if (!user) {
@@ -70,7 +75,7 @@ export default function Dashboard() {
         <h1 className="text-lg font-semibold">Dashboard</h1>
         <p className="mt-2 text-[13px] text-muted">Could not load your activity. Check your connection and try again.</p>
         <div className="mt-4 flex justify-center gap-3">
-          <Button onClick={() => void load()}>Retry</Button>
+          <Button onClick={() => void loadData()}>Retry</Button>
         </div>
       </Card>
     )
@@ -82,19 +87,23 @@ export default function Dashboard() {
     { done: earn?.verified ?? false, label: 'Verify your email', detail: 'Unlocks earning', to: '/earn' },
     { done: hasCheckedIn, label: 'Check in today', detail: '+50,000 cr', to: '/earn' },
     { done: hasBalance, label: 'Earn your first credits', detail: 'Check-in, tasks, referrals', to: '/earn' },
-    { done: earn?.referral.qualified ?? 0 > 0, label: 'Invite a friend', detail: '+500,000 cr when they qualify', to: '/earn' },
+    { done: (earn?.referral.qualified ?? 0) > 0, label: 'Invite a friend', detail: '+500,000 cr when they qualify', to: '/earn' },
   ]
-  const completed = checklist.filter((item) => item.done).length
+  const completed = checklist.filter((item) => {
+    if (typeof item.done === 'boolean') return item.done
+    if (typeof item.done === 'number') return Boolean(item.done)
+    return false
+  }).length
 
-  async function checkIn() {
-    setCheckingIn(true)
-    try {
-      await api.post('/checkin')
-      await Promise.all([load(), refresh()])
-    } finally {
-      setCheckingIn(false)
-    }
-  }
+   async function checkIn() {
+     setCheckingIn(true)
+     try {
+       await api.post('/checkin')
+       await Promise.all([loadData(), refresh()])
+     } finally {
+       setCheckingIn(false)
+     }
+   }
 
   return (
     <div className="flex flex-col gap-6">

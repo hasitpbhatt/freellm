@@ -1,23 +1,28 @@
 // The OpenAI-compatible surface — /v1.
 //
 //   GET  /v1/models              the catalog in OpenAI's shape (public)
-//   POST /v1/chat/completions    chat through The Pool, billed 1:1 on tokens
+//   POST /v1/chat/completions    chat through The Pool, billed 1:1 on tokens;
+//                                or through your own vault credential with
+//                                key_mode=byok + key_id (free, unmetered)
 //
 // Auth: session cookie OR `Authorization: Bearer fl_…` (see routes/apikeys.ts).
 // The wire contract is OpenAI's, so the OpenAI SDKs and every
 // OpenAI-compatible tool work unchanged with:
 //   new OpenAI({ baseURL: 'https://freellm.hasit.in/v1', apiKey: 'fl_…' })
 //
-// Billing reuses the pool metering path exactly — reserve, failover across
-// provider configs, settle on provider-reported usage (flat rate as the
-// fallback). BYOK stays on the native POST /api/chat.
+// Pool billing reuses the pool metering path exactly — reserve, failover
+// across provider configs, settle on provider-reported usage (flat rate as
+// the fallback). BYOK dials the caller's own vault row (api_key or oauth,
+// one of possibly several personal accounts) and settles free with
+// key_mode='byok' — it never touches The Pool or any shared credential.
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { requireAuthOrToken } from '../lib/middleware'
 import { computeSpendable, estimateReserve, placeHold, settleRequest, type Usage } from '../lib/metering'
 import { loadAlias, openCall, recordOutcome } from '../lib/providers'
 import { canAccessModel, tierGatedMessage } from '../lib/tiers'
-import { newId } from '../lib/crypto'
+import { newId, sha256Hex } from '../lib/crypto'
+import { dialConnection, connectionSettleModel, getUsableConnection } from '../lib/connections'
 import type { Bindings, Variables } from '../lib/types'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -89,6 +94,9 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
       temperature?: unknown
       top_p?: unknown
       required_capabilities?: unknown
+      key_mode?: unknown
+      key_id?: unknown
+      connection_id?: unknown
     }>()
     .catch(() => null)
 
@@ -120,6 +128,39 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
   const includeUsage =
     stream && (payload?.stream_options as { include_usage?: unknown } | undefined)?.include_usage === true
 
+  // ---- Connection: the caller's own credential, selected without magic ----
+  // Precedence: an explicit body field (connection_id, or the legacy
+  // key_mode=byok + key_id) over the connection this API token is bound to.
+  const auth = c.req.header('Authorization') ?? ''
+  const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+  const bodyConnectionId =
+    typeof payload?.connection_id === 'string' && payload.connection_id
+      ? payload.connection_id
+      : payload?.key_mode === 'byok' && typeof payload?.key_id === 'string'
+        ? payload.key_id
+        : ''
+  const connectionId = bodyConnectionId || (bearer ? ((await connectionIdForToken(c.env, bearer)) ?? '') : '')
+
+  const requestedMax =
+    typeof payload?.max_tokens === 'number' && payload.max_tokens > 0
+      ? Math.floor(payload.max_tokens)
+      : typeof payload?.max_completion_tokens === 'number' && payload.max_completion_tokens > 0
+        ? Math.floor(payload.max_completion_tokens)
+        : 8192
+
+  if (connectionId) {
+    return chatWithConnection(c, {
+      user,
+      messages,
+      upstreamModel: slug,
+      maxTokens: requestedMax,
+      stream,
+      includeUsage,
+      connectionId,
+    })
+  }
+
+  // ---- Pool: resolve the alias, reserve, failover ----
   const alias = await loadAlias(c.env, slug)
   if (!alias || alias.providers.length === 0) {
     return c.json(
@@ -401,5 +442,255 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
     },
   })
 })
+
+// ------------------------------------------------------- connection completions
+// Dials the caller's own connection (a personal api_key/oauth account, or a
+// shared one) instead of The Pool. No reserve, no hold, no charge — the usage
+// event records key_mode='byok' for attribution only.
+
+/** The connection an API token is bound to, if any (the no-magic-param path). */
+async function connectionIdForToken(env: Bindings, bearer: string): Promise<string | null> {
+  if (!bearer) return null
+  const rec = await env.DB.prepare('SELECT connection_id FROM freellm_api_tokens WHERE token_hash = ?')
+    .bind(await sha256Hex(bearer))
+    .first<{ connection_id: string | null }>()
+  return rec?.connection_id ?? null
+}
+
+/** A free, zero-cost model row so connection usage has something to attribute to. */
+// Dials the caller's own connection (personal or shared), free and unmetered.
+// `upstreamModel` is the request's `model` field, passed straight through — the
+// wire contract stays plain OpenAI: no key_mode, no key_id.
+async function chatWithConnection(
+  c: Context<{ Bindings: Bindings; Variables: Variables }>,
+  opts: {
+    user: { id: string; balance_credits: number }
+    messages: OpenAiMessage[]
+    upstreamModel: string
+    maxTokens: number
+    stream: boolean
+    includeUsage: boolean
+    connectionId: string
+  },
+): Promise<Response> {
+  const { user, messages, upstreamModel, maxTokens, stream, includeUsage, connectionId } = opts
+  const conn = await getUsableConnection(c.env, user.id, connectionId)
+  if (!conn) {
+    return c.json(openAiBody('invalid_request_error', 'Connection not found or access denied.', 'connection_not_found'), 404)
+  }
+
+  const requestId = newId()
+  const startedAt = Date.now()
+  const completionId = `chatcmpl-${requestId.replace(/-/g, '').slice(0, 24)}`
+  const created = Math.floor(Date.now() / 1000)
+  const isCodex = conn.protocol === 'codex'
+  const settleModel = connectionSettleModel(conn.id, upstreamModel)
+
+  let upstream: Response
+  try {
+    upstream = await dialConnection(c, conn, { messages, upstreamModel, maxTokens, stream })
+  } catch (err) {
+    await settleRequest(c.env.DB, {
+      userId: user.id,
+      requestId,
+      model: settleModel,
+      providerLabel: conn.label,
+      settlement: { kind: 'failed', reason: err instanceof Error ? err.message : 'network error' },
+      latencyMs: Date.now() - startedAt,
+      free: true,
+    })
+    return c.json(
+      openAiBody('server_error', `${conn.label} is unreachable: ${err instanceof Error ? err.message : 'network error'}`, 'upstream_failed'),
+      502,
+    )
+  }
+  if (!upstream.ok) {
+    const errText = (await upstream.text().catch(() => '')).slice(0, 300)
+    await settleRequest(c.env.DB, {
+      userId: user.id,
+      requestId,
+      model: settleModel,
+      providerLabel: conn.label,
+      settlement: { kind: 'failed', reason: `${upstream.status} ${errText}` },
+      latencyMs: Date.now() - startedAt,
+      free: true,
+    })
+    return c.json(
+      openAiBody('server_error', `${conn.label} returned ${upstream.status}: ${errText}`, 'upstream_failed'),
+      502,
+    )
+  }
+
+  const settle = async (kind: 'completed' | 'aborted' | 'failed', usage?: Usage | null, reason?: string) => {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        return await settleRequest(c.env.DB, {
+          userId: user.id,
+          requestId,
+          model: settleModel,
+          providerLabel: conn.label,
+          settlement: kind === 'completed' ? { kind, usage: usage ?? null } : { kind, reason },
+          latencyMs: Date.now() - startedAt,
+          usage: usage ?? null,
+          free: true,
+        })
+      } catch (err) {
+        console.error('[v1:connection] settleRequest failed (attempt %d)', attempt, completionId, err)
+      }
+    }
+    return null
+  }
+
+  const baseChunk = {
+    id: completionId,
+    object: 'chat.completion.chunk' as const,
+    created,
+    model: upstreamModel,
+  }
+  const sse = (choices: unknown[], extra: Record<string, unknown> = {}) =>
+    `data: ${JSON.stringify({ ...baseChunk, choices, ...extra })}\n\n`
+
+  // ---- non-streaming: aggregate the upstream body into one completion ----
+  if (!stream) {
+    let content = ''
+    let finishReason: string | null = null
+    let usage: Usage | null = null
+    try {
+      if (isCodex) {
+        // Translated OpenAI SSE — same aggregation as the pool path.
+        const text = await upstream.text()
+        for (const line of text.split('\n')) {
+          const parsed = parseSseLine(line)
+          if (!parsed) continue
+          usage = usageFromChunk(parsed) ?? usage
+          const choice = (parsed.choices as Array<{ delta?: { content?: unknown }; finish_reason?: unknown }> | undefined)?.[0]
+          if (typeof choice?.delta?.content === 'string') content += choice.delta.content
+          if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason
+        }
+      } else {
+        const data = (await upstream.json().catch(() => ({} as Record<string, unknown>))) as Record<string, unknown>
+        const choices = data.choices as Array<{ message?: { content?: string }; finish_reason?: string }> | undefined
+        const choice = choices?.[0]
+        if (choice?.message?.content) content = choice.message.content
+        if (choice?.finish_reason) finishReason = choice.finish_reason
+        const u = data.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined
+        if (u && typeof u.prompt_tokens === 'number' && typeof u.completion_tokens === 'number' && typeof u.total_tokens === 'number') {
+          usage = { input: u.prompt_tokens, output: u.completion_tokens, total: u.total_tokens }
+        }
+      }
+    } catch (err) {
+      await settle('failed', null, err instanceof Error ? err.message : 'upstream response failed')
+      return c.json(openAiBody('server_error', 'The upstream response failed — no charge was made.', 'upstream_failed'), 502)
+    }
+    const result = await settle('completed', usage)
+    return c.json({
+      id: completionId,
+      object: 'chat.completion',
+      created,
+      model: upstreamModel,
+      choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: finishReason ?? 'stop' }],
+      usage: usage
+        ? { prompt_tokens: usage.input, completion_tokens: usage.output, total_tokens: usage.total }
+        : undefined,
+      freellm: {
+        request_id: requestId,
+        key_mode: 'byok',
+        credits_charged: result ? result.creditsCharged : null,
+        billed_source: result?.source ?? null,
+        provider: conn.label,
+      },
+    })
+  }
+
+  // ---- streaming: pass upstream chunks through, capture usage ----
+  const body = upstream.body
+  if (!body) {
+    await settle('failed', null, 'upstream returned no body')
+    return c.json(openAiBody('server_error', 'Empty upstream response.', 'upstream_failed'), 502)
+  }
+
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+  let buffer = ''
+  let usage: Usage | null = null
+  let roleSent = false
+  let finishReason: string | null = null
+  let settled = false
+
+  const flushChunks = (controller: TransformStreamDefaultController<Uint8Array>) => {
+    if (!roleSent) {
+      controller.enqueue(encoder.encode(sse([{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }])))
+    }
+    controller.enqueue(
+      encoder.encode(
+        sse([{ index: 0, delta: {}, finish_reason: finishReason ?? 'stop' }], includeUsage ? {} : usage ? { usage: { prompt_tokens: usage.input, completion_tokens: usage.output, total_tokens: usage.total } } : {}),
+      ),
+    )
+    if (includeUsage) {
+      controller.enqueue(
+        encoder.encode(
+          sse([], { usage: usage ? { prompt_tokens: usage.input, completion_tokens: usage.output, total_tokens: usage.total } : null }),
+        ),
+      )
+    }
+    controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+  }
+
+  const transform = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      buffer += decoder.decode(chunk, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) {
+        const parsed = parseSseLine(line)
+        if (!parsed) continue
+        usage = usageFromChunk(parsed) ?? usage
+        const choice = (
+          parsed.choices as Array<{ delta?: { role?: unknown; content?: unknown }; finish_reason?: unknown }> | undefined
+        )?.[0]
+        if (!choice) continue
+
+        if (!roleSent && (typeof choice.delta?.role === 'string' || typeof choice.delta?.content === 'string')) {
+          roleSent = true
+          controller.enqueue(
+            encoder.encode(sse([{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }])),
+          )
+        }
+        if (typeof choice.delta?.content === 'string' && choice.delta.content.length > 0) {
+          controller.enqueue(
+            encoder.encode(sse([{ index: 0, delta: { content: choice.delta.content }, finish_reason: null }])),
+          )
+        }
+        if (typeof choice.finish_reason === 'string' && finishReason === null) {
+          finishReason = choice.finish_reason
+        }
+      }
+    },
+    async flush(controller) {
+      if (settled) return
+      settled = true
+      try {
+        await settle('completed', usage)
+      } catch (err) {
+        console.error('[v1:connection] settle failed in flush', completionId, err)
+      }
+      flushChunks(controller)
+    },
+    cancel() {
+      if (settled) return
+      settled = true
+      void settle('aborted', usage, 'client disconnected')
+    },
+  })
+
+  return new Response(body.pipeThrough(transform), {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Freellm-Completion-Id': completionId,
+    },
+  })
+}
 
 export default app

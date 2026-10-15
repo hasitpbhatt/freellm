@@ -1,15 +1,27 @@
-import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api, ApiError } from '../lib/api'
-import { useAuth } from '../lib/auth'
-import { Button, Card, CardHeader, Input } from '../components/ui'
+import { useAuth } from '../lib/useAuth'
+import { Button, Card, CardHeader } from '../components/ui'
+import { KeyCard } from '../components/keys/KeyCard'
+import { KeyForm } from '../components/keys/KeyForm'
+import { OAuthProviders } from '../components/keys/OAuthProviders'
+import { ErrorBanner } from '../components/keys/ErrorBanner'
+import { FloatingActionButton } from '../components/keys/FloatingActionButton'
+import { PullToRefresh } from '../components/keys/PullToRefresh'
 
-type ByokKey = {
+export type ByokKey = {
   id: string
   label: string
   base_url: string
   upstream_model: string
   key_masked: string
+  auth_kind: 'api_key' | 'oauth'
+  protocol: 'openai' | 'codex'
+  account_id: string | null
+  has_refresh_token: boolean
+  expires_at: number | null
+  expired: boolean
   status: 'live' | 'slow' | 'down' | 'unknown' | 'disabled'
   last_checked_at: number | null
   last_error: string | null
@@ -18,37 +30,11 @@ type ByokKey = {
   created_at: number
 }
 
-type KeyTestResult = {
+export type KeyTestResult = {
   ok: boolean
   status: 'live' | 'slow' | 'down' | 'unknown' | 'disabled'
   latencyMs: number
   error?: string
-}
-
-const statusDot: Record<string, string> = {
-  live: 'bg-gain',
-  slow: 'bg-warn',
-  down: 'bg-loss',
-  unknown: 'bg-muted',
-  disabled: 'bg-muted',
-}
-
-const statusLabel: Record<string, string> = {
-  live: 'Live',
-  slow: 'Slow',
-  down: 'Down',
-  unknown: 'Unknown',
-  disabled: 'Disabled',
-}
-
-function formatTime(ts: number | null): string {
-  if (!ts) return 'Never'
-  return new Date(ts).toLocaleString()
-}
-
-function formatLatency(ms: number | null): string {
-  if (ms == null) return '—'
-  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`
 }
 
 const STORAGE_KEY = 'freellm:keys:v1'
@@ -69,71 +55,63 @@ function savePersisted(state: PersistedState) {
 
 export default function Keys() {
   const { user, loading: authLoading } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [keys, setKeys] = useState<ByokKey[]>([])
   const [loading, setLoading] = useState(true)
-  const [adding, setAdding] = useState(false)
-  const [form, setForm] = useState({ label: '', base_url: '', upstream_model: '', api_key: '' })
-  const [errors, setErrors] = useState<Record<string, string>>({})
+  const [isAdding, setIsAdding] = useState(false)
+  const [showAddForm, setShowAddForm] = useState(false)
   const [banner, setBanner] = useState<{ kind: 'ok' | 'err' | 'warn'; text: string } | null>(null)
   const [persisted, setPersisted] = useState<PersistedState>(() => loadPersisted())
+  // persisted used for "New" badge on keys
+  // persisted is used for "New" badge
   const [expandedIds, setExpandedIds] = useState<string[]>(() => loadPersisted().expandedIds ?? [])
   const [testingId, setTestingId] = useState<string | null>(null)
+  const [oauthPolling, setOauthPolling] = useState<Record<string, { state: string; interval: number } | null>>({})
+  const [deviceInfo, setDeviceInfo] = useState<{ providerId: string; providerName: string; userCode: string; verificationUri: string } | null>(null)
+  const pollStateRef = useRef<Record<string, string>>({})
 
   const loadKeys = async () => {
     try {
       const data = await api.get<{ keys: ByokKey[] }>('/keys')
       setKeys(data.keys)
     } catch {
-      setBanner({ kind: 'err', text: 'Failed to load your keys.' })
+      setBanner({ kind: 'err', text: 'Failed to load your keys. Need help? Contact help@freellm.hasit.in' })
     } finally {
       setLoading(false)
     }
   }
 
   useEffect(() => {
-    if (!authLoading) void loadKeys()
+    if (!authLoading) {
+      // oxlint-disable-next-line react/set-state-in-effect -- vault load once the session resolves
+      void loadKeys()
+    }
   }, [authLoading])
+
+  useEffect(() => {
+    if (searchParams.get('oauth') === 'success') {
+      // oxlint-disable-next-line react/set-state-in-effect -- one-shot banner for the returning PKCE redirect
+      setBanner({ kind: 'ok', text: 'Account connected! Key added to your vault.' })
+      const next = new URLSearchParams(searchParams)
+      next.delete('oauth')
+      setSearchParams(next, { replace: true })
+    }
+  }, [searchParams, setSearchParams])
+
+  useEffect(() => {
+    const ref = pollStateRef.current
+    return () => {
+      for (const key of Object.keys(ref)) delete ref[key]
+    }
+  }, [])
 
   useEffect(() => {
     savePersisted({ expandedIds })
   }, [expandedIds])
 
-  const validateForm = () => {
-    const e: Record<string, string> = {}
-    if (!form.label.trim() || form.label.length > 80) e.label = 'Label (1–80 chars) is required.'
-    try { new URL(form.base_url) } catch { e.base_url = 'Enter a valid base URL (e.g. https://api.openai.com/v1).' }
-    if (!form.upstream_model.trim()) e.upstream_model = 'Upstream model name is required (e.g. gpt-4o).'
-    if (!form.api_key.trim()) e.api_key = 'Paste your provider API key.'
-    setErrors(e)
-    return Object.keys(e).length === 0
-  }
-
-  const handleAdd = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    if (!validateForm()) return
-    setAdding(true)
-    setBanner(null)
-    try {
-      const res = await api.post<{ key: ByokKey; test: KeyTestResult }>('/keys', {
-        label: form.label.trim(),
-        base_url: form.base_url.trim(),
-        upstream_model: form.upstream_model.trim(),
-        api_key: form.api_key.trim(),
-      })
-      setForm({ label: '', base_url: '', upstream_model: '', api_key: '' })
-      setKeys((prev) => [res.key, ...prev])
-      setPersisted((p) => ({ ...p, lastAddedId: res.key.id }))
-      if (res.test.ok) {
-        setBanner({ kind: 'ok', text: 'Key added and validated ✓' })
-      } else {
-        setBanner({ kind: 'warn', text: `Key added but validation failed: ${res.test.error}. Test again before using.` })
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof ApiError ? err.message : err instanceof Response ? await err.text() : String(err)
-      setBanner({ kind: 'err', text: `Add failed: ${msg}` })
-    } finally {
-      setAdding(false)
-    }
+  const handleAddKey = (key: ByokKey, _test: KeyTestResult) => {
+    setKeys((prev) => [key, ...prev])
+    setPersisted((p) => ({ ...p, lastAddedId: key.id }))
   }
 
   const handleTest = async (id: string) => {
@@ -145,7 +123,7 @@ export default function Keys() {
       setBanner({ kind: res.test.ok ? 'ok' : 'err', text: res.test.ok ? 'Key is live ✓' : `Test failed: ${res.test.error}` })
     } catch (err: unknown) {
       const msg = err instanceof ApiError ? err.message : err instanceof Response ? await err.text() : String(err)
-      setBanner({ kind: 'err', text: `Test failed: ${msg}` })
+      setBanner({ kind: 'err', text: `Test failed: ${msg}. Need help? Contact help@freellm.hasit.in` })
     } finally {
       setTestingId(null)
     }
@@ -164,13 +142,129 @@ export default function Keys() {
     }
   }
 
+  const handleRefresh = async (id: string) => {
+    setBanner(null)
+    try {
+      const res = await api.post<{ ok: boolean; expiresAt?: number; message?: string; error?: string }>(`/keys/${id}/refresh`)
+      if (res.ok) {
+        setBanner({ kind: 'ok', text: res.message || 'Token refreshed successfully' })
+        void loadKeys()
+      } else {
+        setBanner({ kind: 'err', text: res.error || 'Refresh failed' })
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof ApiError ? err.message : err instanceof Response ? await err.text() : String(err)
+      setBanner({ kind: 'err', text: `Refresh failed: ${msg}. Need help? Contact help@freellm.hasit.in` })
+    }
+  }
+
+  const handleOAuthConnect = async (providerId: string, providerName: string) => {
+    setBanner(null)
+    setDeviceInfo(null)
+
+    try {
+      const res = await api.get<{ authUrl: string; state: string; deviceCode?: string; userCode?: string; verificationUri?: string; verificationUriComplete?: string; interval?: number; expiresIn?: number }>(`/oauth/start/${providerId}`)
+
+      if (res.deviceCode || res.userCode) {
+        setOauthPolling((prev) => ({
+          ...prev,
+          [providerId]: { state: res.state, interval: res.interval || 5 },
+        }))
+        setDeviceInfo({
+          providerId,
+          providerName,
+          userCode: res.userCode ?? res.deviceCode ?? '',
+          verificationUri: res.verificationUriComplete ?? res.verificationUri ?? res.authUrl,
+        })
+        window.open(res.verificationUriComplete ?? res.verificationUri ?? res.authUrl, '_blank', 'noopener')
+        setBanner({ kind: 'ok', text: `${providerName}: enter the code on the opened page, then wait — the key appears below automatically.` })
+        pollOAuthToken(providerId, res.state, res.interval || 5)
+      } else if (res.authUrl) {
+        window.location.assign(res.authUrl)
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof ApiError ? err.message : err instanceof Response ? await err.text() : String(err)
+      setBanner({ kind: 'err', text: `OAuth connect failed: ${msg}` })
+    }
+  }
+
+  const cancelDeviceFlow = (providerId: string) => {
+    delete pollStateRef.current[providerId]
+    setOauthPolling((prev) => {
+      const next = { ...prev }
+      delete next[providerId]
+      return next
+    })
+    setDeviceInfo((prev) => (prev?.providerId === providerId ? null : prev))
+  }
+
+  const stopPolling = (providerId: string) => {
+    delete pollStateRef.current[providerId]
+    setOauthPolling((prev) => {
+      const next = { ...prev }
+      delete next[providerId]
+      return next
+    })
+  }
+
+  const pollOAuthToken = async (providerId: string, state: string, interval: number) => {
+    const maxAttempts = 120
+    let attempts = 0
+    pollStateRef.current[providerId] = state
+
+    const poll = async () => {
+      if (pollStateRef.current[providerId] !== state) return
+      if (attempts >= maxAttempts) {
+        stopPolling(providerId)
+        setDeviceInfo((prev) => (prev?.providerId === providerId ? null : prev))
+        setBanner({ kind: 'err', text: 'OAuth authorization timed out.' })
+        return
+      }
+
+      attempts++
+
+      try {
+        const res = await api.post<{ status: string; keyId?: string; error?: string }>(`/oauth/poll/${providerId}`, { state })
+
+        if (pollStateRef.current[providerId] !== state) return
+
+        if (res.status === 'success') {
+          stopPolling(providerId)
+          setDeviceInfo((prev) => (prev?.providerId === providerId ? null : prev))
+          setBanner({ kind: 'ok', text: 'Account connected! Key added to your vault.' })
+          void loadKeys()
+          return
+        }
+
+        if (res.status === 'error') {
+          stopPolling(providerId)
+          setDeviceInfo((prev) => (prev?.providerId === providerId ? null : prev))
+          setBanner({ kind: 'err', text: `OAuth failed: ${res.error}` })
+          return
+        }
+
+        setTimeout(poll, interval * 1000)
+      } catch {
+        stopPolling(providerId)
+        setDeviceInfo((prev) => (prev?.providerId === providerId ? null : prev))
+        setBanner({ kind: 'err', text: 'OAuth polling failed.' })
+      }
+    }
+
+    await poll()
+  }
+
   const toggleExpand = (id: string) => {
     setExpandedIds((prev) => prev.includes(id) ? prev.filter((e) => e !== id) : [...prev, id])
   }
 
   const isExpanded = (id: string) => expandedIds.includes(id)
 
-  if (authLoading) return <p className="py-12 text-center text-[13px] text-muted">Loading…</p>
+  const openAddForm = () => setShowAddForm(true)
+  const openBulkImport = () => { setShowAddForm(true); }
+  const openConnectAccount = () => { document.getElementById('oauth-section')?.scrollIntoView({ behavior: 'smooth' }) }
+
+  if (authLoading) return <div className="py-12 text-center text-[13px] text-muted">Loading…</div>
   if (!user) {
     return (
       <Card className="mx-auto max-w-md p-8 text-center">
@@ -179,164 +273,125 @@ export default function Keys() {
           Sign in to store your own provider keys and chat free.
         </p>
         <div className="mt-4 flex justify-center gap-3">
-          <Link to="/login"><Button>Sign in with Google</Button></Link>
+          <Link to="/login"><Button className="min-h-[44px]">Sign in with Google</Button></Link>
         </div>
       </Card>
     )
   }
 
   return (
-    <div className="grid gap-4 lg:max-w-3xl mx-auto">
-      <Card className="flex flex-col gap-3 p-6">
-        <div className="flex items-baseline justify-between gap-4">
-          <h1 className="text-2xl font-semibold">Your Keys</h1>
-          <span className="num text-[13px] text-muted">Door 1 of Two Doors</span>
-        </div>
-        <p className="text-[13px] text-muted max-w-2xl">
-          Bring your own OpenAI-compatible endpoint. Chatting through your key is <strong>free and unmetered</strong> —
-          it never touches The Pool. Keys are encrypted at rest (AES-256-GCM); only you and the operator can reveal them.
-        </p>
-        <p className="text-[12px] text-warn">
-          ⚠ Security: Keys are stored encrypted. The operator has a "reveal" button for auditability.
-          Do not share your freellm account if you use sensitive provider keys.
-        </p>
-      </Card>
+    <div className="min-h-screen pb-24">
+      <div className="grid gap-4 lg:max-w-3xl mx-auto p-4">
+        <Card className="flex flex-col gap-3 p-6">
+          <div className="flex items-baseline justify-between gap-4 flex-wrap">
+            <h1 className="text-2xl font-semibold">Your Keys</h1>
+            <span className="num text-[13px] text-muted">Door 1 of Two Doors</span>
+          </div>
+          <p className="text-[13px] text-muted max-w-2xl">
+            Bring your own OpenAI-compatible endpoint. Chatting through your key is <strong>free and unmetered</strong> —
+            it never touches The Pool. Add each account separately — multiple accounts are allowed, and each stays
+            strictly yours (never pooled or shared). Use only tokens from your own provider accounts.
+          </p>
+          <p className="text-[12px] text-warn">
+            ⚠ Security: API keys are stored encrypted and revealable to the operator for auditability.
+            OAuth tokens are never revealable — not even to the operator. Do not share your freellm account
+            if you use sensitive provider credentials.
+          </p>
+        </Card>
 
-      <Card>
-        <CardHeader title={adding ? 'Adding key…' : 'Add a key'} />
-        <form onSubmit={handleAdd} className="p-6 space-y-4">
-          <div>
-            <label className="block text-[12px] font-medium mb-1">Label</label>
-            <Input
-              value={form.label}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, label: e.target.value })}
-              placeholder="e.g. My OpenAI, Team Anthropic proxy"
-              className={errors.label ? 'border-loss' : ''}
-            />
-            {errors.label && <p className="mt-1 text-[12px] text-loss">{errors.label}</p>}
-          </div>
-          <div>
-            <label className="block text-[12px] font-medium mb-1">Base URL</label>
-            <Input
-              value={form.base_url}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, base_url: e.target.value })}
-              placeholder="https://api.openai.com/v1"
-              className={errors.base_url ? 'border-loss' : ''}
-            />
-            {errors.base_url && <p className="mt-1 text-[12px] text-loss">{errors.base_url}</p>}
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className="block text-[12px] font-medium mb-1">Upstream Model</label>
-              <Input
-                value={form.upstream_model}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, upstream_model: e.target.value })}
-                placeholder="gpt-4o"
-                className={errors.upstream_model ? 'border-loss' : ''}
-              />
-              {errors.upstream_model && <p className="mt-1 text-[12px] text-loss">{errors.upstream_model}</p>}
-            </div>
-            <div>
-              <label className="block text-[12px] font-medium mb-1">API Key</label>
-              <Input
-                type="password"
-                value={form.api_key}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, api_key: e.target.value })}
-                placeholder="sk-…"
-                className={errors.api_key ? 'border-loss' : ''}
-              />
-              {errors.api_key && <p className="mt-1 text-[12px] text-loss">{errors.api_key}</p>}
-            </div>
-          </div>
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="secondary" onClick={() => setForm({ label: '', base_url: '', upstream_model: '', api_key: '' })}>Clear</Button>
-            <Button type="submit" disabled={adding}>{adding ? 'Validating…' : 'Add & validate'}</Button>
-          </div>
-        </form>
-      </Card>
+        <ErrorBanner
+          message={banner?.text || ''}
+          kind={banner?.kind || 'ok'}
+          onDismiss={() => setBanner(null)}
+        />
 
-      {banner && (
-        <Card className={`border-${banner.kind === 'ok' ? 'gain' : banner.kind === 'err' ? 'loss' : 'warn'}`}>
-          <div className="flex items-start gap-2 p-4">
-            <p role={banner.kind === 'err' ? 'alert' : 'status'} className="flex-1 text-[13px]">{banner.text}</p>
-            <button onClick={() => setBanner(null)} className="min-h-[44px] px-2 text-[12px] text-muted hover:text-content" aria-label="Dismiss message">
-              Dismiss
-            </button>
+        <Card id="oauth-section">
+          <CardHeader title="Connect an account" />
+          <div className="p-6 space-y-3">
+            <OAuthProviders
+              onConnect={handleOAuthConnect}
+              isAdding={isAdding}
+              pollingProviders={oauthPolling}
+              deviceInfo={deviceInfo}
+              onCancelDevice={cancelDeviceFlow}
+            />
           </div>
         </Card>
-      )}
 
-      <Card>
-        <CardHeader title="Stored keys" />
-        {loading ? (
-          <div className="p-6 text-center text-[13px] text-muted">Loading keys…</div>
-        ) : keys.length === 0 ? (
-          <div className="p-6 text-center text-[13px] text-muted">
-            No keys yet. Add one above to start chatting for free.
-          </div>
-        ) : (
-          <div className="p-4 space-y-2">
-            {keys.map((k) => {
-              const isDown = k.status === 'down' || k.status === 'disabled'
-              const isNew = persisted.lastAddedId === k.id
-              return (
-                <div key={k.id} className={`card p-3 ${isNew ? 'border-gain/50' : ''} ${isDown ? 'opacity-70' : ''}`}>
-                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <button
-                        type="button"
-                        onClick={() => toggleExpand(k.id)}
-                        className="flex items-center gap-2 p-1 rounded hover:bg-surface-2 transition-colors"
-                        aria-expanded={isExpanded(k.id)}
-                        aria-label={isExpanded(k.id) ? 'Collapse details' : 'Expand details'}
-                      >
-                        <span className={`h-2 w-2 rounded-full ${statusDot[k.status]}`} />
-                        <span className="font-medium">{k.label}</span>
-                        <span className={`num rounded px-1.5 py-0.5 text-[10px] ${isDown ? 'bg-loss/20 text-loss' : 'bg-gain/20 text-gain'}`}>
-                          {statusLabel[k.status]}
-                        </span>
-                        {isNew && <span className="num rounded bg-gain/20 px-1.5 py-0.5 text-[10px] text-gain">New</span>}
-                        <span className="num font-mono text-[11px] text-muted">{k.key_masked}</span>
-                        <span className="text-muted">▾</span>
-                      </button>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <Button variant="secondary" size="sm" onClick={() => handleTest(k.id)} disabled={testingId === k.id || adding}>
-                        {testingId === k.id ? 'Testing…' : 'Test'}
-                      </Button>
-                      <Link to={`/chat?mode=byok&key=${k.id}`} className="btn-secondary btn-sm">Use in chat</Link>
-                      <Button variant="secondary" size="sm" className="text-loss hover:bg-loss/10" onClick={() => handleDelete(k)}>Delete</Button>
-                    </div>
-                  </div>
-                  {isExpanded(k.id) && (
-                    <div className="mt-3 pt-3 border-t border-line space-y-1 text-[12px] text-muted">
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
-                        <div className="min-w-0 break-all"><span className="font-medium">Base URL:</span> {k.base_url}</div>
-                        <div className="min-w-0 break-all"><span className="font-medium">Upstream model:</span> <code className="font-mono">{k.upstream_model}</code></div>
-                        <div><span className="font-medium">Latency:</span> {formatLatency(k.avg_latency_ms)}</div>
-                        <div><span className="font-medium">Messages served:</span> {k.messages_served}</div>
-                        <div><span className="font-medium">Added:</span> {formatTime(k.created_at)}</div>
-                        <div><span className="font-medium">Last checked:</span> {formatTime(k.last_checked_at)}</div>
-                        {k.last_error && (
-                          <div className="min-w-0 break-all sm:col-span-2 text-loss"><span className="font-medium">Last error:</span> {k.last_error}</div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </Card>
+        <Card>
+          <CardHeader title={showAddForm ? 'Adding key…' : 'Add an API key manually'} />
+          {showAddForm ? (
+            <KeyForm
+              onAddKey={handleAddKey}
+              onError={(msg) => setBanner({ kind: 'err', text: msg })}
+              onSuccess={(msg) => setBanner({ kind: 'ok', text: msg })}
+              isAdding={isAdding}
+              setIsAdding={setIsAdding}
+            />
+          ) : (
+            <div className="p-6 text-center">
+              <p className="text-[13px] text-muted mb-4">
+                Add a single API key or import multiple keys at once.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                <Button onClick={openAddForm} className="min-h-[44px] min-w-[44px] flex-1 sm:flex-initial">
+                  ➕ Add Single Key
+                </Button>
+                <Button variant="secondary" onClick={openBulkImport} className="min-h-[44px] min-w-[44px] flex-1 sm:flex-initial">
+                  📋 Bulk Import
+                </Button>
+              </div>
+            </div>
+          )}
+        </Card>
 
-      <Card className="p-4 border-accent/30">
-        <p className="text-[13px] text-center text-muted">
-          <strong>Door 1 — Your Key:</strong> free, your endpoint, your key, no balance check.
-          <br />
-          <strong>Door 2 — The Pool:</strong> community-funded models, 1 cr = 1 token, earn on /earn.
-        </p>
-      </Card>
+        <Card>
+          <CardHeader title="Stored keys" />
+          {loading ? (
+            <div className="p-6 text-center text-[13px] text-muted">Loading keys…</div>
+          ) : keys.length === 0 ? (
+            <div className="p-6 text-center text-[13px] text-muted">
+              No keys yet. Add one above to start chatting for free.
+            </div>
+          ) : (
+            <PullToRefresh onRefresh={loadKeys}>
+              <div className="p-4 space-y-3">
+                {keys.map((k) => {
+                  const isNew = persisted.lastAddedId === k.id
+                  return (
+                    <KeyCard
+                      key={k.id}
+                      keyData={k}
+                      isExpanded={isExpanded(k.id)}
+                      onToggleExpand={() => toggleExpand(k.id)}
+                      onTest={() => handleTest(k.id)}
+                      onRefresh={() => handleRefresh(k.id)}
+                      onDelete={() => handleDelete(k)}
+                      isTesting={testingId === k.id}
+                      isAdding={isAdding}
+                      isNew={isNew}
+                    />
+                  )
+                })}
+              </div>
+            </PullToRefresh>
+          )}
+        </Card>
+
+        <Card className="p-4 border-accent/30">
+          <p className="text-[13px] text-center text-muted">
+            <strong>Door 1 — Your Key:</strong> free, your endpoint, your key, no balance check.
+            <br />
+            <strong>Door 2 — The Pool:</strong> community-funded models, 1 cr = 1 token, earn on /earn.
+          </p>
+        </Card>
+      </div>
+
+      <FloatingActionButton
+        onAddKey={openAddForm}
+        onBulkImport={openBulkImport}
+        onConnectAccount={openConnectAccount}
+      />
     </div>
   )
 }

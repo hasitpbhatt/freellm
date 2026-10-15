@@ -1,16 +1,27 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Navigate, useSearchParams } from 'react-router-dom'
 import { Card } from '../components/ui'
 import { GoogleButton } from '../components/GoogleButton'
-import { useAuth } from '../lib/auth'
+import { useAuth } from '../lib/useAuth'
 
 // The only auth page: Google sign-in creates the account on first use, so
 // sign-in and sign-up are the same button. /register redirects here.
+
+/** Referral code stashed by the landing page before sign-in (may be absent). */
+function stashedReferral(): string {
+  try {
+    return localStorage.getItem('freellm_ref') ?? ''
+  } catch {
+    // storage unavailable
+    return ''
+  }
+}
+
 export default function Login() {
   const { user, loading } = useAuth()
   const [searchParams] = useSearchParams()
-  const [ref, setRef] = useState<string | null>(null)
-  const [referred, setReferred] = useState(false)
+  const [referred] = useState(() => stashedReferral() !== '')
+  const [referral] = useState(stashedReferral)
 
   const redirectTo = searchParams.get('next') ?? '/dashboard'
   // OAuth failures come back as /login?error=… from the Google callback.
@@ -21,18 +32,6 @@ export default function Login() {
   } catch {
     oauthError = 'Unknown error'
   }
-
-  useEffect(() => {
-    try {
-      const code = localStorage.getItem('freellm_ref')
-      if (code) {
-        setReferred(true)
-        setRef(code)
-      }
-    } catch {
-      // storage unavailable
-    }
-  }, [])
 
   if (!loading && user) {
     return <Navigate to={redirectTo} replace />
@@ -56,7 +55,7 @@ export default function Login() {
               Google sign-in failed: {oauthError}. Try again.
             </p>
           )}
-          <GoogleButton next={redirectTo} ref={ref} />
+          <GoogleButton next={redirectTo} referral={referral} />
         </div>
       </Card>
     </div>
