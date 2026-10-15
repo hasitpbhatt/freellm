@@ -36,15 +36,20 @@ export interface OAuthProviderConfig {
   tokenUrl: string
   /** Optional bundled fallback. Prefer the clientIdEnv override below. */
   clientId?: string
-  /** Env var holding the client id. Checked before the bundled fallback. */
-  clientIdEnv?: keyof Bindings
+  /**
+   * Env var(s) holding the client id, checked in order before the bundled
+   * fallback. A list lets a provider prefer a dedicated vault client and
+   * still work off a shared one — google falls back to the sign-in client.
+   */
+  clientIdEnv?: keyof Bindings | ReadonlyArray<keyof Bindings>
   /** Sent as client_secret on code exchange / refresh when present. */
   clientSecret?: string
   /**
-   * Env var holding the client secret, checked before the bundled fallback.
-   * Keeps credentials rotatable without a code change — and out of git.
+   * Env var(s) holding the client secret, checked in order before the bundled
+   * fallback. Keeps credentials rotatable without a code change — and out of
+   * git.
    */
-  clientSecretEnv?: keyof Bindings
+  clientSecretEnv?: keyof Bindings | ReadonlyArray<keyof Bindings>
   scope: string
   /** Extra authorize-query params (codex simplified flow). */
   extraParams?: Record<string, string>
@@ -84,15 +89,31 @@ export interface OAuthProviderConfig {
 const PLACEHOLDER_CLIENT_ID = 'your-client-id-here'
 
 /**
- * The client id to use: env override first, bundled fallback second.
- * Returns undefined when neither is set (or the fallback is the
+ * First non-empty value among the configured env names, in order. Accepts a
+ * single name or a preference list (google: dedicated vault client first,
+ * then the shared sign-in client).
+ */
+function firstEnvValue(
+  env: Bindings,
+  names: keyof Bindings | ReadonlyArray<keyof Bindings> | undefined,
+): string | undefined {
+  if (!names) return undefined
+  const candidates: ReadonlyArray<keyof Bindings> = typeof names === 'string' ? [names] : names
+  for (const name of candidates) {
+    const value = env[name]
+    if (typeof value === 'string' && value) return value
+  }
+  return undefined
+}
+
+/**
+ * The client id to use: env override(s) first, bundled fallback second.
+ * Returns undefined when none is set (or the fallback is the
  * placeholder), which callers treat as "provider not configured".
  */
 export function providerClientId(env: Bindings, config: OAuthProviderConfig): string | undefined {
-  if (config.clientIdEnv) {
-    const override = env[config.clientIdEnv]
-    if (typeof override === 'string' && override) return override
-  }
+  const fromEnv = firstEnvValue(env, config.clientIdEnv)
+  if (fromEnv) return fromEnv
   if (config.clientId && config.clientId !== PLACEHOLDER_CLIENT_ID) return config.clientId
   return undefined
 }
@@ -136,12 +157,16 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderConfig> = {
     flowType: 'authorization_code',
     authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
     tokenUrl: 'https://oauth2.googleapis.com/token',
-    // Credentials live in env (GOOGLE_OAUTH_CLIENT_ID /
-    // GOOGLE_OAUTH_CLIENT_SECRET) so they never ship in git and can be
-    // rotated without a redeploy. Set via `wrangler pages secret put` or
-    // .dev.vars locally. See README's BYOK section.
-    clientIdEnv: 'GOOGLE_OAUTH_CLIENT_ID',
-    clientSecretEnv: 'GOOGLE_OAUTH_CLIENT_SECRET',
+    // Credentials live in env so they never ship in git and can be rotated
+    // without a redeploy. The dedicated vault names win; when they are unset
+    // the flow reuses the Google sign-in client (GOOGLE_CLIENT_ID /
+    // GOOGLE_CLIENT_SECRET), which is the only Google client most installs
+    // have. Set secrets via `wrangler pages secret put` or .dev.vars locally;
+    // see the README's BYOK section. Either way the client must whitelist the
+    // vault callback (/api/oauth/callback/google) and the consent screen must
+    // allow the generative-language scope.
+    clientIdEnv: ['GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_CLIENT_ID'],
+    clientSecretEnv: ['GOOGLE_OAUTH_CLIENT_SECRET', 'GOOGLE_CLIENT_SECRET'],
     scope: 'openid email profile https://www.googleapis.com/auth/generative-language',
     refreshable: true,
     chatReady: true,
@@ -264,15 +289,40 @@ export function isOAuthProvider(providerId: string): boolean {
 }
 
 /**
- * The client secret to send for a provider: env override first (rotation
+ * The client secret to send for a provider: env override(s) first (rotation
  * without redeploy), bundled registry value as fallback.
  */
 export function providerClientSecret(env: Bindings, config: OAuthProviderConfig): string | undefined {
-  if (config.clientSecretEnv) {
-    const override = env[config.clientSecretEnv]
-    if (typeof override === 'string' && override) return override
-  }
+  const fromEnv = firstEnvValue(env, config.clientSecretEnv)
+  if (fromEnv) return fromEnv
   return config.clientSecret
+}
+
+/**
+ * Identity claimed by a provider's id_token (JWT). The payload is read, not
+ * signature-checked: the token came back over TLS from the provider's own
+ * token endpoint in the exchange that just succeeded, and it is no less
+ * trusted than the access_token we store from that same response. It only
+ * names the account for the label and for de-duplication — it authorizes
+ * nothing. `sub` is the stable account id (emails change); `email` is
+ * display-only. Returns null on anything unexpected, in which case the caller
+ * keeps the one-account-per-provider behaviour.
+ */
+export function accountFromIdToken(idToken: string): { id: string; email: string | null } | null {
+  const payload = idToken.split('.')[1]
+  if (!payload) return null
+  try {
+    // base64url -> base64 (+ padding: some runtimes reject an unpadded body).
+    const base64 = payload.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4)
+    const bytes = Uint8Array.from(atob(padded), (ch) => ch.charCodeAt(0))
+    const claims = JSON.parse(new TextDecoder().decode(bytes)) as { sub?: unknown; email?: unknown }
+    if (typeof claims.sub !== 'string' || !claims.sub) return null
+    const email = typeof claims.email === 'string' && claims.email ? claims.email : null
+    return { id: claims.sub, email }
+  } catch {
+    return null
+  }
 }
 
 /**

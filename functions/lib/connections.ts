@@ -57,6 +57,31 @@ export function isExpired(conn: ConnectionRow, at: number = Date.now()): boolean
 }
 
 /**
+ * The statement that retires what a fresh OAuth connect supersedes, batched
+ * with the new row's insert: older live rows for the same account on the same
+ * endpoint (account ids compare via COALESCE, so account-less rows collapse
+ * exactly as they always have), plus one legacy account-less oauth row when
+ * this connect knows its account — a row written before the code-flow
+ * providers captured account ids, which used to retire on every reconnect.
+ * Different accounts are left alone, which is what lets one provider hold two
+ * logins. Rows are never deleted: retired rows stay visible as disabled and
+ * are rejected at chat time, an audit trail rather than a silent delete.
+ */
+export function retireSupersededConnection(
+  db: D1Database,
+  opts: { now: number; userId: string; baseUrl: string; accountId: string | null; keepId: string },
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `UPDATE freellm_connections SET active = 0, updated_at = ?
+       WHERE owner_id = ? AND base_url = ? AND id != ? AND active != 0
+         AND (COALESCE(account_id, '') = COALESCE(?, '')
+              OR (auth_kind = 'oauth' AND account_id IS NULL AND ? IS NOT NULL))`,
+    )
+    .bind(opts.now, opts.userId, opts.baseUrl, opts.keepId, opts.accountId, opts.accountId)
+}
+
+/**
  * Refreshes an expired OAuth credential and persists the rotation. Mirrors the
  * generic (non-Codex) refresh flow; Codex has its own refresh in lib/codex.ts.
  */

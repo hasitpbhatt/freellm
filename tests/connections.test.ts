@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import type { D1Database } from '@cloudflare/workers-types'
 import { createTestDb } from './helpers/db'
 import type { Bindings, ConnectionRow } from '../functions/lib/types'
-import { isExpired, listPersonalConnections, publicConnection, getUsableConnection, connectionSettleModel } from '../functions/lib/connections'
+import { isExpired, listPersonalConnections, publicConnection, getUsableConnection, connectionSettleModel, retireSupersededConnection } from '../functions/lib/connections'
 
 let db: D1Database
 let dispose: () => Promise<void>
@@ -190,4 +190,54 @@ test('connectionSettleModel is a free, zero-cost stand-in keyed by the connectio
   const blank = connectionSettleModel('conn-2', '')
   assert.equal(blank.slug, 'byok')
   assert.equal(blank.label, 'Your connection')
+})
+
+/** Reads a row's `active` flag straight from D1. */
+async function activeFlag(id: string): Promise<number | undefined> {
+  const row = await db.prepare('SELECT active FROM freellm_connections WHERE id = ?').bind(id).first<{ active: number }>()
+  return row?.active
+}
+
+test('retireSupersededConnection: several accounts on one endpoint stay live, a reconnect collapses one', async () => {
+  const owner = 'owner-multi-google'
+  const baseUrl = 'https://generativelanguage.googleapis.com/v1beta/openai'
+  await insertConnection({ id: 'gg-a', owner_id: owner, base_url: baseUrl, auth_kind: 'oauth', account_id: 'acct-A' })
+  // Connecting a second Google account retires nothing: both rows stay live so
+  // the picker can offer either login.
+  await insertConnection({ id: 'gg-b', owner_id: owner, base_url: baseUrl, auth_kind: 'oauth', account_id: 'acct-B' })
+  await retireSupersededConnection(db, { now: Date.now(), userId: owner, baseUrl, accountId: 'acct-B', keepId: 'gg-b' }).run()
+  assert.equal(await activeFlag('gg-a'), 1, 'first account survives a second connect')
+  assert.equal(await activeFlag('gg-b'), 1)
+
+  // Reconnecting account B supersedes only the older row for B.
+  await insertConnection({ id: 'gg-b2', owner_id: owner, base_url: baseUrl, auth_kind: 'oauth', account_id: 'acct-B' })
+  await retireSupersededConnection(db, { now: Date.now(), userId: owner, baseUrl, accountId: 'acct-B', keepId: 'gg-b2' }).run()
+  assert.equal(await activeFlag('gg-b'), 0, 'same account does not stack duplicates')
+  assert.equal(await activeFlag('gg-a'), 1, 'other account still untouched')
+  assert.equal(await activeFlag('gg-b2'), 1)
+})
+
+test('retireSupersededConnection: a connect that knows its account supersedes one legacy account-less oauth row', async () => {
+  const owner = 'owner-legacy-codex'
+  const baseUrl = 'https://chatgpt.com/backend-api/codex/responses'
+  // Written before code-flow providers captured account ids.
+  await insertConnection({ id: 'lg-old', owner_id: owner, base_url: baseUrl, auth_kind: 'oauth', account_id: null })
+  // A hand-added key at the same endpoint is not the same account.
+  await insertConnection({ id: 'lg-byok', owner_id: owner, base_url: baseUrl, auth_kind: 'api_key', account_id: null })
+  // Nobody else's vault is in scope.
+  await insertConnection({ id: 'lg-other', owner_id: 'owner-someone-else', base_url: baseUrl, auth_kind: 'oauth', account_id: null })
+
+  await retireSupersededConnection(db, { now: Date.now(), userId: owner, baseUrl, accountId: 'acct-new', keepId: 'lg-new' }).run()
+  assert.equal(await activeFlag('lg-old'), 0, 'legacy row superseded, so a reconnect still collapses')
+  assert.equal(await activeFlag('lg-byok'), 1, 'pasted key at the same endpoint is a different credential')
+  assert.equal(await activeFlag('lg-other'), 1, 'other owners untouched')
+})
+
+test('retireSupersededConnection: account-less connects still collapse account-less rows', async () => {
+  const owner = 'owner-device-flow'
+  const baseUrl = 'https://example.com/v1'
+  await insertConnection({ id: 'ln-old', owner_id: owner, base_url: baseUrl, auth_kind: 'oauth', account_id: null })
+  await retireSupersededConnection(db, { now: Date.now(), userId: owner, baseUrl, accountId: null, keepId: 'ln-new' }).run()
+  assert.equal(await activeFlag('ln-old'), 0, 'device flows without an account id behave as before')
+  assert.equal(await activeFlag('ln-new'), undefined, 'the statement never inserts')
 })

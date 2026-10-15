@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import type { Bindings } from '../functions/lib/types'
 import {
   OAUTH_PROVIDERS,
+  accountFromIdToken,
   oauthProviderList,
   providerClientId,
   byokExtraHeaders,
@@ -130,4 +131,53 @@ test('byokExtraHeaders: kilo org binding only', () => {
   })
   assert.deepEqual(byokExtraHeaders('https://api.kilo.ai/api/openrouter', null), {})
   assert.deepEqual(byokExtraHeaders('https://api.openai.com/v1', 'org-1'), {})
+})
+
+test('providerClientId: google prefers a dedicated vault client, falls back to the sign-in client', () => {
+  const google = getOAuthProviderConfig('google')!
+  // Production shape: only the sign-in names are set — the vault must still work,
+  // or Google shows up as "not configured" with no way to connect.
+  const signInOnly = { GOOGLE_CLIENT_ID: 'sign-in-client' } as unknown as Bindings
+  assert.equal(providerClientId(signInOnly, google), 'sign-in-client')
+  assert.equal(isConfigured(signInOnly, google), true)
+  // An explicitly configured vault client wins over the shared one.
+  const both = { GOOGLE_OAUTH_CLIENT_ID: 'vault-client', GOOGLE_CLIENT_ID: 'sign-in-client' } as unknown as Bindings
+  assert.equal(providerClientId(both, google), 'vault-client')
+  // An empty string never shadows the next name in the preference list.
+  const emptyFirst = { GOOGLE_OAUTH_CLIENT_ID: '', GOOGLE_CLIENT_ID: 'sign-in-client' } as unknown as Bindings
+  assert.equal(providerClientId(emptyFirst, google), 'sign-in-client')
+  assert.equal(providerClientId({} as unknown as Bindings, google), undefined)
+  // The secret follows the same order.
+  assert.equal(providerClientSecret({ GOOGLE_CLIENT_SECRET: 'sign-in-secret' } as unknown as Bindings, google), 'sign-in-secret')
+  const secrets = { GOOGLE_OAUTH_CLIENT_SECRET: 'vault-secret', GOOGLE_CLIENT_SECRET: 'sign-in-secret' } as unknown as Bindings
+  assert.equal(providerClientSecret(secrets, google), 'vault-secret')
+  // Other providers keep a single env name plus their bundled fallback.
+  const codex = getOAuthProviderConfig('codex')!
+  assert.equal(providerClientId({} as unknown as Bindings, codex), codex.clientId)
+  assert.equal(providerClientId({ GOOGLE_CLIENT_ID: 'sign-in-client' } as unknown as Bindings, codex), codex.clientId)
+})
+
+/** base64url id_token body, unpadded like the real thing. */
+function idTokenBody(claims: Record<string, unknown>): string {
+  const bytes = new TextEncoder().encode(JSON.stringify(claims))
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+test('accountFromIdToken: names the account so two accounts for one provider can coexist', () => {
+  const body = idTokenBody({ sub: '104900000000000000001', email: 'hasit@example.com', name: 'Hasit' })
+  assert.deepEqual(accountFromIdToken(`header.${body}.sig`), { id: '104900000000000000001', email: 'hasit@example.com' })
+  // Emails are shown in the vault label, so UTF-8 has to survive the round trip.
+  const unicode = idTokenBody({ sub: 'u-2', email: 'zoë@example.com' })
+  assert.deepEqual(accountFromIdToken(`header.${unicode}.sig`), { id: 'u-2', email: 'zoë@example.com' })
+  // No sub → no identity: the callback falls back to one-account-per-provider.
+  assert.equal(accountFromIdToken(`header.${idTokenBody({ email: 'x@y.z' })}.sig`), null)
+  // A sub alone still identifies the account.
+  assert.deepEqual(accountFromIdToken(`header.${idTokenBody({ sub: 'abc' })}.sig`), { id: 'abc', email: null })
+  // Garbage is never fatal — a provider answering oddly must not break the connect.
+  assert.equal(accountFromIdToken('not-a-jwt'), null)
+  assert.equal(accountFromIdToken(`header.${'!'.repeat(12)}.sig`), null)
+  assert.equal(accountFromIdToken('header.@@@.sig'), null)
+  assert.equal(accountFromIdToken(''), null)
 })

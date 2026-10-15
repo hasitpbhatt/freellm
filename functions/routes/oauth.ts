@@ -6,7 +6,7 @@
 
 import { Hono, type Context } from 'hono'
 import { requireAuth } from '../lib/middleware'
-import { getOAuthProviderConfig, isOAuthProvider, OAUTH_PROVIDERS, oauthProviderList, providerClientId, providerClientSecret, providerIdForVaultRow, type OAuthProviderConfig } from '../lib/oauth'
+import { accountFromIdToken, getOAuthProviderConfig, isOAuthProvider, OAUTH_PROVIDERS, oauthProviderList, providerClientId, providerClientSecret, providerIdForVaultRow, type OAuthProviderConfig } from '../lib/oauth'
 import {
   fetchQoderUserInfo,
   initiateQoderDeviceFlow,
@@ -15,6 +15,7 @@ import {
   requestKiloDeviceCode,
 } from '../lib/oauth-device'
 import { decryptSecret, encryptSecret, newId } from '../lib/crypto'
+import { retireSupersededConnection } from '../lib/connections'
 import type { Bindings, Variables, ConnectionRow } from '../lib/types'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -106,6 +107,8 @@ interface TokenResponse {
   refresh_token?: string
   expires_in?: number
   token_type?: string
+  /** Present for openid providers (google, antigravity, codex). */
+  id_token?: string
 }
 
 /**
@@ -142,12 +145,10 @@ async function saveOAuthVaultKey(
   const suffix = opts.labelSuffix?.trim() ? ` (${opts.labelSuffix.trim().slice(0, 40)})` : ''
   const id = newId()
   const timestamp = Date.now()
-  // Reconnecting an account must not stack live duplicates: older rows for
-  // the same account (same endpoint + account binding) retire to inactive in
-  // the same batch. Retired rows stay visible as disabled and are rejected
-  // at chat time — an audit trail, not a silent delete. NULL account ids
-  // compare via COALESCE so two account-less rows for one endpoint still
-  // collapse; different org bindings (multi-account Kilo) never touch.
+  // Reconnecting an account must not stack live duplicates: retireSuperseded
+  // Connection() decides which older rows this connect supersedes (same
+  // account, or one legacy account-less row) and leaves different accounts —
+  // a second Google login, a Kilo org binding — untouched.
   await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO freellm_connections (id, owner_id, scope, provider, label, base_url, upstream_model,
@@ -177,11 +178,13 @@ async function saveOAuthVaultKey(
       timestamp,
       timestamp,
     ),
-    env.DB.prepare(
-      `UPDATE freellm_connections SET active = 0, updated_at = ?
-       WHERE owner_id = ? AND base_url = ? AND COALESCE(account_id, '') = COALESCE(?, '')
-         AND id != ? AND active != 0`,
-    ).bind(timestamp, userId, fill.baseUrl, opts.accountId ?? null, id),
+    retireSupersededConnection(env.DB, {
+      now: timestamp,
+      userId,
+      baseUrl: fill.baseUrl,
+      accountId: opts.accountId ?? null,
+      keepId: id,
+    }),
   ])
   return id
 }
@@ -469,6 +472,13 @@ app.get('/api/oauth/callback/:provider', async (c) => {
       return c.html(`<h1>Token exchange failed</h1><p>The provider answered without an access token — try connecting again.</p>`, 502)
     }
 
+    // Providers that answer with an id_token (google, antigravity, codex) name
+    // the signed-in account there. Capture it: the vault retires older live
+    // rows per (base_url, account_id), so without an account id a second
+    // Google account would silently disable the first, and neither row would
+    // say which account it holds.
+    const account = tokens.id_token ? accountFromIdToken(tokens.id_token) : null
+
     // Store in the user's vault, pre-filled from the registry
     await saveOAuthVaultKey(c.env, {
       userId: pkceData.userId,
@@ -476,6 +486,8 @@ app.get('/api/oauth/callback/:provider', async (c) => {
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token,
       expiresAt: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null,
+      accountId: account?.id ?? null,
+      labelSuffix: account?.email ?? null,
     })
 
     // Redirect back to keys page with success

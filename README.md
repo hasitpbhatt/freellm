@@ -49,7 +49,8 @@ npm run db:create                # creates the D1 db; paste the id into wrangler
 npx wrangler kv namespace create SESSIONS   # paste the id into wrangler.toml
 npm run db:migrate:remote
 npx wrangler pages secret put ENCRYPTION_KEY
-# ... GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, POOLSIDE_API_KEY, ...
+# ... GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET (sign-in; the BYOK Google provider
+# reuses them unless dedicated GOOGLE_OAUTH_* secrets exist) ...
 npm run deploy                   # build + wrangler pages deploy dist
 ```
 
@@ -168,10 +169,17 @@ economy, the **M5 arena**, and the **M6 BYOK vault**.
   rest, validated on add). Chatting through your key is free and unmetered
   (`key_mode=byok` on `/api/chat`). OAuth accounts (Codex, Google, Antigravity,
   Grok Build, Kilo, Qoder) connect with one click — endpoint, model, and tokens
-  fill in automatically. The bundled third-party OAuth client secrets can be
-  overridden without redeploying code via `GOOGLE_OAUTH_CLIENT_SECRET` and
-  `ANTIGRAVITY_OAUTH_CLIENT_SECRET` (wrangler secrets / `.dev.vars`). Admins can view/reveal vault keys for auditability
-  (`/admin/vault`).
+  fill in automatically. Google reuses the sign-in client
+  (`GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`) unless a dedicated
+  `GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET` is set; Antigravity
+  takes `ANTIGRAVITY_OAUTH_CLIENT_ID`/`ANTIGRAVITY_OAUTH_CLIENT_SECRET`
+  (wrangler secrets / `.dev.vars` — no redeploy, no literals in git). One
+  provider can hold several accounts: each row keeps its own `account_id`
+  (Google/ChatGPT account `sub`) and is labelled with that account's email,
+  so multiple Google logins coexist instead of retiring one another. Pool
+  credentials (Poolside/Agnes/Atria/…) are not env vars — they live encrypted
+  in D1 (`freellm_upstream_keys`) and are managed from `/admin`. Admins can
+  view/reveal vault keys for auditability (`/admin/vault`).
 - **Support**: Need help? Email us at `help@freellm.hasit.in`. We usually respond within 2 hours.
 - **OpenAI-compatible API** (`/v1`, docs at `/developers`): `GET /v1/models` and
   `POST /v1/chat/completions` speak the OpenAI wire format, so the OpenAI SDKs and
