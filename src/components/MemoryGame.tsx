@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, ApiError } from '../lib/api'
 import { Button, Card, CardHeader } from '../components/ui'
-import { useAuth } from '../lib/auth'
+import { useAuth } from '../lib/useAuth'
 
 type Phase =
   | { name: 'idle' }
@@ -40,6 +40,7 @@ export default function MemoryGame() {
   }, [])
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- memory-game status load on mount
     void load()
   }, [load])
 

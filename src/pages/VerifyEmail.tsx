@@ -1,25 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../lib/api'
-import { useAuth } from '../lib/auth'
+import { useAuth } from '../lib/useAuth'
 import { Card } from '../components/ui'
 
 export default function VerifyEmail() {
   const [searchParams] = useSearchParams()
   const token = searchParams.get('token') ?? ''
   const { refresh } = useAuth()
-  const [status, setStatus] = useState<'working' | 'ok' | 'error'>('working')
-  const [message, setMessage] = useState('')
+  const [status, setStatus] = useState<'working' | 'ok' | 'error'>(token ? 'working' : 'error')
+  const [message, setMessage] = useState(token ? '' : 'No verification token in the link.')
   const attempted = useRef(false)
 
   useEffect(() => {
     if (attempted.current) return
     attempted.current = true
-    if (!token) {
-      setStatus('error')
-      setMessage('No verification token in the link.')
-      return
-    }
+    if (!token) return
     api
       .post<{ ok: boolean }>('/auth/verify-email', { token })
       .then(async () => {

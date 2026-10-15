@@ -25,7 +25,7 @@
 
 import { decryptSecret, encryptSecret } from './crypto'
 import { sanitizeUsage, type Usage } from './metering'
-import type { ApiKeyRow } from './types'
+import type { ConnectionRow } from './types'
 import { assertSafeBaseUrl } from './validate'
 
 /** Identity the Codex backend expects (matches the official CLI family). */
@@ -268,7 +268,7 @@ export async function refreshCodexToken(refreshToken: string): Promise<CodexRefr
 
 export async function openByokCodexCall(
   env: { DB: D1Database; ENCRYPTION_KEY: string },
-  row: ApiKeyRow,
+  row: ConnectionRow,
   messages: CodexMessage[],
   opts: { timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<Response> {
@@ -281,8 +281,8 @@ export async function openByokCodexCall(
     let sealedRefresh = { ciphertext: refreshCiphertext, iv: refreshIv }
     if (rotated.refreshToken) sealedRefresh = await encryptSecret(rotated.refreshToken, env.ENCRYPTION_KEY)
     await env.DB.prepare(
-      `UPDATE freellm_api_keys SET key_ciphertext = ?, key_iv = ?, refresh_ciphertext = ?,
-        refresh_iv = ?, expires_at = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
+      `UPDATE freellm_connections SET key_ciphertext = ?, key_iv = ?, refresh_ciphertext = ?,
+        refresh_iv = ?, expires_at = ?, updated_at = ? WHERE id = ?`,
     )
       .bind(
         sealedAccess.ciphertext,
@@ -292,7 +292,6 @@ export async function openByokCodexCall(
         rotated.expiresAt,
         Date.now(),
         row.id,
-        row.user_id,
       )
       .run()
     accessToken = rotated.accessToken

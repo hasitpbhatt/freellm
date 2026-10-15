@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
-import { useAuth } from '../lib/auth'
+import { useAuth } from '../lib/useAuth'
 import { Button, Card, CardHeader } from '../components/ui'
 import { formatDelta } from '../lib/format'
 
@@ -52,6 +52,7 @@ export default function Dashboard() {
   // Load data on user change - only run once when user changes
   useEffect(() => {
     if (user && !loading) {
+      // oxlint-disable-next-line react/set-state-in-effect -- dashboard data load when the session resolves
       void loadData()
     }
   }, [user, loading, loadData])

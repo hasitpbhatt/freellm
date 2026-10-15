@@ -14,11 +14,10 @@
 import { Hono } from 'hono'
 import { requireAuth } from '../lib/middleware'
 import { estimateReserve, computeSpendable, placeHold, settleRequest, type Usage } from '../lib/metering'
-import { callProvider, loadAlias, openCall, recordOutcome, resolveCandidates, type UpstreamConfig, type ModelProviderRow, type UpstreamProviderWithModel } from '../lib/providers' // up_labels is unused and can be removed in future
-import { openByokCodexCall } from '../lib/codex'
+import { loadAlias, openCall, recordOutcome, resolveCandidates, type ModelProviderRow, type UpstreamProviderWithModel } from '../lib/providers' // up_labels is unused and can be removed in future
 import { canAccessModel, tierGatedMessage } from '../lib/tiers'
-import { decryptSecret } from '../lib/crypto'
-import type { Bindings, ApiKeyRow, UpstreamKeyRow, Variables } from '../lib/types'
+import { dialConnection, connectionSettleModel, getUsableConnection } from '../lib/connections'
+import type { Bindings, ModelRow, UpstreamKeyRow, Variables } from '../lib/types'
 
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -53,14 +52,22 @@ function usageFromChunk(chunk: Record<string, unknown>): { input: number; output
 app.post('/api/chat', requireAuth, async (c) => {
   const user = c.get('user')
   const payload = await c.req
-    .json<{ model?: unknown; messages?: unknown; request_id?: unknown; max_tokens?: unknown; key_mode?: unknown; key_id?: unknown; required_capabilities?: unknown }>()
+    .json<{ model?: unknown; messages?: unknown; request_id?: unknown; max_tokens?: unknown; key_mode?: unknown; key_id?: unknown; connection_id?: unknown; required_capabilities?: unknown }>()
     .catch(() => null)
 
   const slug = typeof payload?.model === 'string' ? payload.model.trim() : ''
   const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
   const rawMessages = Array.isArray(payload?.messages) ? payload.messages : []
   const keyMode = payload?.key_mode === 'byok' ? 'byok' : 'pool'
-  const keyId = typeof payload?.key_id === 'string' ? payload.key_id : ''
+  // A connection call dials one of the caller's own stored credentials. New
+  // clients send connection_id; key_mode=byok + key_id stays as an alias.
+  const connectionId =
+    typeof payload?.connection_id === 'string' && payload.connection_id
+      ? payload.connection_id
+      : keyMode === 'byok' && typeof payload?.key_id === 'string'
+        ? payload.key_id
+        : ''
+  const isConnectionCall = connectionId !== ''
   // required_capabilities: array of capability strings (e.g., ["tools", "vision"])
   const requiredCapabilities = Array.isArray(payload?.required_capabilities)
     ? payload.required_capabilities.filter((c): c is string => typeof c === 'string')
@@ -76,7 +83,9 @@ app.post('/api/chat', requireAuth, async (c) => {
     )
     .map((m) => ({ role: m.role, content: m.content }))
 
-  if (!slug || messages.length === 0 || !/^[\w.-]{2,48}$/.test(requestId)) {
+  // A connection call does not need a Pool alias: its model comes from the
+  // stored credential. Only the Pool path requires a model slug.
+  if ((!slug && !isConnectionCall) || messages.length === 0 || !/^[\w.-]{2,48}$/.test(requestId)) {
     return c.json({ error: 'invalid_input', message: 'model, messages, and a request_id are required.' }, 400)
   }
   if (messages.some((m) => m.content.length > 100_000)) {
@@ -91,7 +100,7 @@ app.post('/api/chat', requireAuth, async (c) => {
     )
       .bind(requestId, user.id)
       .first<{ credits_charged: number; source: string; status: string }>(),
-    loadAlias(c.env, slug),
+    isConnectionCall ? Promise.resolve(null) : loadAlias(c.env, slug),
   ])
   if (priorEvent) {
     // Failed requests cost nothing — allow the same request_id to retry by
@@ -114,27 +123,31 @@ app.post('/api/chat', requireAuth, async (c) => {
     }
   }
 
-  if (!alias || alias.providers.length === 0) {
+  if (!isConnectionCall && (!alias || alias.providers.length === 0)) {
     return c.json({ error: 'model_unavailable', message: `"${slug}" is not in The Pool right now.` }, 404)
   }
 
   // Tier gate runs before any reserve/hold so a denied caller is never charged.
-  if (!canAccessModel(user, alias.model)) {
+  if (!isConnectionCall && alias && !canAccessModel(user, alias.model)) {
     return c.json(
       { error: 'upgrade_required', message: tierGatedMessage(alias.model), required_tier: alias.model.access_tier },
       403,
     )
   }
 
+  // The metering/usage attribution row. A Pool call uses its real alias; a
+  // connection call synthesises a free, zero-cost stand-in.
+  const settleModel: ModelRow = alias?.model ?? connectionSettleModel(connectionId, slug)
+
   const maxTokens = Math.min(
     typeof payload?.max_tokens === 'number' && payload.max_tokens > 0
       ? Math.floor(payload.max_tokens)
-      : alias.model.max_output_tokens,
-    alias.model.max_output_tokens,
+      : settleModel.max_output_tokens,
+    settleModel.max_output_tokens,
   )
 
   // ---- Step 1: Acquire the upstream call (BYOK or Pool) ----
-  let call: Awaited<ReturnType<typeof callProvider>> | null = null
+  let call: { response: Response } | null = null
   let response: Response | null = null
   let providerLabel = ''
   let startedAt = Date.now()
@@ -147,78 +160,63 @@ app.post('/api/chat', requireAuth, async (c) => {
   // recorded against the same key that was used.
   let selectedKey: UpstreamKeyRow | null = null
 
-  if (keyMode === 'byok') {
-    // --- BYOK path: single configured key, free, no reserve/hold ---
-    if (!keyId) {
-      return c.json({ error: 'invalid_input', message: 'key_id is required when key_mode=byok.' }, 400)
+  if (isConnectionCall) {
+    // --- Connection path: the caller's own stored credential, free, no reserve/hold ---
+    const conn = await getUsableConnection(c.env, user.id, connectionId)
+    if (!conn) {
+      return c.json({ error: 'not_found', message: 'Connection not found or access denied.' }, 404)
     }
-    const row = await c.env.DB.prepare('SELECT * FROM freellm_api_keys WHERE id = ? AND user_id = ?')
-      .bind(keyId, user.id)
-      .first<ApiKeyRow>()
-    if (!row) {
-      return c.json({ error: 'not_found', message: 'Key not found or access denied.' }, 404)
-    }
-    if (row.active === 0) {
-      return c.json({ error: 'key_disabled', message: 'This key is disabled.' }, 403)
-    }
-    if ((row.auth_kind ?? 'api_key') === 'oauth' && row.expires_at != null && row.expires_at <= Date.now()) {
-      return c.json({ error: 'key_expired', message: 'This OAuth token has expired — replace it on /keys before chatting.' }, 400)
-    }
-
-    const encryption = c.env.ENCRYPTION_KEY
-    if (!encryption) {
-      return c.json({ error: 'not_configured', message: 'ENCRYPTION_KEY is not set on this deployment.' }, 500)
-    }
-    const apiKey = await decryptSecret(row.key_ciphertext, row.key_iv, encryption)
 
     startedAt = Date.now()
     isByok = true
-    providerLabel = row.label
+    providerLabel = conn.label
 
     try {
-      const candidate: UpstreamConfig = {
-        id: `byok:${row.id}`,
-        base_url: row.base_url,
-        upstream_model: row.upstream_model,
-      }
-      if ((row.protocol ?? 'openai') === 'codex') {
-        // Responses API via the adapter: the body comes back already shaped
-        // as OpenAI Chat Completions SSE, so everything below (passthrough,
-        // usage parse, settle) works unchanged.
-        const codexResponse = await openByokCodexCall(c.env, row, messages)
-        call = { response: codexResponse, provider: candidate }
-        response = codexResponse
-      } else {
-        call = await callProvider(candidate, apiKey, messages, { maxTokens, stream: true })
-        response = call.response
-      }
-      if (!call.response.ok || !call.response.body) {
-        const errText = (await call.response.text().catch(() => '')).slice(0, 300)
-        await settleRequest(c.env.DB, {
-          userId: user.id,
-          requestId,
-          model: alias.model,
-          providerLabel: row.label,
-          settlement: { kind: 'failed', reason: `${call.response.status} ${errText}` },
-          latencyMs: Date.now() - startedAt,
-          free: true,
-        })
-        return c.json({ error: 'upstream_failed', message: `Your key (${row.label}) returned ${call.response.status}: ${errText}` }, 502)
-      }
+      response = await dialConnection(c, conn, {
+        messages,
+        upstreamModel: slug || conn.upstream_model,
+        maxTokens,
+        stream: true,
+      })
     } catch (err) {
       await settleRequest(c.env.DB, {
         userId: user.id,
         requestId,
-        model: alias.model,
-        providerLabel: row.label,
+        model: settleModel,
+        providerLabel: conn.label,
         settlement: { kind: 'failed', reason: err instanceof Error ? err.message : 'network error' },
         latencyMs: Date.now() - startedAt,
         free: true,
       })
-      return c.json({ error: 'upstream_failed', message: `Your key (${row.label}) is unreachable: ${err instanceof Error ? err.message : 'network error'}` }, 502)
+      return c.json(
+        { error: 'upstream_failed', message: `Your connection (${conn.label}) is unreachable: ${err instanceof Error ? err.message : 'network error'}` },
+        502,
+      )
     }
+
+    if (!response.ok || !response.body) {
+      const errText = (await response.text().catch(() => '')).slice(0, 300)
+      await settleRequest(c.env.DB, {
+        userId: user.id,
+        requestId,
+        model: settleModel,
+        providerLabel: conn.label,
+        settlement: { kind: 'failed', reason: `${response.status} ${errText}` },
+        latencyMs: Date.now() - startedAt,
+        free: true,
+      })
+      return c.json(
+        { error: 'upstream_failed', message: `Your connection (${conn.label}) returned ${response.status}: ${errText}` },
+        502,
+      )
+    }
+
+    call = { response }
   } else {
     // --- Pool path: reserve, candidates, failover ---
+    if (!alias) {
+      return c.json({ error: 'model_unavailable', message: `"${slug}" is not in The Pool right now.` }, 404)
+    }
     const reserve = estimateReserve(messages, maxTokens)
     const spendable = await computeSpendable(c.env.DB, user.id, user.balance_credits, alias.model.id, requestId)
     // Scoped-only aliases spend this alias's grant balance only — global
@@ -370,7 +368,7 @@ app.post('/api/chat', requireAuth, async (c) => {
         const settlePromise = settleRequest(c.env.DB, {
           userId: user.id,
           requestId,
-          model: alias.model,
+          model: settleModel,
           providerLabel,
           settlement: kind === 'completed' ? { kind, usage } : { kind, reason },
           latencyMs: Date.now() - startedAt,
@@ -451,7 +449,7 @@ app.post('/api/chat', requireAuth, async (c) => {
             credits_charged: result?.creditsCharged ?? null,
             balance: result?.balance ?? { global: user.balance_credits, scoped: 0 },
             status: result ? status : 'unknown',
-            model: alias.model.slug,
+            model: settleModel.slug,
             provider: providerLabel,
             latency_ms: Date.now() - startedAt,
             request_id: requestId,
@@ -562,7 +560,7 @@ app.get('/api/models', async (c) => {
     }
   }
 
-  const models = Array.from(bySlug.values()).map(({ statuses, up_labels, ...model }) => ({
+  const models = Array.from(bySlug.values()).map(({ statuses, up_labels: _up_labels, ...model }) => ({
     ...model,
     provider_count: statuses.length,
     status: statuses.includes('live')

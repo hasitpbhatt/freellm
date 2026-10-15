@@ -23,7 +23,8 @@ import { decryptSecret, decryptForDisplay, encryptSecret, maskSecret, newId } fr
 import { pingProvider } from '../lib/ping'
 import { CODEX_DEFAULT_ENDPOINT, validateAccountId, validateAuthKind, validateBaseUrl, validateBearer, validateExpiryTimestamp, validateOAuthToken, validateProtocol, validateRefreshToken, validateUpstreamModel } from '../lib/validate'
 import { pingCodex } from '../lib/codex'
-import type { Bindings, ApiKeyRow, Variables } from '../lib/types'
+import { listPersonalConnections, publicConnection } from '../lib/connections'
+import type { Bindings, ConnectionRow, Variables } from '../lib/types'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -70,31 +71,14 @@ function requireEncryptionKey(env: Bindings): string | null {
   return env.ENCRYPTION_KEY || null
 }
 
-async function maskRow(row: ApiKeyRow, encryption: string): Promise<string> {
+async function maskRow(row: ConnectionRow, encryption: string): Promise<string> {
   return decryptForDisplay(row, encryption)
 }
 
-function publicKey(row: ApiKeyRow, keyMasked: string) {
-  return {
-    id: row.id,
-    label: row.label,
-    base_url: row.base_url,
-    upstream_model: row.upstream_model,
-    key_masked: keyMasked,
-    // Pre-migration rows have no auth columns; treat them as static bearers.
-    auth_kind: (row.auth_kind ?? 'api_key') as 'api_key' | 'oauth',
-    protocol: (row.protocol ?? 'openai') as 'openai' | 'codex',
-    account_id: row.account_id ?? null,
-    has_refresh_token: row.refresh_ciphertext != null,
-    expires_at: row.expires_at ?? null,
-    expired: row.auth_kind === 'oauth' && row.expires_at != null && row.expires_at <= now(),
-    status: row.active === 0 ? ('disabled' as const) : row.status,
-    last_checked_at: row.last_checked_at,
-    last_error: row.last_error,
-    avg_latency_ms: row.avg_latency_ms,
-    messages_served: row.messages_served,
-    created_at: row.created_at,
-  }
+// The vault list reuses the one canonical client-safe shape (lib/connections)
+// and only adds the masked secret, which the shared helper intentionally omits.
+function publicKey(row: ConnectionRow, keyMasked: string) {
+  return { ...publicConnection(row), key_masked: keyMasked }
 }
 
 // =====================================================================
@@ -105,14 +89,12 @@ app.use('/api/keys/*', requireAuth)
 
 app.get('/api/keys', async (c) => {
   const user = c.get('user')
-  const rows = await c.env.DB.prepare('SELECT * FROM freellm_api_keys WHERE user_id = ? ORDER BY created_at DESC')
-    .bind(user.id)
-    .all<ApiKeyRow>()
+  const rows = await listPersonalConnections(c.env, user.id)
 
   const encryption = requireEncryptionKey(c.env)
   const keys = encryption
-    ? await Promise.all(rows.results.map(async (row) => publicKey(row, await maskRow(row, encryption))))
-    : rows.results.map((row) => publicKey(row, '••••'))
+    ? await Promise.all(rows.map(async (row) => publicKey(row, await maskRow(row, encryption))))
+    : rows.map((row) => publicKey(row, '••••'))
 
   return c.json({ keys })
 })
@@ -223,12 +205,12 @@ app.post('/api/keys', async (c) => {
     const id = newId()
     const timestamp = now()
     await c.env.DB.prepare(
-      `INSERT INTO freellm_api_keys (id, user_id, provider, label, base_url, upstream_model,
+      `INSERT INTO freellm_connections (id, owner_id, scope, provider, label, base_url, upstream_model,
                              key_ciphertext, key_iv, auth_kind, protocol, account_id,
                              refresh_ciphertext, refresh_iv, expires_at,
                              status, last_checked_at, last_error,
                              avg_latency_ms, active, messages_served, created_at, updated_at)
-         VALUES (?, ?, 'byok', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`,
+         VALUES (?, ?, 'personal', 'byok', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`,
     )
       .bind(
         id,
@@ -286,9 +268,11 @@ app.post('/api/keys/:id/test', async (c) => {
   }
 
   const id = c.req.param('id')
-  const row = await c.env.DB.prepare('SELECT * FROM freellm_api_keys WHERE id = ? AND user_id = ?')
+  const row = await c.env.DB.prepare(
+    "SELECT * FROM freellm_connections WHERE id = ? AND owner_id = ? AND scope = 'personal'",
+  )
     .bind(id, user.id)
-    .first<ApiKeyRow>()
+    .first<ConnectionRow>()
   if (!row) return c.json({ error: 'not_found', message: 'Key not found.' }, 404)
   if ((row.auth_kind ?? 'api_key') === 'oauth' && row.expires_at != null && row.expires_at <= now()) {
     return c.json({ error: 'key_expired', message: 'This OAuth token has expired — replace it before using.' }, 400)
@@ -305,7 +289,7 @@ app.post('/api/keys/:id/test', async (c) => {
 
   const timestamp = now()
   await c.env.DB.prepare(
-    `UPDATE freellm_api_keys
+    `UPDATE freellm_connections
      SET status = ?, last_checked_at = ?, last_error = ?,
          avg_latency_ms = CASE WHEN avg_latency_ms IS NULL THEN ?
                                ELSE CAST(avg_latency_ms * ? + ? * ? AS INTEGER) END,
@@ -331,11 +315,13 @@ app.post('/api/keys/:id/test', async (c) => {
 app.delete('/api/keys/:id', async (c) => {
   const user = c.get('user')
   const id = c.req.param('id')
-  const row = await c.env.DB.prepare('SELECT id FROM freellm_api_keys WHERE id = ? AND user_id = ?')
+  const row = await c.env.DB.prepare(
+    "SELECT id FROM freellm_connections WHERE id = ? AND owner_id = ? AND scope = 'personal'",
+  )
     .bind(id, user.id)
     .first()
   if (!row) return c.json({ error: 'not_found', message: 'Key not found.' }, 404)
-  await c.env.DB.prepare('DELETE FROM freellm_api_keys WHERE id = ?').bind(id).run()
+  await c.env.DB.prepare('DELETE FROM freellm_connections WHERE id = ?').bind(id).run()
   return c.json({ ok: true })
 })
 
@@ -348,9 +334,9 @@ app.use('/api/admin/providers/:pid/reveal', requireAuth, requireAdmin)
 
 app.get('/api/admin/vault', async (c) => {
   const rows = await c.env.DB.prepare(
-    `SELECT k.*, u.username, u.email FROM freellm_api_keys k JOIN freellm_users u ON u.id = k.user_id
+    `SELECT k.*, u.username, u.email FROM freellm_connections k JOIN freellm_users u ON u.id = k.owner_id
      ORDER BY k.created_at DESC LIMIT 200`,
-  ).all<ApiKeyRow & { username: string; email: string }>()
+  ).all<ConnectionRow & { username: string; email: string }>()
 
   const encryption = requireEncryptionKey(c.env)
   const keys = encryption
@@ -368,7 +354,7 @@ app.get('/api/admin/vault', async (c) => {
 
 app.post('/api/admin/vault/:id/reveal', async (c) => {
   const id = c.req.param('id')
-  const row = await c.env.DB.prepare('SELECT * FROM freellm_api_keys WHERE id = ?').bind(id).first<ApiKeyRow>()
+  const row = await c.env.DB.prepare('SELECT * FROM freellm_connections WHERE id = ?').bind(id).first<ConnectionRow>()
   if (!row) return c.json({ error: 'not_found', message: 'Key not found.' }, 404)
   // OAuth access tokens belong to the user's own provider account and are
   // never revealable — not even to the operator. Refresh tokens are never

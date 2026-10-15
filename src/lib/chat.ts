@@ -27,7 +27,7 @@ interface ErrorBody {
  * upstream `data: {...}` chunks are decoded for delta content.
  */
 export async function streamChat(
-  payload: { model: string; messages: { role: string; content: string }[]; request_id: string; max_tokens?: number; key_mode?: 'byok'; key_id?: string },
+  payload: { model: string; messages: { role: string; content: string }[]; request_id: string; max_tokens?: number; connection_id?: string },
   handlers: StreamHandlers,
   signal?: AbortSignal,
 ): Promise<StreamResult> {

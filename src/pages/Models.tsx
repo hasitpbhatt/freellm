@@ -12,7 +12,7 @@ const statusDot: Record<string, string> = {
   unknown: 'bg-muted',
 }
 
-import { useAuth } from '../lib/auth'
+import { useAuth } from '../lib/useAuth'
 
 const TIER_RANK: Record<string, number> = { free: 0, pro: 1, enterprise: 2 }
 
@@ -33,6 +33,7 @@ export default function Models() {
   }
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- pool catalog load on mount
     load()
   }, [])
 

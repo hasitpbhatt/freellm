@@ -16,6 +16,7 @@
 
 import { newId } from './crypto'
 import type { ModelRow } from './types'
+import { expireAdminGrants } from './credit-grants'
 import { expirePromoCredits } from './promo-expiry'
 
 const HOLD_STALE_MS = 10 * 60 * 1000
@@ -30,10 +31,11 @@ export async function computeSpendable(
   modelId: string,
   excludeRequestId?: string,
 ): Promise<Spendable> {
-  // Lazy promo-expiry sweep: claw back any expired promo grants before the
-  // balance is read, so a hoarded expiring grant can't be spent past its
-  // deadline. Best-effort — a race just defers to the next sweep.
+  // Lazy expiry sweeps: claw back expired promo grants and timed-out admin
+  // grants before the balance is read, so hoarded expiring credits can't be
+  // spent past their deadline. Best-effort — a race just defers to the next sweep.
   await expirePromoCredits(db, userId).catch(() => {})
+  await expireAdminGrants(db, userId).catch(() => {})
   // The passed-in globalBalance is the session-cached value, now potentially
   // stale after the sweep clawed credits back. Re-read the authoritative
   // balance so the reserve gate sees the post-expiry figure.

@@ -148,10 +148,6 @@ test('migration 0025: upstream key pool canonicalization preserves configs and k
      VALUES (?, 'm1', 'prov-b', 'model-x', 1, 1, 3, ?, ?)`,
   ).bind('mp-b', now, now).run()
 
-  const mpBefore = await db.prepare('SELECT * FROM freellm_model_providers ORDER BY id').all()
-  const upBefore = await db.prepare('SELECT * FROM freellm_upstream_providers ORDER BY id').all()
-  // freellm_upstream_keys doesn't exist until 0025 runs
-
   // Apply 0025 (key pool + canonicalization)
   await apply(ordered(['0025']))
 
@@ -239,6 +235,50 @@ test('migration 0026: promo expiry ledger rebuild preserves ledger rows', async 
   assert.equal(newRow.reason, 'promo_expiry')
 })
 
+test('migration 0032: admin grants table lands and grant_expiry ledger rebuild preserves rows', async () => {
+  db = await freshDb()
+  // Apply up to 0031
+  await apply(ordered(['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008', '0009', '0010',
+                        '0011', '0012', '0013', '0014', '0015', '0016', '0017', '0018', '0019', '0020',
+                        '0021', '0022', '0023', '0024', '0025', '0026', '0027', '0028', '0029', '0030',
+                        '0031']))
+
+  const now = Date.now()
+  const userId = 'user_mig32'
+
+  await db.prepare(
+    `INSERT INTO freellm_users (id, email, username, password_hash, referral_code, balance_credits, role, email_verified, created_at, updated_at)
+     VALUES (?, 'u32@test.com', 'usermig32', NULL, 'code32', 0, 'user', 1, ?, ?)`,
+  ).bind(userId, now, now).run()
+
+  await db.prepare(
+    `INSERT INTO freellm_credit_ledger (id, user_id, delta, reason, meta, created_at)
+     VALUES (?, ?, 5000, 'promo_expiry', '{}', ?)`,
+  ).bind('l32a', userId, now).run()
+
+  // Apply 0032 (admin grants table + ledger rebuild with grant_expiry reason)
+  await apply(ordered(['0032']))
+
+  const ledgerAfter = await db.prepare('SELECT * FROM freellm_credit_ledger WHERE user_id = ? ORDER BY created_at').bind(userId).all()
+  assert.equal(ledgerAfter.results.length, 1, 'ledger row count unchanged after rebuild')
+  assert.equal(ledgerAfter.results[0].reason, 'promo_expiry')
+
+  const cols = await db.prepare(`PRAGMA table_info(freellm_admin_grants)`).all<{ name: string }>()
+  const names = new Set(cols.results.map((c) => c.name))
+  for (const name of ['id', 'user_id', 'credits', 'expires_at', 'expired_at', 'note', 'created_by', 'created_at']) {
+    assert.ok(names.has(name), `freellm_admin_grants has ${name}`)
+  }
+
+  // New reason 'grant_expiry' is now allowed by CHECK constraint
+  await db.prepare(
+    `INSERT INTO freellm_credit_ledger (id, user_id, delta, reason, meta, created_at)
+     VALUES ('l32b', ?, -500, 'grant_expiry', '{}', ?)`,
+  ).bind(userId, now + 1000).run()
+  const newRow = await db.prepare('SELECT * FROM freellm_credit_ledger WHERE id = ?').bind('l32b').first()
+  assert.ok(newRow, 'new grant_expiry reason accepted')
+  assert.equal(newRow.reason, 'grant_expiry')
+})
+
 test('migration 0027: provider key pool finalization drops legacy columns', async () => {
   db = await freshDb()
   // Apply up to 0026
@@ -289,4 +329,72 @@ test('migration 0027: provider key pool finalization drops legacy columns', asyn
   const keyCols = await db.prepare(`PRAGMA table_info(freellm_upstream_keys)`).all<{ name: string }>()
   const hasLastError = keyCols.results.some((c) => c.name === 'last_error')
   assert.ok(hasLastError, 'last_error column added to keys table')
+})
+
+test('migration 0033: legacy vault rows backfill into the unified connections table', async () => {
+  db = await freshDb()
+  const upTo0032 = Array.from({ length: 32 }, (_, i) => String(i + 1).padStart(4, '0'))
+  await apply(ordered(upTo0032))
+
+  const now = Date.now()
+  const userId = 'user_mig33'
+  await db
+    .prepare(
+      `INSERT INTO freellm_users (id, email, username, password_hash, referral_code, balance_credits, role, email_verified, created_at, updated_at)
+       VALUES (?, 'u33@test.com', 'usermig33', NULL, 'code33', 0, 'user', 1, ?, ?)`,
+    )
+    .bind(userId, now, now)
+    .run()
+
+  // A manual key plus three OAuth grants — all provider='byok' in the legacy
+  // table. Antigravity's endpoint shares googleapis.com with Google, so it must
+  // not be claimed by the Google recovery rule.
+  await db
+    .prepare(
+      `INSERT INTO freellm_api_keys (id, user_id, provider, label, key_ciphertext, key_iv, base_url, upstream_model, auth_kind, protocol, created_at, updated_at)
+       VALUES
+         ('k-manual', ?, 'byok', 'My key', 'ct', 'iv', 'https://api.openai.com/v1', 'gpt-4o-mini', 'api_key', 'openai', ?, ?),
+         ('k-kilo',   ?, 'byok', 'Kilo (Auto)', 'ct', 'iv', 'https://api.kilo.ai/api/openrouter', 'google/gemini-2.5-flash', 'oauth', 'openai', ?, ?),
+         ('k-codex',  ?, 'byok', 'Codex (Auto)', 'ct', 'iv', 'https://chatgpt.com/backend-api', 'gpt-5-codex', 'oauth', 'codex', ?, ?),
+         ('k-anti',   ?, 'byok', 'Antigravity (Auto)', 'ct', 'iv', 'https://daily-cloudcode-pa.googleapis.com', 'gemini-3.8-flash', 'oauth', 'openai', ?, ?)`,
+    )
+    .bind(userId, now, now, userId, now, now, userId, now, now, userId, now, now)
+    .run()
+
+  await db
+    .prepare(
+      `INSERT INTO freellm_api_tokens (id, user_id, label, token_prefix, token_hash, created_at) VALUES ('t33', ?, 'laptop', 'fl_…', 'hash33', ?)`,
+    )
+    .bind(userId, now)
+    .run()
+
+  await apply(ordered(['0033']))
+
+  const rows = await db
+    .prepare('SELECT id, scope, owner_id, provider, auth_kind, protocol FROM freellm_connections')
+    .all<{ id: string; scope: string; owner_id: string; provider: string; auth_kind: string; protocol: string }>()
+  assert.equal(rows.results.length, 4, 'every legacy row migrated')
+  const byId = Object.fromEntries(rows.results.map((r) => [r.id, r]))
+
+  assert.equal(byId['k-manual'].scope, 'personal')
+  assert.equal(byId['k-manual'].owner_id, userId)
+  assert.equal(byId['k-manual'].provider, 'byok')
+  assert.equal(byId['k-manual'].auth_kind, 'api_key')
+
+  assert.equal(byId['k-kilo'].provider, 'kilo', 'OAuth provider recovered from base_url')
+  assert.equal(byId['k-codex'].provider, 'codex')
+  assert.equal(byId['k-codex'].protocol, 'codex')
+  assert.equal(byId['k-anti'].provider, 'antigravity', 'Antigravity is not claimed by the Google match')
+
+  const tokenCols = await db.prepare('PRAGMA table_info(freellm_api_tokens)').all<{ name: string }>()
+  assert.ok(tokenCols.results.some((c) => c.name === 'connection_id'), 'tokens can bind to a connection')
+  const token = await db
+    .prepare('SELECT connection_id FROM freellm_api_tokens WHERE id = ?')
+    .bind('t33')
+    .first<{ connection_id: string | null }>()
+  assert.equal(token?.connection_id, null, 'existing tokens stay unbound')
+
+  // The legacy table is left in place as a rollback safety net.
+  const legacy = await db.prepare('SELECT COUNT(*) AS n FROM freellm_api_keys').first<{ n: number }>()
+  assert.equal(legacy?.n, 4, 'freellm_api_keys is preserved, not dropped')
 })

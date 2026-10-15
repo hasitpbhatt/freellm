@@ -16,6 +16,7 @@ import { Hono } from 'hono'
 import { requireAdmin, requireAuth } from '../lib/middleware'
 import { newId } from '../lib/crypto'
 import { slugify } from '../lib/validate'
+import { expireAdminGrants } from '../lib/credit-grants'
 import { expirePromoCredits } from '../lib/promo-expiry'
 import type { Bindings, ModelRow, Variables } from '../lib/types'
 
@@ -42,9 +43,10 @@ app.use('/api/balance', requireAuth)
 
 app.get('/api/balance', async (c) => {
   const user = c.get('user')
-  // Lazy promo-expiry sweep so the displayed balance reflects any expired
-  // grants. Best-effort — a race just defers to the next sweep.
+  // Lazy expiry sweeps so the displayed balance reflects any expired grants.
+  // Best-effort — a race just defers to the next sweep.
   await expirePromoCredits(c.env.DB, user.id).catch(() => {})
+  await expireAdminGrants(c.env.DB, user.id).catch(() => {})
   const freshUser = await c.env.DB.prepare('SELECT balance_credits FROM freellm_users WHERE id = ?')
     .bind(user.id)
     .first<{ balance_credits: number }>()

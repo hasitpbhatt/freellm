@@ -331,6 +331,30 @@ test('selectProviderKey picks usable key from the pool, prefers least-recently-u
       api_key_ciphertext: 'cipher2',
       api_key_iv: 'iv2',
       status: 'down' as const,
+      consecutive_failures: 3,
+      cooldown_until: now + 10000, // cooling: excluded until the cooldown lapses
+      last_used_at: null,
+      last_error: 'boom',
+      priority: 0,
+      created_at: now,
+      updated_at: now,
+    },
+  ]
+
+  const none = selectProviderKey(allBad, now)
+  assert.equal(none, null, 'should return null when no usable keys')
+
+  // Bootstrap: a fresh 'unknown' key (the default for admin-created and
+  // backfilled keys) must be selectable, or the pool can never be probed
+  // and promoted to 'live' — every model would report "no usable keys".
+  const fresh = [
+    {
+      id: 'key-new',
+      upstream_provider_id: providerId,
+      label: 'key-new',
+      api_key_ciphertext: 'cipher3',
+      api_key_iv: 'iv3',
+      status: 'unknown' as const,
       consecutive_failures: 0,
       cooldown_until: null,
       last_used_at: null,
@@ -340,7 +364,89 @@ test('selectProviderKey picks usable key from the pool, prefers least-recently-u
       updated_at: now,
     },
   ]
+  assert.equal(selectProviderKey(fresh, now)?.id, 'key-new', 'an unknown key must be selectable')
 
-  const none = selectProviderKey(allBad, now)
-  assert.equal(none, null, 'should return null when no usable keys')
+  // A 'down' key with no cooldown is a last resort, never preferred while a
+  // fresh key exists — but still selectable so a cooled-down endpoint can heal.
+  const mixed = [
+    { ...fresh[0], id: 'fresh', label: 'fresh' },
+    {
+      id: 'stale-down',
+      upstream_provider_id: providerId,
+      label: 'stale-down',
+      api_key_ciphertext: 'cipher4',
+      api_key_iv: 'iv4',
+      status: 'down' as const,
+      consecutive_failures: 3,
+      cooldown_until: null,
+      last_used_at: null,
+      last_error: 'boom',
+      priority: 0,
+      created_at: now,
+      updated_at: now,
+    },
+  ]
+  assert.equal(selectProviderKey(mixed, now)?.id, 'fresh', 'a fresh key must win over a down key')
+  assert.equal(
+    selectProviderKey([mixed[1]], now)?.id,
+    'stale-down',
+    'a lone down key with no cooldown stays selectable as a last resort',
+  )
+})
+
+/**
+ * Admin probe contract: Test is the operator's "probe now" override, so it
+ * must dial even a cooling key, and persisting the result must use only real
+ * columns. (Oct 2026: the key write referenced a nonexistent
+ * freellm_upstream_keys.last_checked_at, so every Test 500'd after probing;
+ * and a cooling key 409'd, making force-recovery impossible.)
+ */
+test('admin probe: cooling keys are probed and the outcome write recovers them', async () => {
+  const now = Date.now()
+  const { probeKey, writeProbeKeyOutcome } = await import('../functions/routes/admin')
+
+  const cooling = {
+    id: 'probe-cooling',
+    upstream_provider_id: 'probe-provider',
+    label: 'primary',
+    api_key_ciphertext: 'cipher',
+    api_key_iv: 'iv',
+    status: 'down' as const,
+    consecutive_failures: 2,
+    cooldown_until: now + 30 * 60 * 1000,
+    last_used_at: null,
+    last_error: '429 Too Many Requests',
+    priority: 0,
+    created_at: now,
+    updated_at: now,
+  }
+
+  // The pool pick refuses a cooling key, but the probe override still dials it.
+  const { selectProviderKey } = await import('../functions/lib/providers')
+  assert.equal(selectProviderKey([cooling], now), null, 'pool pick still respects cooldown')
+  assert.equal(probeKey([cooling])?.id, 'probe-cooling', 'probe dials past the cooldown')
+  assert.equal(probeKey([]), null, 'probe still 409s on an empty pool')
+
+  await db.prepare(
+    `INSERT INTO freellm_upstream_providers (id, label, base_url, status, created_at, updated_at)
+     VALUES ('probe-provider', 'Probe Upstream', 'https://probe.example/v1', 'live', ?, ?)`,
+  ).bind(now, now).run()
+  await db.prepare(
+    `INSERT INTO freellm_upstream_keys (id, upstream_provider_id, label, api_key_ciphertext, api_key_iv,
+                                        status, consecutive_failures, cooldown_until, priority, created_at, updated_at)
+     VALUES (?, ?, 'primary', 'cipher', 'iv', 'down', 2, ?, 0, ?, ?)`,
+  ).bind('probe-cooling', 'probe-provider', cooling.cooldown_until, now, now).run()
+
+  // Success restores the key fully: live, failures reset, cooldown cleared.
+  await writeProbeKeyOutcome(db, cooling, { ok: true, status: 'live', latencyMs: 120, mode: 'chat' }, null, now)
+  const healed = await db.prepare('SELECT status, consecutive_failures, cooldown_until, last_error FROM freellm_upstream_keys WHERE id = ?').bind('probe-cooling').first<{ status: string; consecutive_failures: number; cooldown_until: number | null; last_error: string | null }>()
+  assert.deepEqual(healed, { status: 'live', consecutive_failures: 0, cooldown_until: null, last_error: null })
+
+  // Failure backs the key off instead of leaving it immediately retryable.
+  await writeProbeKeyOutcome(db, { ...cooling, consecutive_failures: 0 }, { ok: false, status: 'down', latencyMs: 5, mode: 'chat', error: 'boom' }, null, now)
+  const cooled = await db.prepare('SELECT status, consecutive_failures, cooldown_until, last_error FROM freellm_upstream_keys WHERE id = ?').bind('probe-cooling').first<{ status: string; consecutive_failures: number; cooldown_until: number | null; last_error: string | null }>()
+  assert.equal(cooled?.status, 'down')
+  assert.equal(cooled?.consecutive_failures, 1)
+  assert.ok((cooled?.cooldown_until ?? 0) > now, 'failed probe sets a future cooldown')
+  assert.equal(cooled?.last_error, 'boom')
 })

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { streamChat, type ChatSseEvent } from '../lib/chat'
 import { api, normalizeCatalogModel, type CatalogModel } from '../lib/api'
-import { useAuth } from '../lib/auth'
+import { useAuth } from '../lib/useAuth'
 import { Button, Card, Credits, Select } from '../components/ui'
 
 type Model = CatalogModel
@@ -122,6 +122,7 @@ export default function Chat() {
   }, [user, selectedKeyId])
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- catalog load on mount/user change
     void loadModels()
   }, [loadModels])
 
@@ -129,6 +130,7 @@ export default function Chat() {
     const modeParam = searchParams.get('mode')
     const keyParam = searchParams.get('key')
     if (modeParam === 'byok' || modeParam === 'pool') {
+      // oxlint-disable-next-line react/set-state-in-effect -- URL params are an external store to sync from
       setMode(modeParam)
     }
     if (keyParam) {
@@ -138,7 +140,10 @@ export default function Chat() {
   }, [searchParams])
 
   useEffect(() => {
-    if (mode === 'byok') void loadByokKeys()
+    if (mode === 'byok') {
+      // oxlint-disable-next-line react/set-state-in-effect -- vault keys load when BYOK mode is entered
+      void loadByokKeys()
+    }
   }, [mode, loadByokKeys])
 
   useEffect(() => {
@@ -250,10 +255,12 @@ export default function Chat() {
     abortRef.current = controller
 
     const payload = {
-      model: requestModelSlug ?? '',
+      // Connection mode dials the caller's own credential, so the model slug is
+      // optional — the stored upstream_model is the default. Pool mode requires it.
+      model: requestModelSlug ?? selectedKey?.upstream_model ?? '',
       request_id: requestId,
       messages: history.map((m) => ({ role: m.role, content: m.content })),
-      ...(mode === 'byok' && selectedKey ? { key_mode: 'byok' as const, key_id: selectedKey.id } : {}),
+      ...(mode === 'byok' && selectedKey ? { connection_id: selectedKey.id } : {}),
     }
 
     const result = await streamChat(
@@ -424,7 +431,6 @@ export default function Chat() {
     disabled: boolean
     status: 'unknown' | 'live' | 'slow' | 'down'
     tier: string
-    flatRate: number
     [key: string]: unknown
   }
   interface ByokOption {
@@ -442,7 +448,6 @@ export default function Chat() {
     disabled: m.access_tier !== 'free' && user.role !== 'admin' && userTierRank < modelTierRank(m.access_tier),
     status: m.status,
     tier: m.access_tier,
-    flatRate: m.flat_rate_credits,
   }))
   const byokOptions: ByokOption[] = byokKeys.map((k) => ({
     value: k.id,
@@ -504,9 +509,6 @@ export default function Chat() {
                       </span>
                     )}
                     {opt.disabled && <span className="text-[11px] text-muted ml-auto">locked</span>}
-                    <span className="num text-[11px] text-muted ml-auto">
-                      flat {opt.flatRate.toLocaleString('en-US')} cr
-                    </span>
                   </div>
                 )}
               />
@@ -588,7 +590,7 @@ export default function Chat() {
               </p>
               <p className="num text-[12px] max-w-md">
                 {mode === 'pool'
-                  ? 'Billing uses the provider\'s reported token counts; the flat rate applies only when usage is unreported or a stream is stopped early.'
+                  ? 'Billing uses the provider\'s reported token counts (1 cr = 1 token).'
                   : 'Free — no balance check, no metering. Your key, your endpoint, your cost.'}
               </p>
               {mode === 'byok' && !selectedKey && (
@@ -621,13 +623,7 @@ export default function Chat() {
                         {m.cost.input != null && m.cost.output != null
                           ? ` — ${m.cost.input.toLocaleString('en-US')} in · ${m.cost.output.toLocaleString('en-US')} out`
                           : ''}
-                        {mode === 'byok' ? ' · Free — your key' : m.cost.status === 'aborted'
-                          ? ' · flat rate — stream stopped'
-                          : m.cost.source === 'reported'
-                          ? ` · reported by ${m.cost.model ?? 'provider'}`
-                          : m.cost.source === 'flat_rate'
-                          ? ' · flat rate — usage unreported'
-                          : ''}
+                        {mode === 'byok' ? ' · Free — your key' : ''}
                         {m.cost.latencyMs != null ? ` · ${(m.cost.latencyMs / 1000).toFixed(2)}s` : ''}
                         {m.cost.firstTokenMs != null ? ` · first token ${(m.cost.firstTokenMs / 1000).toFixed(2)}s` : ''}
                         {m.cost.tokensPerSec != null ? ` · ${Math.round(m.cost.tokensPerSec)} tok/s` : ''}

@@ -19,12 +19,11 @@
 import { Hono, type Context } from 'hono'
 import { requireAuthOrToken } from '../lib/middleware'
 import { computeSpendable, estimateReserve, placeHold, settleRequest, type Usage } from '../lib/metering'
-import { callProvider, loadAlias, openCall, recordOutcome } from '../lib/providers'
-import { openByokCodexCall } from '../lib/codex'
+import { loadAlias, openCall, recordOutcome } from '../lib/providers'
 import { canAccessModel, tierGatedMessage } from '../lib/tiers'
-import { decryptSecret, encryptSecret, newId } from '../lib/crypto'
-import { getOAuthProviderConfig } from '../lib/oauth'
-import type { ApiKeyRow, Bindings, Variables } from '../lib/types'
+import { newId, sha256Hex } from '../lib/crypto'
+import { dialConnection, connectionSettleModel, getUsableConnection } from '../lib/connections'
+import type { Bindings, Variables } from '../lib/types'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -97,6 +96,7 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
       required_capabilities?: unknown
       key_mode?: unknown
       key_id?: unknown
+      connection_id?: unknown
     }>()
     .catch(() => null)
 
@@ -128,6 +128,39 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
   const includeUsage =
     stream && (payload?.stream_options as { include_usage?: unknown } | undefined)?.include_usage === true
 
+  // ---- Connection: the caller's own credential, selected without magic ----
+  // Precedence: an explicit body field (connection_id, or the legacy
+  // key_mode=byok + key_id) over the connection this API token is bound to.
+  const auth = c.req.header('Authorization') ?? ''
+  const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+  const bodyConnectionId =
+    typeof payload?.connection_id === 'string' && payload.connection_id
+      ? payload.connection_id
+      : payload?.key_mode === 'byok' && typeof payload?.key_id === 'string'
+        ? payload.key_id
+        : ''
+  const connectionId = bodyConnectionId || (bearer ? ((await connectionIdForToken(c.env, bearer)) ?? '') : '')
+
+  const requestedMax =
+    typeof payload?.max_tokens === 'number' && payload.max_tokens > 0
+      ? Math.floor(payload.max_tokens)
+      : typeof payload?.max_completion_tokens === 'number' && payload.max_completion_tokens > 0
+        ? Math.floor(payload.max_completion_tokens)
+        : 8192
+
+  if (connectionId) {
+    return chatWithConnection(c, {
+      user,
+      messages,
+      upstreamModel: slug,
+      maxTokens: requestedMax,
+      stream,
+      includeUsage,
+      connectionId,
+    })
+  }
+
+  // ---- Pool: resolve the alias, reserve, failover ----
   const alias = await loadAlias(c.env, slug)
   if (!alias || alias.providers.length === 0) {
     return c.json(
@@ -158,22 +191,6 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
   const sampling = {
     temperature: typeof payload?.temperature === 'number' ? payload.temperature : undefined,
     top_p: typeof payload?.top_p === 'number' ? payload.top_p : undefined,
-  }
-
-  // ---- BYOK: the caller's own vault credential, free and unmetered ----
-  // Same contract as POST /api/chat with key_mode=byok: the model slug still
-  // selects the alias (output cap + usage attribution), but the request dials
-  // the user's own endpoint with their own token and settles with charge 0.
-  if (payload?.key_mode === 'byok') {
-    return chatWithByok(c, {
-      user,
-      alias,
-      messages,
-      maxTokens,
-      stream,
-      includeUsage,
-      keyId: typeof payload.key_id === 'string' ? payload.key_id : '',
-    })
   }
 
   // ---- reserve ----
@@ -426,200 +443,64 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
   })
 })
 
-// ------------------------------------------------------------- BYOK completions
-// Dials the caller's own vault credential (one of their personal api_key or
-// oauth accounts) instead of The Pool. No reserve, no hold, no charge — the
-// usage event records key_mode='byok' for attribution only.
+// ------------------------------------------------------- connection completions
+// Dials the caller's own connection (a personal api_key/oauth account, or a
+// shared one) instead of The Pool. No reserve, no hold, no charge — the usage
+// event records key_mode='byok' for attribution only.
 
-/** Refreshes an expired OAuth token using the stored refresh token. */
-async function refreshOAuthToken(
-  c: Context<{ Bindings: Bindings; Variables: Variables }>,
-  row: ApiKeyRow
-): Promise<{ apiKey: string; updatedFields: { key_ciphertext: string; key_iv: string; refresh_ciphertext?: string; refresh_iv?: string; expires_at?: number } }> {
-  if (!c.env.ENCRYPTION_KEY) {
-    throw new Error('ENCRYPTION_KEY not set')
-  }
-
-  // Determine provider from base_url or label
-  let providerId: string | null = null
-  const baseUrl = row.base_url.toLowerCase()
-  const label = row.label.toLowerCase()
-
-  if (baseUrl.includes('chatgpt.com') || label.includes('codex')) {
-    providerId = 'codex'
-  } else if (baseUrl.includes('googleapis.com') || label.includes('gemini') || label.includes('google')) {
-    providerId = 'google'
-  } else if (baseUrl.includes('qoder') || label.includes('qoder')) {
-    providerId = 'qoder'
-  } else if (baseUrl.includes('meta.com') || label.includes('antigravity')) {
-    providerId = 'antigravity'
-  } else if (baseUrl.includes('x.ai') || label.includes('grok')) {
-    providerId = 'grok'
-  }
-
-  if (!providerId) {
-    throw new Error('Cannot determine OAuth provider for this key')
-  }
-
-  const config = getOAuthProviderConfig(providerId)
-  if (!config) {
-    throw new Error(`Provider ${providerId} not configured`)
-  }
-
-  const refreshToken = await decryptSecret(row.refresh_ciphertext!, row.refresh_iv!, c.env.ENCRYPTION_KEY)
-
-  const response = await fetch(config.tokenUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Accept': 'application/json'
-    },
-    body: new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken,
-      client_id: config.clientId
-    })
-  })
-
-  if (!response.ok) {
-    const error = await response.text()
-    throw new Error(`Token refresh failed: ${error}`)
-  }
-
-  interface TokenResponse {
-    access_token: string
-    refresh_token?: string
-    expires_in?: number
-    token_type?: string
-  }
-  const tokens = await response.json() as TokenResponse
-
-  // Encrypt new access token
-  const { ciphertext: keyCiphertext, iv: keyIv } = await encryptSecret(tokens.access_token, c.env.ENCRYPTION_KEY)
-
-  const updatedFields: {
-    key_ciphertext: string
-    key_iv: string
-    refresh_ciphertext?: string
-    refresh_iv?: string
-    expires_at?: number
-  } = { key_ciphertext: keyCiphertext, key_iv: keyIv }
-
-  // Update refresh token if provided
-  if (tokens.refresh_token) {
-    const sealed = await encryptSecret(tokens.refresh_token, c.env.ENCRYPTION_KEY)
-    updatedFields.refresh_ciphertext = sealed.ciphertext
-    updatedFields.refresh_iv = sealed.iv
-  }
-
-  // Update expiry
-  if (tokens.expires_in) {
-    updatedFields.expires_at = Date.now() + tokens.expires_in * 1000
-  }
-
-  // Persist to database
-  await c.env.DB.prepare(
-    `UPDATE freellm_api_keys 
-     SET key_ciphertext = ?, key_iv = ?, refresh_ciphertext = ?, refresh_iv = ?, expires_at = ?, updated_at = ?
-     WHERE id = ?`
-  ).bind(
-    keyCiphertext,
-    keyIv,
-    updatedFields.refresh_ciphertext ?? row.refresh_ciphertext,
-    updatedFields.refresh_iv ?? row.refresh_iv,
-    updatedFields.expires_at ?? row.expires_at,
-    Date.now(),
-    row.id
-  ).run()
-
-  return { apiKey: tokens.access_token, updatedFields }
+/** The connection an API token is bound to, if any (the no-magic-param path). */
+async function connectionIdForToken(env: Bindings, bearer: string): Promise<string | null> {
+  if (!bearer) return null
+  const rec = await env.DB.prepare('SELECT connection_id FROM freellm_api_tokens WHERE token_hash = ?')
+    .bind(await sha256Hex(bearer))
+    .first<{ connection_id: string | null }>()
+  return rec?.connection_id ?? null
 }
 
-async function chatWithByok(
+/** A free, zero-cost model row so connection usage has something to attribute to. */
+// Dials the caller's own connection (personal or shared), free and unmetered.
+// `upstreamModel` is the request's `model` field, passed straight through — the
+// wire contract stays plain OpenAI: no key_mode, no key_id.
+async function chatWithConnection(
   c: Context<{ Bindings: Bindings; Variables: Variables }>,
   opts: {
     user: { id: string; balance_credits: number }
-    alias: NonNullable<Awaited<ReturnType<typeof loadAlias>>>
-    messages: { role: 'system' | 'user' | 'assistant'; content: string }[]
+    messages: OpenAiMessage[]
+    upstreamModel: string
     maxTokens: number
     stream: boolean
     includeUsage: boolean
-    keyId: string
+    connectionId: string
   },
 ): Promise<Response> {
-  const { user, alias, messages, maxTokens, stream, includeUsage, keyId } = opts
-  if (!keyId) {
-    return c.json(openAiBody('invalid_request_error', 'key_id is required when key_mode=byok.'), 400)
-  }
-  const row = await c.env.DB.prepare('SELECT * FROM freellm_api_keys WHERE id = ? AND user_id = ?')
-    .bind(keyId, user.id)
-    .first<ApiKeyRow>()
-  if (!row) {
-    return c.json(openAiBody('invalid_request_error', 'Key not found or access denied.', 'key_not_found'), 404)
-  }
-  if (!c.env.ENCRYPTION_KEY) {
-    return c.json(openAiBody('server_error', 'ENCRYPTION_KEY is not set on this deployment.', 'not_configured'), 500)
-  }
-  
-  // Auto-refresh OAuth token if expired and refresh token exists
-  let apiKey: string
-  let updatedRow = row
-  if ((row.auth_kind ?? 'api_key') === 'oauth' && row.expires_at != null && row.expires_at <= Date.now()) {
-    if (row.refresh_ciphertext && row.refresh_iv) {
-      try {
-        const refreshed = await refreshOAuthToken(c, row)
-        apiKey = refreshed.apiKey
-        updatedRow = { ...row, ...refreshed.updatedFields }
-      } catch (err) {
-        return c.json(
-          openAiBody('invalid_request_error', `OAuth token expired and refresh failed: ${err instanceof Error ? err.message : 'unknown error'}. Replace it on /keys.`, 'key_expired'),
-          400,
-        )
-      }
-    } else {
-      return c.json(
-        openAiBody('invalid_request_error', 'This OAuth token has expired — replace it on /keys before chatting.', 'key_expired'),
-        400,
-      )
-    }
-  } else {
-    apiKey = await decryptSecret(row.key_ciphertext, row.key_iv, c.env.ENCRYPTION_KEY)
+  const { user, messages, upstreamModel, maxTokens, stream, includeUsage, connectionId } = opts
+  const conn = await getUsableConnection(c.env, user.id, connectionId)
+  if (!conn) {
+    return c.json(openAiBody('invalid_request_error', 'Connection not found or access denied.', 'connection_not_found'), 404)
   }
 
   const requestId = newId()
   const startedAt = Date.now()
   const completionId = `chatcmpl-${requestId.replace(/-/g, '').slice(0, 24)}`
   const created = Math.floor(Date.now() / 1000)
-  const isCodex = (updatedRow.protocol ?? 'openai') === 'codex'
+  const isCodex = conn.protocol === 'codex'
+  const settleModel = connectionSettleModel(conn.id, upstreamModel)
 
   let upstream: Response
   try {
-    if (isCodex) {
-      // Responses API via the adapter: always streams upstream, translated to
-      // OpenAI Chat Completions SSE — the reshape/aggregate paths below work
-      // unchanged for both client stream modes.
-      upstream = await openByokCodexCall(c.env, row, messages)
-    } else {
-      const call = await callProvider(
-        { id: `byok:${row.id}`, base_url: row.base_url, upstream_model: row.upstream_model },
-        apiKey,
-        messages,
-        { maxTokens, stream },
-      )
-      upstream = call.response
-    }
+    upstream = await dialConnection(c, conn, { messages, upstreamModel, maxTokens, stream })
   } catch (err) {
     await settleRequest(c.env.DB, {
       userId: user.id,
       requestId,
-      model: alias.model,
-      providerLabel: row.label,
+      model: settleModel,
+      providerLabel: conn.label,
       settlement: { kind: 'failed', reason: err instanceof Error ? err.message : 'network error' },
       latencyMs: Date.now() - startedAt,
       free: true,
     })
     return c.json(
-      openAiBody('server_error', `Your key (${row.label}) is unreachable: ${err instanceof Error ? err.message : 'network error'}`, 'upstream_failed'),
+      openAiBody('server_error', `${conn.label} is unreachable: ${err instanceof Error ? err.message : 'network error'}`, 'upstream_failed'),
       502,
     )
   }
@@ -628,14 +509,14 @@ async function chatWithByok(
     await settleRequest(c.env.DB, {
       userId: user.id,
       requestId,
-      model: alias.model,
-      providerLabel: row.label,
+      model: settleModel,
+      providerLabel: conn.label,
       settlement: { kind: 'failed', reason: `${upstream.status} ${errText}` },
       latencyMs: Date.now() - startedAt,
       free: true,
     })
     return c.json(
-      openAiBody('server_error', `Your key (${row.label}) returned ${upstream.status}: ${errText}`, 'upstream_failed'),
+      openAiBody('server_error', `${conn.label} returned ${upstream.status}: ${errText}`, 'upstream_failed'),
       502,
     )
   }
@@ -646,15 +527,15 @@ async function chatWithByok(
         return await settleRequest(c.env.DB, {
           userId: user.id,
           requestId,
-          model: alias.model,
-          providerLabel: row.label,
+          model: settleModel,
+          providerLabel: conn.label,
           settlement: kind === 'completed' ? { kind, usage: usage ?? null } : { kind, reason },
           latencyMs: Date.now() - startedAt,
           usage: usage ?? null,
           free: true,
         })
       } catch (err) {
-        console.error('[v1:byok] settleRequest failed (attempt %d)', attempt, completionId, err)
+        console.error('[v1:connection] settleRequest failed (attempt %d)', attempt, completionId, err)
       }
     }
     return null
@@ -664,7 +545,7 @@ async function chatWithByok(
     id: completionId,
     object: 'chat.completion.chunk' as const,
     created,
-    model: alias.model.slug,
+    model: upstreamModel,
   }
   const sse = (choices: unknown[], extra: Record<string, unknown> = {}) =>
     `data: ${JSON.stringify({ ...baseChunk, choices, ...extra })}\n\n`
@@ -706,7 +587,7 @@ async function chatWithByok(
       id: completionId,
       object: 'chat.completion',
       created,
-      model: alias.model.slug,
+      model: upstreamModel,
       choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: finishReason ?? 'stop' }],
       usage: usage
         ? { prompt_tokens: usage.input, completion_tokens: usage.output, total_tokens: usage.total }
@@ -716,7 +597,7 @@ async function chatWithByok(
         key_mode: 'byok',
         credits_charged: result ? result.creditsCharged : null,
         billed_source: result?.source ?? null,
-        provider: row.label,
+        provider: conn.label,
       },
     })
   }
@@ -791,7 +672,7 @@ async function chatWithByok(
       try {
         await settle('completed', usage)
       } catch (err) {
-        console.error('[v1:byok] settle failed in flush', completionId, err)
+        console.error('[v1:connection] settle failed in flush', completionId, err)
       }
       flushChunks(controller)
     },

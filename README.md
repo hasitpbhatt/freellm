@@ -83,9 +83,22 @@ by hand):
 ```bash
 npm run build
 npx wrangler pages deploy dist --branch=main \
-  --commit-hash=$(git rev-parse HEAD) --commit-message="$(git log -1 --pretty=%s)"
+  --commit-hash=$(git rev-parse HEAD) --commit-message="$(git log -1 --pretty=%s)" \
+  --commit-dirty=true   # only when the tree has uncommitted changes; omit on a clean tree
 # --branch=main is what promotes the upload to Production; without it the
 # upload lands in Preview and freellm.hasit.in keeps serving the old build.
+```
+
+Pre-deploy checklist (every time, in order):
+
+```bash
+npm test                          # typecheck + unit + D1-backed integration, must be 122/122
+npm run lint                      # must be zero warnings
+npx wrangler d1 migrations list hasit-in --remote   # shows pending files, if any
+npm run db:migrate:remote         # apply pending migrations to remote D1 FIRST
+npm run deploy                    # or the manual deploy above
+curl -s https://freellm.hasit.in/api/health         # {"ok":true,...}
+curl -s https://freellm.hasit.in/v1/models | head -c 300
 ```
 
 Two hard-won rules:
@@ -100,6 +113,15 @@ Two hard-won rules:
   child, drop it, rebuild the parent, restore the child; see
   `migrations/0011_latency_weighted_routing.sql` and the
   `tests/migration-safety.test.ts` regression test that guards it.
+* **One module, one file under `functions/`.** Never ship a `.js` + `.d.ts`
+  pair there — the Pages bundler compiles the `.d.ts` as a real module
+  (`The constant "X" must be initialized`) and the deploy fails. Single `.ts`
+  modules only; see `functions/lib/oauth.ts`.
+* **No bare `process.env` in `functions/`.** `process` does not exist in
+  workerd without `nodejs_compat`, so an unguarded access throws at import
+  time and takes down every route importing the module (Oct 2026: this 500'd
+  the entire `/v1` surface). Guard via `globalThis` with a fallback; see
+  `baseUrl()` in `functions/lib/oauth.ts`.
 
 ## Scripts
 
@@ -144,8 +166,13 @@ economy, the **M5 arena**, and the **M6 BYOK vault**.
 - **BYOK vault** (`/keys`): Door 1 of the Two Doors model. Users store their own
   OpenAI-compatible endpoints (base URL + upstream model + bearer, AES-256-GCM at
   rest, validated on add). Chatting through your key is free and unmetered
-  (`key_mode=byok` on `/api/chat`). Admins can view/reveal vault keys for auditability
-  (`/admin/vault`)
+  (`key_mode=byok` on `/api/chat`). OAuth accounts (Codex, Google, Antigravity,
+  Grok Build, Kilo, Qoder) connect with one click — endpoint, model, and tokens
+  fill in automatically. The bundled third-party OAuth client secrets can be
+  overridden without redeploying code via `GOOGLE_OAUTH_CLIENT_SECRET` and
+  `ANTIGRAVITY_OAUTH_CLIENT_SECRET` (wrangler secrets / `.dev.vars`). Admins can view/reveal vault keys for auditability
+  (`/admin/vault`).
+- **Support**: Need help? Email us at `help@freellm.hasit.in`. We usually respond within 2 hours.
 - **OpenAI-compatible API** (`/v1`, docs at `/developers`): `GET /v1/models` and
   `POST /v1/chat/completions` speak the OpenAI wire format, so the OpenAI SDKs and
   any OpenAI-compatible client work with `baseURL: https://freellm.hasit.in/v1`.

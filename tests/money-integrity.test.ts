@@ -12,13 +12,12 @@ import {
   clearClaimStatements,
   gameClaimStatements,
   memoryMovesFromFlips,
-  rewardForMemoryFlips,
   rewardForMemory,
 } from '../functions/routes/games'
 import { promoRedemptionStatements } from '../functions/routes/promos'
 import { expirePromoCredits } from '../functions/lib/promo-expiry'
 import { qualifyReferrals, REFERRAL_REWARD } from '../functions/routes/economy'
-import { placeHold, settleRequest, type Usage } from '../functions/lib/metering'
+import { placeHold, settleRequest } from '../functions/lib/metering'
 import { createTestDb, seedUser, testModel } from './helpers/db'
 
 let db: D1Database
@@ -484,8 +483,6 @@ test('referral payout: concurrent qualification sweeps pay ONCE', async () => {
 })
 
 // ----------------------------------------------------------------- metering
-
-const USAGE: Usage = { input: 30, output: 70, total: 100 }
 
 test('settle respects outstanding holds — balance never goes negative', async () => {
   const userId = await seedUser(db, { balanceCredits: 1000 })

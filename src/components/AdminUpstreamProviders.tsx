@@ -62,6 +62,7 @@ export default function AdminUpstreamProviders() {
   }, [])
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- provider list load on mount
     void load()
   }, [load])
 
@@ -272,6 +273,7 @@ function ProviderForm({
   // Re-sync when a different provider is opened for editing.
   useEffect(() => {
     if (!provider) return
+    // oxlint-disable-next-line react/set-state-in-effect -- syncing from external prop object, not a derived local state
     setLabel(provider.label)
     setBaseUrl(provider.base_url)
     setApiKey('')

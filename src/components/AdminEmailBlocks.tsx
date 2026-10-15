@@ -35,6 +35,7 @@ export default function AdminEmailBlocks() {
   }, [])
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- block-rule list load on mount
     void load()
   }, [load])
 

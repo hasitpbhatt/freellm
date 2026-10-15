@@ -316,13 +316,24 @@ export function shuffle<T>(items: T[]): T[] {
  * Picks a usable key from an upstream provider's pool: not disabled, not
  * cooling, then least-recently-used (priority breaks ties) so traffic spreads.
  * Returns null when every key is disabled or cooling.
+ *
+ * `'unknown'` is the default state of a fresh key (and of every key the
+ * 0025/0027 backfills copied from a never-probed provider) — it MUST be
+ * selectable, otherwise a key can never be tried, can never be probed, and
+ * can never be promoted to 'live': the pool could not bootstrap and every
+ * model would report "no usable keys". What we exclude is the negative
+ * states — disabled by the operator, and 'down' unless nothing better exists.
  */
 export function selectProviderKey(keys: UpstreamKeyRow[], now: number): UpstreamKeyRow | null {
   const usable = keys.filter(
-    (k) => k.status === 'live' && (k.cooldown_until == null || k.cooldown_until <= now),
+    (k) => k.status !== 'disabled' && (k.cooldown_until == null || k.cooldown_until <= now),
   )
   if (usable.length === 0) return null
-  return [...usable].sort(
+  // A key marked down by the infrastructure-failure path carries no cooldown,
+  // so it is a last resort only — never chosen while a fresh key exists.
+  const preferred = usable.filter((k) => k.status !== 'down')
+  const pool = preferred.length > 0 ? preferred : usable
+  return [...pool].sort(
     (a, b) => a.priority - b.priority || (a.last_used_at ?? 0) - (b.last_used_at ?? 0),
   )[0]
 }
@@ -349,6 +360,7 @@ export async function callProvider(
     sampling?: { temperature?: number; top_p?: number }
     timeoutMs?: number
     signal?: AbortSignal
+    headers?: Record<string, string>
   },
 ): Promise<UpstreamCall> {
   const base = provider.base_url.replace(/\/+$/, '')
@@ -363,6 +375,9 @@ export async function callProvider(
   const response = await fetch(`${base}/chat/completions`, {
     method: 'POST',
     headers: {
+      // Caller extras first: the built-in Content-Type and Authorization
+      // below always win, so a future caller can't hijack auth by accident.
+      ...(options.headers ?? {}),
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },

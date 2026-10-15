@@ -12,12 +12,13 @@
 import { Hono } from 'hono'
 import { requireAdmin, requireAuth } from '../lib/middleware'
 import { decryptSecret, encryptSecret, maskSecret, newId } from '../lib/crypto'
+import { validateAdminGrantInput } from '../lib/credit-grants'
 import {
   EMAIL_BLOCK_MAX_RULES,
   validateEmailBlockPattern,
 } from '../lib/email-blocks'
-import { pingProvider } from '../lib/ping'
-import { EWMA_ALPHA, EWMA_BETA, selectProviderKey } from '../lib/providers'
+import { pingProvider, type PingResult } from '../lib/ping'
+import { EWMA_ALPHA, EWMA_BETA, FAILED_PROVIDER_COOLDOWN_MS, cooldownForAttempt, selectProviderKey } from '../lib/providers'
 import {
   slugify,
   validateBaseUrl,
@@ -90,6 +91,62 @@ async function loadKeysByProvider(env: Bindings, providerIds: string[]): Promise
 async function primaryKeyMask(keys: UpstreamKeyRow[], encryptionKey: string): Promise<string> {
   if (keys.length === 0) return 'no keys'
   return maskKey(keys[0], encryptionKey)
+}
+
+/**
+ * Picks the key an admin probe dials: the normal pool pick first, falling
+ * back to the least-recently-used non-disabled key ignoring cooldown. Test is
+ * the operator's explicit "probe now" override, so a cooling key must not 409
+ * with "no usable keys" — otherwise a backed-off key can never be force-
+ * recovered. Returns null only when the pool is empty or all keys disabled.
+ */
+export function probeKey(keys: UpstreamKeyRow[]): UpstreamKeyRow | null {
+  const picked = selectProviderKey(keys, now())
+  if (picked) return picked
+  const enabled = keys.filter((k) => k.status !== 'disabled')
+  if (enabled.length === 0) return null
+  return [...enabled].sort(
+    (a, b) => a.priority - b.priority || (a.last_used_at ?? 0) - (b.last_used_at ?? 0),
+  )[0]
+}
+
+/**
+ * Persists an admin probe result onto the probed key. Success fully restores
+ * the key (failures reset, cooldown cleared — a stale future cooldown must
+ * not keep a just-probed-live key out of rotation). Failure applies the same
+ * backoff ladder the pool uses, so a refused probe doesn't invite hammering.
+ * Writes only columns that exist on freellm_upstream_keys (there is no
+ * last_checked_at there — a probe is not served traffic; last_used_at stays).
+ */
+export async function writeProbeKeyOutcome(
+  db: D1Database,
+  key: UpstreamKeyRow,
+  result: PingResult,
+  cooldownBaseMs: number | null,
+  timestamp: number,
+): Promise<void> {
+  if (result.ok) {
+    await db.prepare(
+      `UPDATE freellm_upstream_keys
+       SET status = ?, consecutive_failures = 0, cooldown_until = NULL,
+           last_error = NULL, updated_at = ?
+       WHERE id = ?`,
+    ).bind(result.status, timestamp, key.id).run()
+    return
+  }
+  const failures = key.consecutive_failures + 1
+  await db.prepare(
+    `UPDATE freellm_upstream_keys
+     SET status = 'down', consecutive_failures = ?, cooldown_until = ?,
+         last_error = ?, updated_at = ?
+     WHERE id = ?`,
+  ).bind(
+    failures,
+    timestamp + cooldownForAttempt(cooldownBaseMs ?? FAILED_PROVIDER_COOLDOWN_MS, failures),
+    result.error ?? null,
+    timestamp,
+    key.id,
+  ).run()
 }
 
 // -------------------------------------------------------------- list models
@@ -600,7 +657,7 @@ app.post('/api/admin/upstream-providers/:id/test', async (c) => {
 
   const encryptionKey = await requireEncryptionKey(c.env)
   const keys = await loadKeysByProvider(c.env, [id])
-  const key = selectProviderKey(keys.get(id) ?? [], now())
+  const key = probeKey(keys.get(id) ?? [])
   if (!key) return c.json({ error: 'no_keys', message: 'This provider has no usable keys.' }, 409)
 
   const apiKey = await decryptSecret(key.api_key_ciphertext, key.api_key_iv, encryptionKey)
@@ -629,11 +686,7 @@ app.post('/api/admin/upstream-providers/:id/test', async (c) => {
       id,
     )
     .run()
-  await c.env.DB.prepare(
-    `UPDATE freellm_upstream_keys SET status = ?, last_checked_at = ?, last_error = ?, updated_at = ? WHERE id = ?`,
-  )
-    .bind(result.status, timestamp, result.error ?? null, timestamp, key.id)
-    .run()
+  await writeProbeKeyOutcome(c.env.DB, key, result, provider.cooldown_base_ms, timestamp)
 
   const updated = await c.env.DB.prepare('SELECT * FROM freellm_upstream_providers WHERE id = ?').bind(id).first<UpstreamProviderRow>()
   const updatedKeys = await loadKeysByProvider(c.env, [id])
@@ -941,7 +994,7 @@ app.post('/api/admin/models/:id/providers/:providerId/test', async (c) => {
   const modelId = c.req.param('id')
   const providerId = c.req.param('providerId')
   const provider = await c.env.DB.prepare(
-    `SELECT mp.*, up.base_url, up.status AS up_status, up.consecutive_failures
+    `SELECT mp.*, up.base_url, up.status AS up_status, up.consecutive_failures, up.cooldown_base_ms
      FROM freellm_model_providers mp
      JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
      WHERE mp.id = ? AND mp.model_id = ?`
@@ -951,13 +1004,14 @@ app.post('/api/admin/models/:id/providers/:providerId/test', async (c) => {
     upstream_model: string
     up_status: string
     consecutive_failures: number
+    cooldown_base_ms: number | null
   }>()
 
   if (!provider) return c.json({ error: 'not_found', message: 'Provider config not found.' }, 404)
 
   const encryptionKey = await requireEncryptionKey(c.env)
   const keys = await loadKeysByProvider(c.env, [provider.upstream_provider_id])
-  const key = selectProviderKey(keys.get(provider.upstream_provider_id) ?? [], now())
+  const key = probeKey(keys.get(provider.upstream_provider_id) ?? [])
   if (!key) return c.json({ error: 'no_keys', message: 'This provider has no usable keys.' }, 409)
 
   const apiKey = await decryptSecret(key.api_key_ciphertext, key.api_key_iv, encryptionKey)
@@ -986,11 +1040,7 @@ app.post('/api/admin/models/:id/providers/:providerId/test', async (c) => {
       provider.upstream_provider_id,
     )
     .run()
-  await c.env.DB.prepare(
-    `UPDATE freellm_upstream_keys SET status = ?, last_checked_at = ?, last_error = ?, updated_at = ? WHERE id = ?`,
-  )
-    .bind(result.status, timestamp, result.error ?? null, timestamp, key.id)
-    .run()
+  await writeProbeKeyOutcome(c.env.DB, key, result, provider.cooldown_base_ms, timestamp)
 
   // Also update model_provider messages_served on success
   if (result.ok) {
@@ -1220,6 +1270,85 @@ app.patch('/api/admin/users/:id', async (c) => {
     .bind(id)
     .first()
   return c.json({ user })
+})
+
+// ---------------------------------------------------------- one-off grants
+// Push credits straight onto one user's global balance — no code to redeem.
+// An optional expires_at ("timer") makes the grant temporary: the lazy sweep
+// (functions/lib/credit-grants.ts, running on the spendable/balance paths)
+// claws back the unspent portion past the deadline. The balance bump, ledger
+// row, and grant row are one batch (one transaction), so a crash grants all
+// or nothing.
+
+app.post('/api/admin/users/:id/grant', async (c) => {
+  const id = c.req.param('id')
+  const existing = await c.env.DB.prepare('SELECT id, balance_credits FROM freellm_users WHERE id = ?')
+    .bind(id)
+    .first<{ id: string; balance_credits: number }>()
+  if (!existing) return c.json({ error: 'not_found', message: 'User not found.' }, 404)
+
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null)
+  if (!body) return c.json({ error: 'invalid_body', message: 'Send JSON.' }, 400)
+
+  const validated = validateAdminGrantInput(body)
+  if ('error' in validated) {
+    return c.json({ error: 'invalid_input', message: validated.error }, 400)
+  }
+  const { credits, expiresAt, note } = validated.input
+
+  const me = c.get('user')
+  const grantId = newId()
+  const timestamp = now()
+  await c.env.DB.batch([
+    c.env.DB.prepare('UPDATE freellm_users SET balance_credits = balance_credits + ?, updated_at = ? WHERE id = ?')
+      .bind(credits, timestamp, id),
+    c.env.DB.prepare(
+      `INSERT INTO freellm_credit_ledger (id, user_id, delta, reason, meta, created_at)
+       VALUES (?, ?, ?, 'admin_grant', ?, ?)`,
+    ).bind(
+      newId(),
+      id,
+      credits,
+      JSON.stringify({ grant_id: grantId, admin_id: me?.id ?? null, note, expires_at: expiresAt }),
+      timestamp,
+    ),
+    c.env.DB.prepare(
+      `INSERT INTO freellm_admin_grants (id, user_id, credits, expires_at, expired_at, note, created_by, created_at)
+       VALUES (?, ?, ?, ?, NULL, ?, ?, ?)`,
+    ).bind(grantId, id, credits, expiresAt, note, me?.id ?? null, timestamp),
+  ])
+
+  const fresh = await c.env.DB.prepare('SELECT balance_credits FROM freellm_users WHERE id = ?')
+    .bind(id)
+    .first<{ balance_credits: number }>()
+  return c.json({
+    grant: { id: grantId, user_id: id, credits, expires_at: expiresAt, expired_at: null, note, created_by: me?.id ?? null, created_at: timestamp },
+    balance_credits: fresh?.balance_credits ?? existing.balance_credits + credits,
+  }, 201)
+})
+
+// Grant history for one user (audit + live timers).
+app.get('/api/admin/users/:id/grants', async (c) => {
+  const id = c.req.param('id')
+  const existing = await c.env.DB.prepare('SELECT id FROM freellm_users WHERE id = ?').bind(id).first()
+  if (!existing) return c.json({ error: 'not_found', message: 'User not found.' }, 404)
+
+  const rows = await c.env.DB.prepare(
+    `SELECT id, user_id, credits, expires_at, expired_at, note, created_by, created_at
+     FROM freellm_admin_grants WHERE user_id = ? ORDER BY created_at DESC LIMIT 100`,
+  )
+    .bind(id)
+    .all<{
+      id: string
+      user_id: string
+      credits: number
+      expires_at: number | null
+      expired_at: number | null
+      note: string | null
+      created_by: string | null
+      created_at: number
+    }>()
+  return c.json({ grants: rows.results })
 })
 
 // ---------------------------------------------------------- email blocks

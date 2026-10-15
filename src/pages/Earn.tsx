@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { api, ApiError } from '../lib/api'
-import { useAuth } from '../lib/auth'
+import { useAuth } from '../lib/useAuth'
 import { Button, Card, CardHeader, Credits } from '../components/ui'
 import ArcadePanel from '../components/ArcadePanel'
 
@@ -69,14 +69,11 @@ export default function Earn() {
   }, [])
 
   useEffect(() => {
-    if (user) void load()
-  }, [user, load])
-
-  useEffect(() => {
-    if (user?.email_verified === 1) {
+    if (user) {
+      // oxlint-disable-next-line react/set-state-in-effect -- earn state load when the session resolves or refreshes
       void load()
     }
-  }, [user?.email_verified, load])
+  }, [user, load])
 
   async function run(action: string, fn: () => Promise<unknown>, success: string) {
     setBusyAction(action)
