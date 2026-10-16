@@ -13,6 +13,7 @@ import { Hono } from 'hono'
 import { requireAdmin, requireAuth } from '../lib/middleware'
 import { decryptSecret, encryptSecret, maskSecret, newId } from '../lib/crypto'
 import { validateAdminGrantInput } from '../lib/credit-grants'
+import { writeAuditLog, getClientInfo, validateJustification } from '../lib/audit'
 import {
   EMAIL_BLOCK_MAX_RULES,
   validateEmailBlockPattern,
@@ -637,6 +638,12 @@ app.delete('/api/admin/upstream-providers/:id/keys/:keyId', async (c) => {
 
 // Reveal a specific key.
 app.post('/api/admin/upstream-providers/:id/keys/:keyId/reveal', async (c) => {
+  const admin = c.get('user')
+  const body = await c.req.json<{ justification?: unknown }>().catch(() => null)
+  if (!body) return c.json({ error: 'invalid_input', message: 'Request body is required.' }, 400)
+  const justificationError = validateJustification(body.justification)
+  if (justificationError) return c.json({ error: 'invalid_input', message: justificationError }, 400)
+
   const id = c.req.param('id')
   const keyId = c.req.param('keyId')
   const key = await c.env.DB.prepare('SELECT * FROM freellm_upstream_keys WHERE id = ? AND upstream_provider_id = ?')
@@ -645,6 +652,19 @@ app.post('/api/admin/upstream-providers/:id/keys/:keyId/reveal', async (c) => {
 
   const encryptionKey = await requireEncryptionKey(c.env)
   const apiKey = await decryptSecret(key.api_key_ciphertext, key.api_key_iv, encryptionKey)
+
+  // Write audit log AFTER successful reveal
+  const { ip, user_agent } = getClientInfo(c)
+  await writeAuditLog(c.env, {
+    admin_id: admin.id,
+    action: 'pool_key_reveal',
+    target_type: 'upstream_key',
+    target_id: keyId,
+    justification: body.justification as string,
+    ip,
+    user_agent,
+  })
+
   return c.json({ id: key.id, label: key.label, api_key: apiKey })
 })
 
@@ -707,6 +727,12 @@ app.post('/api/admin/upstream-providers/:id/test', async (c) => {
 // Reveals every key in the provider's pool (the operator's explicit override).
 
 app.post('/api/admin/upstream-providers/:id/reveal', async (c) => {
+  const admin = c.get('user')
+  const body = await c.req.json<{ justification?: unknown }>().catch(() => null)
+  if (!body) return c.json({ error: 'invalid_input', message: 'Request body is required.' }, 400)
+  const justificationError = validateJustification(body.justification)
+  if (justificationError) return c.json({ error: 'invalid_input', message: justificationError }, 400)
+
   const id = c.req.param('id')
   const provider = await c.env.DB.prepare('SELECT * FROM freellm_upstream_providers WHERE id = ?').bind(id).first<UpstreamProviderRow>()
   if (!provider) return c.json({ error: 'not_found', message: 'Upstream provider not found.' }, 404)
@@ -720,6 +746,19 @@ app.post('/api/admin/upstream-providers/:id/reveal', async (c) => {
       api_key: await decryptSecret(k.api_key_ciphertext, k.api_key_iv, encryptionKey),
     })),
   )
+
+  // Write audit log AFTER successful reveal
+  const { ip, user_agent } = getClientInfo(c)
+  await writeAuditLog(c.env, {
+    admin_id: admin.id,
+    action: 'pool_key_reveal',
+    target_type: 'upstream_provider',
+    target_id: id,
+    justification: body.justification as string,
+    ip,
+    user_agent,
+  })
+
   // Backward-compatible: the first key's plaintext is surfaced as `api_key`
   // for single-key callers, with the full pool available as `keys`.
   return c.json({ id: provider.id, label: provider.label, api_key: revealed[0]?.api_key ?? null, keys: revealed })
@@ -1079,6 +1118,12 @@ app.post('/api/admin/models/:id/providers/:providerId/test', async (c) => {
 
 // Reveal model provider key (reveals the upstream provider's pool keys)
 app.post('/api/admin/models/:id/providers/:providerId/reveal', async (c) => {
+  const admin = c.get('user')
+  const body = await c.req.json<{ justification?: unknown }>().catch(() => null)
+  if (!body) return c.json({ error: 'invalid_input', message: 'Request body is required.' }, 400)
+  const justificationError = validateJustification(body.justification)
+  if (justificationError) return c.json({ error: 'invalid_input', message: justificationError }, 400)
+
   const modelId = c.req.param('id')
   const providerId = c.req.param('providerId')
   const provider = await c.env.DB.prepare(
@@ -1102,6 +1147,19 @@ app.post('/api/admin/models/:id/providers/:providerId/reveal', async (c) => {
       api_key: await decryptSecret(k.api_key_ciphertext, k.api_key_iv, encryptionKey),
     })),
   )
+
+  // Write audit log AFTER successful reveal
+  const { ip, user_agent } = getClientInfo(c)
+  await writeAuditLog(c.env, {
+    admin_id: admin.id,
+    action: 'model_provider_reveal',
+    target_type: 'model_provider',
+    target_id: providerId,
+    justification: body.justification as string,
+    ip,
+    user_agent,
+  })
+
   return c.json({ id: providerId, label: provider.up_label, api_key: revealed[0]?.api_key ?? null, keys: revealed })
 })
 
