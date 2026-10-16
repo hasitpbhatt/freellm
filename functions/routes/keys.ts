@@ -24,6 +24,7 @@ import { pingProvider } from '../lib/ping'
 import { CODEX_DEFAULT_ENDPOINT, validateAccountId, validateAuthKind, validateBaseUrl, validateBearer, validateExpiryTimestamp, validateOAuthToken, validateProtocol, validateRefreshToken, validateUpstreamModel } from '../lib/validate'
 import { pingCodex } from '../lib/codex'
 import { listPersonalConnections, publicConnection } from '../lib/connections'
+import { writeAuditLog, getClientInfo, validateJustification } from '../lib/audit'
 import type { Bindings, ConnectionRow, Variables } from '../lib/types'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -354,6 +355,12 @@ app.get('/api/admin/vault', async (c) => {
 
 app.post('/api/admin/vault/:id/reveal', async (c) => {
   const id = c.req.param('id')
+  const admin = c.get('user')
+  const body = await c.req.json<{ justification?: unknown }>().catch(() => null)
+  if (!body) return c.json({ error: 'invalid_input', message: 'Request body is required.' }, 400)
+  const justificationError = validateJustification(body.justification)
+  if (justificationError) return c.json({ error: 'invalid_input', message: justificationError }, 400)
+
   const row = await c.env.DB.prepare('SELECT * FROM freellm_connections WHERE id = ?').bind(id).first<ConnectionRow>()
   if (!row) return c.json({ error: 'not_found', message: 'Key not found.' }, 404)
   // OAuth access tokens belong to the user's own provider account and are
@@ -369,6 +376,19 @@ app.post('/api/admin/vault/:id/reveal', async (c) => {
     return c.json({ error: 'not_configured', message: 'ENCRYPTION_KEY is not set on this deployment.' }, 500)
   }
   const apiKey = await decryptSecret(row.key_ciphertext, row.key_iv, encryption)
+
+  // Write audit log AFTER successful reveal
+  const { ip, user_agent } = getClientInfo(c)
+  await writeAuditLog(c.env, {
+    admin_id: admin.id,
+    action: 'vault_reveal',
+    target_type: 'connection',
+    target_id: id,
+    justification: body.justification as string,
+    ip,
+    user_agent,
+  })
+
   return c.json({ id, label: row.label, api_key: apiKey })
 })
 
