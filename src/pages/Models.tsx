@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, normalizeCatalogModel, type CatalogModel } from '../lib/api'
-import { Card } from '../components/ui'
+import { Card, LoadingState, EmptyState } from '../components/ui'
 
 type Model = CatalogModel
 
@@ -52,7 +52,7 @@ export default function Models() {
       </div>
     )
   }
-  if (models === null) return <p className="py-12 text-center text-[13px] text-muted">Loading…</p>
+  if (models === null) return <LoadingState />
 
   return (
     <div className="flex flex-col gap-6">
@@ -66,12 +66,9 @@ export default function Models() {
       </div>
 
       {models.length === 0 && (
-        <Card className="p-8 text-center text-[13px] text-muted">
-          The Pool is being filled — check back soon.
-          {user?.role === 'admin' && (
-            <> As an admin you can add models from the admin panel.</>
-          )}
-        </Card>
+        <EmptyState title="The Pool is being filled — check back soon.">
+          {user?.role === 'admin' && <>As an admin you can add models from the admin panel.</>}
+        </EmptyState>
       )}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
