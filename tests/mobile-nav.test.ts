@@ -38,7 +38,7 @@ test('mobile bottom nav: hidden for signed-out visitors', () => {
 })
 
 test('mobile drawer: secondary destinations and account controls', () => {
-  for (const to of ['/battle', '/developers', '/usage', '/admin']) {
+  for (const to of ['/developers', '/usage', '/admin']) {
     assert.ok(mobileMenu.includes(to), `drawer links to ${to}`)
   }
   assert.ok(mobileMenu.includes('help@freellm.hasit.in'), 'drawer surfaces support email')
@@ -73,7 +73,7 @@ test('app shell: desktop nav and mobile controls are mutually exclusive', () => 
 })
 
 test('app shell: still renders every primary destination on desktop', () => {
-  for (const label of ['Dashboard', 'Chat', 'Battle', 'Your Keys', 'Earn', 'Models', 'API']) {
+  for (const label of ['Dashboard', 'Chat', 'Your Keys', 'Earn', 'Models', 'API']) {
     assert.ok(appShell.includes(`label: '${label}'`), `top nav keeps ${label}`)
   }
   assert.ok(appShell.includes("user?.role === 'admin'"), 'admin link stays gated by role')

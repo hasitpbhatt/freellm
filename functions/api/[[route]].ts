@@ -5,7 +5,6 @@ import adminRoutes from '../routes/admin'
 import promoRoutes from '../routes/promos'
 import chatRoutes from '../routes/chat'
 import economyRoutes from '../routes/economy'
-import arenaRoutes from '../routes/arena'
 import keysRoutes from '../routes/keys'
 import apiKeyRoutes from '../routes/apikeys'
 import openAiRoutes from '../routes/openai'
@@ -71,7 +70,6 @@ app.route('/', adminRoutes)
 app.route('/', promoRoutes)
 app.route('/', chatRoutes)
 app.route('/', economyRoutes)
-app.route('/', arenaRoutes)
 app.route('/', keysRoutes)
 app.route('/', apiKeyRoutes)
 app.route('/', openAiRoutes)
