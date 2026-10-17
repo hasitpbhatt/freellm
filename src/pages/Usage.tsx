@@ -69,7 +69,7 @@ export default function Usage() {
   const maxDaily = Math.max(1, ...usage.daily.map((d) => d.credits))
 
   return (
-    <div className="flex flex_col flex-col gap-6">
+    <div className="flex flex-col gap-6">
       <div>
         <h1 className="text-xl font-semibold">Usage</h1>
         <p className="mt-1 text-[13px] text-muted">

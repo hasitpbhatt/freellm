@@ -31,6 +31,21 @@ export function Card({ className = '', ...props }: HTMLAttributes<HTMLDivElement
   return <div className={`card ${className}`} {...props} />
 }
 
+/** Shared loading placeholder — keeps the spinner copy consistent. */
+export function LoadingState({ label = 'Loading…', className = '' }: { label?: string; className?: string }) {
+  return <p className={`py-12 text-center text-[13px] text-muted ${className}`} role="status">{label}</p>
+}
+
+/** Shared empty-state block. */
+export function EmptyState({ title, children, className = '' }: { title?: string; children?: ReactNode; className?: string }) {
+  return (
+    <Card className={`p-8 text-center text-[13px] text-muted ${className}`}>
+      {title && <p className="font-medium text-content">{title}</p>}
+      {children && <div className="mt-1">{children}</div>}
+    </Card>
+  )
+}
+
 export function CardHeader({ title, action }: { title: string; action?: ReactNode }) {
   return (
     <div className="flex items-center justify-between border-b border-line px-4 py-3">

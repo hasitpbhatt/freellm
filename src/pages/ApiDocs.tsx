@@ -241,8 +241,6 @@ const res = await client.chat.completions.create({
   model: '${exampleSlug}',                          // any slug below
   messages: [{ role: 'user', content: 'Explain large language models in one sentence.' }],
 })
-console.log(res.choices[0].message.content)
-
 // streamed:
 const stream = await client.chat.completions.create({
   model: '${exampleSlug}',

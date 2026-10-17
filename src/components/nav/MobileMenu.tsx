@@ -6,7 +6,6 @@ import { Credits } from '../ui'
 // Secondary destinations not worth a bottom-tab slot. Grouped so the drawer
 // reads as "everything else", with the account controls pinned at the bottom.
 const secondaryItems = [
-  { to: '/battle', label: 'Battle', desc: 'Arena — model vs model' },
   { to: '/developers', label: 'API', desc: 'OpenAI-compatible endpoint docs' },
   { to: '/usage', label: 'Usage', desc: 'Your request history' },
 ]

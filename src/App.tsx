@@ -11,7 +11,6 @@ import Dashboard from './pages/Dashboard'
 import Usage from './pages/Usage'
 import VerifyEmail from './pages/VerifyEmail'
 import ReferralLanding from './pages/ReferralLanding'
-import Battle from './pages/Battle'
 import Keys from './pages/Keys'
 import ApiDocs from './pages/ApiDocs'
 
@@ -23,7 +22,6 @@ export default function App() {
           <Route path="/" element={<Landing />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/chat" element={<Chat />} />
-          <Route path="/battle" element={<Battle />} />
           <Route path="/earn" element={<Earn />} />
           <Route path="/models" element={<Models />} />
           <Route path="/developers" element={<ApiDocs />} />

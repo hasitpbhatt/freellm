@@ -7,6 +7,7 @@ import { isEmailBlocked } from '../lib/email-blocks'
 import { createSession, destroySession, getSession, clearedSessionCookie } from '../lib/session'
 import { sendVerificationEmail } from '../lib/email'
 import { generateReferralCode, normalizeEmail } from '../lib/validate'
+import { allowRequest } from '../lib/ratelimit'
 import type { Bindings, PublicUser, Variables } from '../lib/types'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -42,25 +43,6 @@ const toPublicUser = (row: UserLike): PublicUser => ({
   created_at: row.created_at,
   updated_at: row.updated_at,
 })
-
-/** KV sliding counter; returns false when the caller is over the limit. */
-async function allowRequest(kv: KVNamespace, key: string, limit: number, windowSeconds: number): Promise<boolean> {
-  const now = Date.now()
-  const raw = await kv.get(key)
-  let entry = { count: 0, resetAt: now + windowSeconds * 1000 }
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw) as { count: number; resetAt: number }
-      if (parsed && typeof parsed.count === 'number') entry = parsed
-    } catch {
-      /* corrupt entry -> reset */
-    }
-  }
-  if (now > entry.resetAt) entry = { count: 0, resetAt: now + windowSeconds * 1000 }
-  entry.count += 1
-  await kv.put(key, JSON.stringify(entry), { expirationTtl: windowSeconds })
-  return entry.count <= limit
-}
 
 // ------------------------------------------------------------------ me
 
