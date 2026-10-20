@@ -18,16 +18,26 @@
 
 import { Hono, type Context } from 'hono'
 import { requireAuthOrToken } from '../lib/middleware'
-import { computeSpendable, estimateReserve, placeHold, settleRequest, type Usage } from '../lib/metering'
-import { loadAlias, openCall, recordOutcome } from '../lib/providers'
+import { computeSpendable, estimateReserve, placeHold, settleRequest, IMAGE_RESERVE_TOKENS, type Usage } from '../lib/metering'
+import { contentImageCount, contentTextLength, parseOpenAiMessages, type ChatMessage } from '../lib/openai-messages'
+import { aliasSupportsVision, loadAlias, openCall, recordOutcome } from '../lib/providers'
 import { canAccessModel, tierGatedMessage } from '../lib/tiers'
 import { newId, sha256Hex } from '../lib/crypto'
 import { dialConnection, connectionSettleModel, getUsableConnection } from '../lib/connections'
+import { readJsonBody } from '../lib/request-body'
+import { allowRequest } from '../lib/ratelimit'
 import type { Bindings, Variables } from '../lib/types'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
-type OpenAiMessage = { role: 'system' | 'user' | 'assistant'; content: string }
+// A single shared token fronts every fitness scan, so cap both the caller and
+// the service. The global ceiling protects upstream quotas from a runaway
+// client; the per-user ceiling keeps one account from starving the rest.
+const V1_USER_RATE_LIMIT = 60
+const V1_GLOBAL_RATE_LIMIT = 600
+const V1_RATE_WINDOW_SECONDS = 60
+
+type OpenAiMessage = ChatMessage
 
 /** OpenAI's error envelope, so SDKs surface a useful message instead of "undefined". */
 const openAiBody = (type: string, message: string, code: string | null = null) => ({ error: { message, type, code } })
@@ -55,72 +65,174 @@ function usageFromChunk(chunk: Record<string, unknown>): Usage | null {
 // ------------------------------------------------------------- models list
 
 app.get('/v1/models', async (c) => {
-  // Join model_providers -> upstream_providers for provider status info
+  // Alias capabilities plus the capabilities advertised by every active
+  // provider config, so a model is marked `vision` when at least one config
+  // can actually accept images.
   const rows = await c.env.DB.prepare(
-    `SELECT DISTINCT m.slug, m.label, m.description, m.access_tier, m.scoped_only, up.status AS up_status
+    `SELECT m.slug, m.label, m.description, m.access_tier, m.scoped_only,
+            m.capabilities, up.status AS provider_status,
+            up.cooldown_until AS provider_cooldown_until,
+            (SELECT COUNT(*) FROM freellm_upstream_keys k
+              WHERE k.upstream_provider_id = up.id
+                AND k.status != 'disabled'
+                AND (k.cooldown_until IS NULL OR k.cooldown_until <= ?)) AS usable_keys,
+            um.capabilities AS um_capabilities
      FROM freellm_models m
      LEFT JOIN freellm_model_providers mp ON mp.model_id = m.id AND mp.active = 1
      LEFT JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
+     LEFT JOIN freellm_upstream_models um
+       ON um.upstream_provider_id = mp.upstream_provider_id
+      AND um.upstream_model = mp.upstream_model
      WHERE m.active = 1
      ORDER BY m.sort_order, m.slug`,
-  ).all<{ slug: string; label: string; description: string | null; access_tier: string; scoped_only: number; up_status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled' | null }>()
+  )
+    .bind(Date.now())
+    .all<{
+      slug: string
+      label: string
+      description: string | null
+      access_tier: string
+      scoped_only: number
+      capabilities: string | null
+      provider_status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled' | null
+      provider_cooldown_until: number | null
+      usable_keys: number | null
+      um_capabilities: string | null
+    }>()
+
+  const bySlug = new Map<
+    string,
+    {
+      id: string
+      object: 'model'
+      created: number
+      owned_by: string
+      access_tier: string
+      scoped_only: number
+      description?: string
+      capabilities: Set<string>
+      visionServable: boolean
+    }
+  >()
+
+  const now = Date.now()
+  for (const row of rows.results) {
+    let entry = bySlug.get(row.slug)
+    if (!entry) {
+      entry = {
+        id: row.slug,
+        object: 'model',
+        created: 0,
+        owned_by: 'freellm',
+        access_tier: row.access_tier,
+        scoped_only: row.scoped_only,
+        ...(row.description ? { description: row.description } : {}),
+        capabilities: new Set(parseCapabilities(row.capabilities)),
+        visionServable: false,
+      }
+      bySlug.set(row.slug, entry)
+    }
+    const configServes =
+      row.provider_status != null &&
+      row.provider_status !== 'disabled' &&
+      (row.provider_cooldown_until == null || row.provider_cooldown_until <= now) &&
+      (row.usable_keys ?? 0) > 0
+    if (configServes) {
+      for (const capability of parseCapabilities(row.um_capabilities)) {
+        if (capability === 'vision') entry.visionServable = true
+        entry.capabilities.add(capability)
+      }
+    }
+  }
 
   return c.json({
     object: 'list',
-    data: rows.results.map((row) => ({
-      id: row.slug,
-      object: 'model' as const,
-      created: 0,
-      owned_by: 'freellm',
-      access_tier: row.access_tier,
-      scoped_only: row.scoped_only,
-      ...(row.description ? { description: row.description } : {}),
+    data: Array.from(bySlug.values()).map(({ capabilities, visionServable, ...entry }) => ({
+      ...entry,
+      capabilities: Array.from(capabilities)
+        .filter((capability) => capability !== 'vision' || visionServable)
+        .sort(),
     })),
   })
 })
+
+function parseCapabilities(raw: string | null): string[] {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((tag): tag is string => typeof tag === 'string') : []
+  } catch {
+    return []
+  }
+}
 
 // ------------------------------------------------------------- chat completions
 
 app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
   const user = c.get('user')
-  const payload = await c.req
-    .json<{
-      model?: unknown
-      messages?: unknown
-      max_tokens?: unknown
-      max_completion_tokens?: unknown
-      stream?: unknown
-      stream_options?: unknown
-      temperature?: unknown
-      top_p?: unknown
-      required_capabilities?: unknown
-      key_mode?: unknown
-      key_id?: unknown
-      connection_id?: unknown
-    }>()
-    .catch(() => null)
+  const perUser = await allowRequest(
+    c.env.freellm_sessions,
+    `rate:v1:user:${user.id}`,
+    V1_USER_RATE_LIMIT,
+    V1_RATE_WINDOW_SECONDS,
+  )
+  const globallyAllowed =
+    perUser &&
+    (await allowRequest(
+      c.env.freellm_sessions,
+      'rate:v1:global',
+      V1_GLOBAL_RATE_LIMIT,
+      V1_RATE_WINDOW_SECONDS,
+    ))
+  if (!perUser || !globallyAllowed) {
+    return c.json(
+      openAiBody(
+        'rate_limit_error',
+        'Rate limit exceeded. Try again in a minute.',
+        'rate_limited',
+      ),
+      429,
+      { 'Retry-After': String(V1_RATE_WINDOW_SECONDS) },
+    )
+  }
+  const parsed = await readJsonBody<{
+    model?: unknown
+    messages?: unknown
+    max_tokens?: unknown
+    max_completion_tokens?: unknown
+    stream?: unknown
+    stream_options?: unknown
+    temperature?: unknown
+    top_p?: unknown
+    required_capabilities?: unknown
+    key_mode?: unknown
+    key_id?: unknown
+    connection_id?: unknown
+  }>(c.req.raw)
+  if (!parsed.ok) {
+    return c.json(openAiBody('invalid_request_error', 'Request body is too large.', 'payload_too_large'), 413)
+  }
+  const payload = parsed.value
 
   const slug = typeof payload?.model === 'string' ? payload.model.trim() : ''
-  const rawMessages = Array.isArray(payload?.messages) ? payload.messages : []
-  const messages = rawMessages
-    .filter(
-      (m): m is OpenAiMessage =>
-        !!m &&
-        typeof m === 'object' &&
-        typeof (m as { role?: unknown }).role === 'string' &&
-        typeof (m as { content?: unknown }).content === 'string' &&
-        ['system', 'user', 'assistant'].includes((m as { role: string }).role),
-    )
-    .map((m) => ({ role: m.role, content: m.content }))
-  // required_capabilities: array of capability strings (e.g., ["tools", "vision"])
+  const parsedMessages = parseOpenAiMessages(payload?.messages)
+  if (!parsedMessages.ok) {
+    return c.json(openAiBody('invalid_request_error', parsedMessages.error, 'invalid_messages'), 400)
+  }
+  const messages = parsedMessages.messages
+  const imageCount = messages.reduce((count, message) => count + contentImageCount(message.content), 0)
+  // required_capabilities: array of capability strings (e.g., ["tools", "vision"]).
+  // Images are authoritative: add vision automatically so routing can never
+  // send them to a text-only config.
   const requiredCapabilities = Array.isArray(payload?.required_capabilities)
     ? payload.required_capabilities.filter((c): c is string => typeof c === 'string')
     : []
+  if (imageCount > 0 && !requiredCapabilities.includes('vision')) requiredCapabilities.push('vision')
 
   if (!slug || messages.length === 0) {
     return c.json(openAiBody('invalid_request_error', 'model and a non-empty messages array are required.'), 400)
   }
-  if (messages.some((m) => m.content.length > 100_000)) {
+  if (messages.some((m) => contentTextLength(m.content) > 100_000)) {
     return c.json(openAiBody('invalid_request_error', 'A single message is too long.'), 400)
   }
 
@@ -149,6 +261,16 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
         : 8192
 
   if (connectionId) {
+    if (imageCount > 0) {
+      return c.json(
+        openAiBody(
+          'invalid_request_error',
+          'Image input is not available with a personal connection yet.',
+          'vision_unsupported',
+        ),
+        400,
+      )
+    }
     return chatWithConnection(c, {
       user,
       messages,
@@ -166,6 +288,17 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
     return c.json(
       openAiBody('invalid_request_error', `"${slug}" is not in The Pool. Browse GET /v1/models.`, 'model_not_found'),
       404,
+    )
+  }
+
+  if (imageCount > 0 && !aliasSupportsVision(alias)) {
+    return c.json(
+      openAiBody(
+        'invalid_request_error',
+        `${alias.model.label} doesn't accept images — pick a vision model from GET /v1/models.`,
+        'vision_unsupported',
+      ),
+      400,
     )
   }
 
@@ -259,6 +392,7 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
           settlement: kind === 'completed' ? { kind, usage: usage ?? preUsage ?? null } : { kind, reason },
           latencyMs: Date.now() - startedAt,
           usage: usage ?? preUsage ?? null,
+          abortedMinCharge: imageCount * IMAGE_RESERVE_TOKENS,
         })
         break
       } catch (err) {

@@ -36,6 +36,7 @@
 // time so concurrent traffic spreads across keys.
 
 import { decryptSecret } from './crypto'
+import type { ChatContentPart } from './openai-messages'
 import type { Bindings, ModelProviderRow, ModelRow, UpstreamKeyRow, UpstreamProviderRow, UpstreamProviderWithModel } from './types'
 import { assertSafeBaseUrl } from './validate'
 
@@ -99,6 +100,38 @@ export const LATENCY_WEIGHTED_EXPLORATION_RATE = 0.15
 export type AliasWithProviders = {
   model: ModelRow
   providers: Array<ModelProviderRow & { upstream: UpstreamProviderWithModel }>
+}
+
+/**
+ * True when at least one active config for the alias can accept vision input.
+ * A config with a disabled upstream or no enabled key can never serve it, so a
+ * metadata-only claim must not pass this check.
+ */
+export function aliasSupportsVision(alias: AliasWithProviders): boolean {
+  return alias.providers.some(
+    (provider) =>
+      provider.active !== 0 &&
+      provider.upstream.status !== 'disabled' &&
+      provider.upstream.model_capabilities.includes('vision') &&
+      provider.upstream.keys.some((key) => key.status !== 'disabled'),
+  )
+}
+
+/**
+ * True when a config could serve right now: enabled upstream, a rested key, and
+ * no active cooldown. Public catalogs use this so they never advertise a
+ * capability that routing would refuse.
+ */
+export function configServesNow(
+  provider: ModelProviderRow & { upstream: UpstreamProviderWithModel },
+  now: number = Date.now(),
+): boolean {
+  return (
+    provider.active !== 0 &&
+    provider.upstream.status !== 'disabled' &&
+    (provider.upstream.cooldown_until == null || provider.upstream.cooldown_until <= now) &&
+    selectProviderKey(provider.upstream.keys, now) !== null
+  )
 }
 
 /** Minimal upstream config for callProvider (decrypted on demand). */
@@ -338,7 +371,10 @@ export function selectProviderKey(keys: UpstreamKeyRow[], now: number): Upstream
   )[0]
 }
 
-export type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string }
+export type ChatMessage = {
+  role: 'system' | 'user' | 'assistant'
+  content: string | ChatContentPart[]
+}
 
 export type UpstreamCall = {
   response: Response
@@ -463,8 +499,12 @@ export async function providerApiKey(
   env: Bindings,
   upstream: UpstreamProviderWithModel,
   now: number = Date.now(),
+  excludeKeyIds: ReadonlySet<string> = new Set(),
 ): Promise<{ key: UpstreamKeyRow; apiKey: string } | null> {
-  const key = selectProviderKey(upstream.keys, now)
+  const key = selectProviderKey(
+    excludeKeyIds.size === 0 ? upstream.keys : upstream.keys.filter((row) => !excludeKeyIds.has(row.id)),
+    now,
+  )
   if (!key) return null
   const apiKey = await decryptSecret(key.api_key_ciphertext, key.api_key_iv, env.ENCRYPTION_KEY)
   // Best-effort freshness marker; a stale write must not block the request.
@@ -618,36 +658,44 @@ export async function openStreamingCall(
 
   let lastError = ''
   for (const candidate of candidates) {
-    const startedAt = Date.now()
-    try {
-      const selected = await providerApiKey(env, candidate.upstream)
-      if (!selected) {
-        lastError = 'no usable keys'
-        continue
+    const triedKeys = new Set<string>()
+    // One config may hold several keys. A 429 cools only that key, so try the
+    // next key on the same config before declaring the config exhausted.
+    keyAttempt: while (true) {
+      const startedAt = Date.now()
+      try {
+        const selected = await providerApiKey(env, candidate.upstream, Date.now(), triedKeys)
+        if (!selected) {
+          lastError = triedKeys.size > 0 ? 'no more usable keys' : 'no usable keys'
+          break
+        }
+        triedKeys.add(selected.key.id)
+        const { response } = await callProvider(
+          { id: candidate.id, base_url: candidate.upstream.base_url, upstream_model: candidate.upstream_model },
+          selected.apiKey,
+          messages,
+          { maxTokens: options.maxTokens, stream: true, sampling: options.sampling },
+        )
+        if (response.ok && response.body) return { provider: candidate, key: selected.key, response }
+        lastError = `${response.status} ${response.statusText}`
+        const detail = (await response.text().catch(() => '')).slice(0, 200)
+        await recordOutcome(env, candidate.upstream.id, candidate.id, {
+          ok: false,
+          latencyMs: Date.now() - startedAt,
+          error: `${lastError} ${detail}`,
+          keyId: selected.key.id,
+          status: response.status,
+        })
+        if (response.status === 429) continue keyAttempt
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : 'network error'
+        await recordOutcome(env, candidate.upstream.id, candidate.id, {
+          ok: false,
+          latencyMs: Date.now() - startedAt,
+          error: lastError,
+        })
       }
-      const { response } = await callProvider(
-        { id: candidate.id, base_url: candidate.upstream.base_url, upstream_model: candidate.upstream_model },
-        selected.apiKey,
-        messages,
-        { maxTokens: options.maxTokens, stream: true, sampling: options.sampling },
-      )
-      if (response.ok && response.body) return { provider: candidate, key: selected.key, response }
-      lastError = `${response.status} ${response.statusText}`
-      const detail = (await response.text().catch(() => '')).slice(0, 200)
-      await recordOutcome(env, candidate.upstream.id, candidate.id, {
-        ok: false,
-        latencyMs: Date.now() - startedAt,
-        error: `${lastError} ${detail}`,
-        keyId: selected.key.id,
-        status: response.status,
-      })
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : 'network error'
-      await recordOutcome(env, candidate.upstream.id, candidate.id, {
-        ok: false,
-        latencyMs: Date.now() - startedAt,
-        error: lastError,
-      })
+      break
     }
   }
   return { error: lastError || 'all configs failed' }
@@ -674,68 +722,77 @@ export async function openCall(
 
   let lastError = ''
   for (const candidate of candidates) {
-    const startedAt = Date.now()
-    try {
-      const selected = await providerApiKey(env, candidate.upstream)
-      if (!selected) {
-        lastError = 'no usable keys'
-        continue
-      }
+    const triedKeys = new Set<string>()
+    // A 429 is a key-level quota signal. Walk the rest of this config's pool
+    // before moving on, so one rate-limited key cannot fail the whole request.
+    keyAttempt: while (true) {
+      const startedAt = Date.now()
+      try {
+        const selected = await providerApiKey(env, candidate.upstream, Date.now(), triedKeys)
+        if (!selected) {
+          lastError = triedKeys.size > 0 ? 'no more usable keys' : 'no usable keys'
+          break
+        }
+        triedKeys.add(selected.key.id)
 
-      const supportsStreaming = candidate.upstream.supports_streaming === 1
+        const supportsStreaming = candidate.upstream.supports_streaming === 1
+        let fallThroughToNonStreaming = !supportsStreaming
 
-      if (supportsStreaming) {
-        // Try streaming first
-        const { response } = await callProvider(
-          { id: candidate.id, base_url: candidate.upstream.base_url, upstream_model: candidate.upstream_model },
-          selected.apiKey,
-          messages,
-          { maxTokens: options.maxTokens, stream: true, sampling: options.sampling },
-        )
-        if (response.ok && response.body) return { provider: candidate, key: selected.key, response, streaming: true }
-        lastError = `${response.status} ${response.statusText}`
-        const detail = (await response.text().catch(() => '')).slice(0, 200)
+        if (supportsStreaming) {
+          // Try streaming first
+          const { response } = await callProvider(
+            { id: candidate.id, base_url: candidate.upstream.base_url, upstream_model: candidate.upstream_model },
+            selected.apiKey,
+            messages,
+            { maxTokens: options.maxTokens, stream: true, sampling: options.sampling },
+          )
+          if (response.ok && response.body) return { provider: candidate, key: selected.key, response, streaming: true }
+          lastError = `${response.status} ${response.statusText}`
+          const detail = (await response.text().catch(() => '')).slice(0, 200)
+          await recordOutcome(env, candidate.upstream.id, candidate.id, {
+            ok: false,
+            latencyMs: Date.now() - startedAt,
+            error: `${lastError} ${detail}`,
+            keyId: selected.key.id,
+            status: response.status,
+          })
+
+          if (response.status === 429) continue keyAttempt
+          // Only these statuses mean "this endpoint cannot stream"; anything
+          // else is a real failure and should fail over to the next config.
+          fallThroughToNonStreaming =
+            response.status === 400 || response.status === 405 || response.status === 501
+        }
+
+        if (fallThroughToNonStreaming) {
+          // Non-streaming fallback
+          const { response, usage } = await callProviderNonStreaming(
+            { id: candidate.id, base_url: candidate.upstream.base_url, upstream_model: candidate.upstream_model },
+            selected.apiKey,
+            messages,
+            { maxTokens: options.maxTokens, sampling: options.sampling },
+          )
+          if (response.ok) return { provider: candidate, key: selected.key, response, usage, streaming: false }
+          lastError = `${response.status} ${response.statusText}`
+          const detail = (await response.text().catch(() => '')).slice(0, 200)
+          await recordOutcome(env, candidate.upstream.id, candidate.id, {
+            ok: false,
+            latencyMs: Date.now() - startedAt,
+            error: `${lastError} ${detail}`,
+            keyId: selected.key.id,
+            status: response.status,
+          })
+          if (response.status === 429) continue keyAttempt
+        }
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : 'network error'
         await recordOutcome(env, candidate.upstream.id, candidate.id, {
           ok: false,
           latencyMs: Date.now() - startedAt,
-          error: `${lastError} ${detail}`,
-          keyId: selected.key.id,
-          status: response.status,
+          error: lastError,
         })
-
-        // If the error indicates streaming is not supported, try non-streaming
-        const isStreamingNotSupported = response.status === 400 || response.status === 405 || response.status === 501
-        if (isStreamingNotSupported) {
-          // Fall through to non-streaming attempt below
-        } else {
-          continue
-        }
       }
-
-      // Non-streaming fallback
-      const { response, usage } = await callProviderNonStreaming(
-        { id: candidate.id, base_url: candidate.upstream.base_url, upstream_model: candidate.upstream_model },
-        selected.apiKey,
-        messages,
-        { maxTokens: options.maxTokens, sampling: options.sampling },
-      )
-      if (response.ok) return { provider: candidate, key: selected.key, response, usage, streaming: false }
-      lastError = `${response.status} ${response.statusText}`
-      const detail = (await response.text().catch(() => '')).slice(0, 200)
-      await recordOutcome(env, candidate.upstream.id, candidate.id, {
-        ok: false,
-        latencyMs: Date.now() - startedAt,
-        error: `${lastError} ${detail}`,
-        keyId: selected.key.id,
-        status: response.status,
-      })
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : 'network error'
-      await recordOutcome(env, candidate.upstream.id, candidate.id, {
-        ok: false,
-        latencyMs: Date.now() - startedAt,
-        error: lastError,
-      })
+      break
     }
   }
   return { error: lastError || 'all configs failed' }

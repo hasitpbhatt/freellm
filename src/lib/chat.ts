@@ -12,6 +12,12 @@ export type StreamHandlers = {
   onSettled: (event: Extract<ChatSseEvent, { type: 'settled' }>) => void
 }
 
+export type WireContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } }
+
+export type WireMessage = { role: string; content: string | WireContentPart[] }
+
 export type StreamResult = { completed: boolean; error?: string; status?: number; shortfall?: number; retryable?: boolean }
 
 interface ErrorBody {
@@ -27,7 +33,7 @@ interface ErrorBody {
  * upstream `data: {...}` chunks are decoded for delta content.
  */
 export async function streamChat(
-  payload: { model: string; messages: { role: string; content: string }[]; request_id: string; max_tokens?: number; connection_id?: string },
+  payload: { model: string; messages: WireMessage[]; request_id: string; max_tokens?: number; connection_id?: string },
   handlers: StreamHandlers,
   signal?: AbortSignal,
 ): Promise<StreamResult> {

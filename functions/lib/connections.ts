@@ -9,7 +9,7 @@
 import type { Context } from 'hono'
 import type { Bindings, ConnectionRow, ModelRow, Variables } from './types'
 import { decryptSecret, encryptSecret } from './crypto'
-import { callProvider, type UpstreamConfig } from './providers'
+import { callProvider, type ChatMessage, type UpstreamConfig } from './providers'
 import {
   byokExtraHeaders,
   getOAuthProviderConfig,
@@ -164,7 +164,7 @@ export async function dialConnection(
   c: Context<Env>,
   conn: ConnectionRow,
   opts: {
-    messages: { role: 'system' | 'user' | 'assistant'; content: string }[]
+    messages: ChatMessage[]
     upstreamModel?: string
     maxTokens?: number
     stream?: boolean
@@ -177,10 +177,18 @@ export async function dialConnection(
 
   let working = conn
   if (conn.protocol === 'codex') {
+    // The Codex translation is text-only; fail loudly rather than silently
+    // dropping image parts the caller explicitly sent.
+    const codexMessages = opts.messages.map((m) => {
+      if (typeof m.content !== 'string') {
+        throw new Error('This connection does not support image input.')
+      }
+      return { role: m.role, content: m.content }
+    })
     // openByokCodexCall decrypts, refreshes (and persists), and translates the
     // Responses stream into Chat Completions SSE. It dials `row.upstream_model`,
     // so carry the caller's override across.
-    return openByokCodexCall(c.env, { ...working, upstream_model: upstreamModel }, opts.messages, {
+    return openByokCodexCall(c.env, { ...working, upstream_model: upstreamModel }, codexMessages, {
       signal: opts.signal,
     })
   }

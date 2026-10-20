@@ -5,6 +5,7 @@ import {
   estimateReserve,
   placeHold,
   settleRequest,
+  IMAGE_RESERVE_TOKENS,
   type Usage,
 } from '../functions/lib/metering'
 import { createTestDb, readBalances, seedUser, testModel } from './helpers/db'
@@ -115,6 +116,40 @@ test('settle: aborted stream charges the flat rate and records aborted', async (
   assert.equal(result.creditsCharged, testModel.flat_rate_credits)
   assert.equal(result.status, 'aborted')
   assert.deepEqual(await readBalances(db, userId), { global: 3_000, scoped: 0 })
+})
+
+test('settle: aborted vision charges at least the image reserve', async () => {
+  const userId = await seedUser(db, { balanceCredits: 50_000 })
+  const result = await settleRequest(db, {
+    userId,
+    requestId: 'req-abort-vision',
+    model: testModel,
+    providerLabel: 'test-provider',
+    settlement: { kind: 'aborted', reason: 'client disconnected' },
+    latencyMs: 5,
+    abortedMinCharge: 3 * IMAGE_RESERVE_TOKENS,
+  })
+  assert.equal(result.creditsCharged, 3 * IMAGE_RESERVE_TOKENS)
+  assert.equal(result.status, 'aborted')
+  assert.equal(result.source, 'flat_rate')
+  assert.deepEqual(await readBalances(db, userId), {
+    global: 50_000 - 3 * IMAGE_RESERVE_TOKENS,
+    scoped: 0,
+  })
+})
+
+test('settle: an aborted request keeps the flat rate when it is higher', async () => {
+  const userId = await seedUser(db, { balanceCredits: 5_000 })
+  const result = await settleRequest(db, {
+    userId,
+    requestId: 'req-abort-small-image',
+    model: testModel,
+    providerLabel: 'test-provider',
+    settlement: { kind: 'aborted', reason: 'client disconnected' },
+    latencyMs: 5,
+    abortedMinCharge: 100,
+  })
+  assert.equal(result.creditsCharged, testModel.flat_rate_credits)
 })
 
 test('settle: failed upstream charges nothing', async () => {

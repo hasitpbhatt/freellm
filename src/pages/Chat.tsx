@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { streamChat, type ChatSseEvent } from '../lib/chat'
+import { streamChat, type ChatSseEvent, type WireMessage } from '../lib/chat'
 import { api, normalizeCatalogModel, type CatalogModel } from '../lib/api'
+import { fileToImageDataUrl } from '../lib/image'
 import { useAuth } from '../lib/useAuth'
 import { Button, Card, Credits, Select } from '../components/ui'
 
@@ -21,6 +22,7 @@ type Message = {
   id: string
   role: 'user' | 'assistant'
   content: string
+  images?: string[]
   streaming?: boolean
   error?: string
   model?: string | null
@@ -58,6 +60,8 @@ const statusDot: Record<string, string> = {
 }
 
 const CHAT_STORAGE_KEY = 'freellm:chat:v1'
+const MAX_ATTACHMENTS = 4
+const MAX_WIRE_IMAGES = 8
 
 type ChatPersisted = { mode?: 'pool' | 'byok'; selectedModel?: string; selectedKeyId?: string }
 
@@ -77,6 +81,33 @@ function requestClock(): number {
   return Date.now()
 }
 
+/**
+ * Converts chat history to the wire shape. A long conversation can contain
+ * more images than one request may carry, so keep the most recent ones and
+ * leave older turns as text.
+ */
+function toWireMessages(messages: Message[]): WireMessage[] {
+  let remaining = MAX_WIRE_IMAGES
+  const wire: WireMessage[] = new Array(messages.length)
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    const images = message.images ?? []
+    const keep = images.slice(Math.max(0, images.length - remaining))
+    remaining -= keep.length
+    wire[index] = {
+      role: message.role,
+      content:
+        keep.length > 0
+          ? [
+              ...(message.content ? [{ type: 'text' as const, text: message.content }] : []),
+              ...keep.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
+            ]
+          : message.content,
+    }
+  }
+  return wire
+}
+
 export default function Chat() {
   const { user, loading: authLoading, refresh } = useAuth()
   const [searchParams] = useSearchParams()
@@ -90,7 +121,12 @@ export default function Chat() {
   const [byokKeys, setByokKeys] = useState<ByokKey[]>([])
   const [byokLoading, setByokLoading] = useState(false)
   const [selectedKeyId, setSelectedKeyId] = useState<string>(() => loadChatPersisted().selectedKeyId ?? '')
+  const [attachments, setAttachments] = useState<string[]>([])
+  const [attaching, setAttaching] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const attachingRef = useRef(false)
+  const visionRef = useRef(false)
   const lastInputRef = useRef('')
   const [retryAvailable, setRetryAvailable] = useState(false)
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -189,6 +225,13 @@ export default function Chat() {
 
   const model = models.find((m) => m.slug === selected) ?? null
   const selectedKey = byokKeys.find((k) => k.id === selectedKeyId) ?? null
+  const modelHasVision = mode === 'pool' && !!model?.capabilities.includes('vision')
+
+  useEffect(() => {
+    visionRef.current = modelHasVision
+    // oxlint-disable-next-line react/set-state-in-effect -- leaving a vision model drops pending images
+    if (!modelHasVision) setAttachments([])
+  }, [modelHasVision])
 
   /** Appends buffered stream text in one paint, then follows only if pinned. */
   function flushPending(assistantId: string) {
@@ -220,10 +263,45 @@ export default function Chat() {
     setPinned(pinnedNow)
   }
 
+  async function attachImages(event: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? [])
+    event.target.value = ''
+    if (files.length === 0 || busy || !modelHasVision || attachingRef.current) return
+    const room = MAX_ATTACHMENTS - attachments.length
+    if (room <= 0) {
+      setBanner({ kind: 'warn', text: `You can attach up to ${MAX_ATTACHMENTS} images per message.` })
+      return
+    }
+    attachingRef.current = true
+    setAttaching(true)
+    setBanner(null)
+    try {
+      const converted: string[] = []
+      for (const file of files.slice(0, room)) {
+        // The model can change while a large image is decoding. Never let a
+        // conversion repopulate attachments after switching to a text model.
+        if (!visionRef.current) return
+        converted.push(await fileToImageDataUrl(file))
+      }
+      if (!visionRef.current) return
+      setAttachments((previous) => [...previous, ...converted].slice(0, MAX_ATTACHMENTS))
+    } catch (err) {
+      setBanner({ kind: 'err', text: err instanceof Error ? err.message : 'Could not read that image.' })
+    } finally {
+      attachingRef.current = false
+      setAttaching(false)
+    }
+  }
+
+  function removeAttachment(index: number) {
+    setAttachments((previous) => previous.filter((_, i) => i !== index))
+  }
+
   async function send(event?: FormEvent, overrideContent?: string) {
     event?.preventDefault()
     const content = (overrideContent ?? input).trim()
-    if (!content || busy) return
+    const images = overrideContent === undefined ? attachments : []
+    if ((!content && images.length === 0) || busy) return
     if (mode === 'pool' && !model) return
     if (mode === 'byok' && !selectedKey) return
     if (mode === 'pool' && modelLocked) {
@@ -234,6 +312,7 @@ export default function Chat() {
       setBanner({ kind: 'warn', text: `${model?.label ?? 'This model'} is down right now — pick another model. Failed requests are never charged.` })
       return
     }
+    const hadImages = images.length > 0
     lastInputRef.current = content
     setRetryAvailable(false)
 
@@ -245,7 +324,12 @@ export default function Chat() {
     pendingRef.current = ''
 
     const requestId = crypto.randomUUID()
-    const userMessage: Message = { id: `u-${requestId}`, role: 'user', content }
+    const userMessage: Message = {
+      id: `u-${requestId}`,
+      role: 'user',
+      content,
+      ...(images.length > 0 ? { images } : {}),
+    }
     const assistantId = `a-${requestId}`
     const history = [...messages, userMessage]
     const requestModelSlug = mode === 'pool' ? (model?.slug ?? null) : null
@@ -261,6 +345,7 @@ export default function Chat() {
       { id: assistantId, role: 'assistant', content: '', streaming: true, model: requestModelLabel },
     ])
     setInput('')
+    setAttachments([])
     setBusy(true)
     setBanner(null)
 
@@ -272,7 +357,7 @@ export default function Chat() {
       // optional — the stored upstream_model is the default. Pool mode requires it.
       model: requestModelSlug ?? selectedKey?.upstream_model ?? '',
       request_id: requestId,
-      messages: history.map((m) => ({ role: m.role, content: m.content })),
+      messages: toWireMessages(history),
       ...(mode === 'byok' && selectedKey ? { connection_id: selectedKey.id } : {}),
     }
 
@@ -373,7 +458,7 @@ export default function Chat() {
         setBanner({ kind: 'err', text: result.error ?? 'Chat failed.' })
       } else {
         setBanner({ kind: 'err', text: `${result.error ?? 'Chat failed.'} Nothing was charged.` })
-        setRetryAvailable(true)
+        setRetryAvailable(!hadImages)
       }
     } else if (!result.completed && result.error === 'aborted') {
       setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)))
@@ -423,7 +508,8 @@ export default function Chat() {
   const modelTierRank = (tier: string | undefined) => TIER_RANK[tier ?? 'free'] ?? 0
   const modelLocked = !!model && model.access_tier !== 'free' && user.role !== 'admin' && userTierRank < modelTierRank(model.access_tier)
 
-  const canSend = mode === 'pool' ? !!model && !modelLocked && model?.status !== 'down' && !!input.trim() : mode === 'byok' ? !!selectedKey && !!input.trim() : false
+  const hasPrompt = !!input.trim() || (modelHasVision && attachments.length > 0)
+  const canSend = mode === 'pool' ? !!model && !modelLocked && model?.status !== 'down' && hasPrompt : mode === 'byok' ? !!selectedKey && !!input.trim() : false
   const sendBlockReason =
     mode === 'byok'
       ? !selectedKey
@@ -435,7 +521,9 @@ export default function Chat() {
           ? `${model.label} needs ${model.access_tier} tier — ask an admin to upgrade, or pick a free model.`
           : model.status === 'down'
             ? `${model.label} is down right now — pick another model; failed requests are never charged.`
-            : ''
+            : !hasPrompt
+              ? 'Type a message or attach an image.'
+              : ''
 
   // Build dropdown options
   interface PoolOption {
@@ -445,6 +533,7 @@ export default function Chat() {
     status: 'unknown' | 'live' | 'slow' | 'down'
     tier: string
     flatRate: number
+    vision: boolean
     [key: string]: unknown
   }
   interface ByokOption {
@@ -463,6 +552,7 @@ export default function Chat() {
     status: m.status,
     tier: m.access_tier,
     flatRate: m.flat_rate_credits,
+    vision: m.capabilities.includes('vision'),
   }))
   const byokOptions: ByokOption[] = byokKeys.map((k) => ({
     value: k.id,
@@ -518,6 +608,11 @@ export default function Chat() {
                   <div className="flex items-center gap-2">
                     <span className={`h-2 w-2 rounded-full ${statusDot[opt.status]}`} aria-hidden="true" />
                     <span className="font-medium">{opt.label}</span>
+                    {opt.vision && (
+                      <span className="rounded bg-gain/10 px-1.5 py-0.5 text-[10px] font-medium text-gain">
+                        vision
+                      </span>
+                    )}
                     {opt.tier !== 'free' && (
                       <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
                         🔒 {opt.tier}
@@ -564,6 +659,11 @@ export default function Chat() {
               <span className={`h-2 w-2 rounded-full ${statusDot[model.status]}`} />
               <span className="font-semibold">{model.label}</span>
               <span className="text-muted">The Pool</span>
+              {model.capabilities.includes('vision') && (
+                <span className="rounded bg-gain/10 px-1.5 py-0.5 text-[11px] font-medium text-gain">
+                  image input
+                </span>
+              )}
               <span className="num ml-auto text-muted">
                 flat {model.flat_rate_credits.toLocaleString('en-US')} cr if usage unreported
               </span>
@@ -630,6 +730,18 @@ export default function Chat() {
                         m.role === 'user' ? 'bg-accent/15 rounded-tr-sm' : 'bg-surface-2 rounded-tl-sm'
                       }`}
                     >
+                      {m.images && m.images.length > 0 && (
+                        <div className="mb-2 flex flex-wrap gap-2">
+                          {m.images.map((src, index) => (
+                            <img
+                              key={index}
+                              src={src}
+                              alt={`Attachment ${index + 1}`}
+                              className="h-32 w-32 rounded-lg border border-line object-cover"
+                            />
+                          ))}
+                        </div>
+                      )}
                       {m.content || (m.streaming ? <span role="status" className="text-muted">thinking…</span> : null)}
                       {m.error && <span className="text-loss">{m.error}</span>}
                     </div>
@@ -694,29 +806,87 @@ export default function Chat() {
         )}
 
         {/* Composer - sticky at bottom */}
-        <form className="flex items-end gap-2 p-4 border-t border-line bg-surface/50 flex-shrink-0" onSubmit={send}>
-          <label className="sr-only" htmlFor="chat-input">Message</label>
-          <textarea
-            id="chat-input"
-            className="input min-h-[48px] max-h-[200px] flex-1 resize-none text-[16px] sm:text-[13px]"
-            rows={1}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                void send(e as unknown as FormEvent)
-              }
-            }}
-            placeholder={mode === 'pool' ? (model ? `Ask ${model.label}…` : 'Ask anything…') : selectedKey ? `Ask via ${selectedKey.label}…` : 'Add a key on /keys…'}
-            disabled={mode === 'byok' && !selectedKey}
-            style={{ height: 'auto' }}
-          />
-          {busy ? (
-            <Button type="button" variant="secondary" onClick={stop} title="Stop (Esc)">Stop</Button>
-          ) : (
-            <Button type="submit" disabled={!canSend} title={canSend ? 'Send (Enter)' : sendBlockReason}>Send</Button>
+        <form className="flex flex-col gap-2 p-4 border-t border-line bg-surface/50 flex-shrink-0" onSubmit={send}>
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap items-end gap-2">
+              {attachments.map((src, index) => (
+                <div key={index} className="relative">
+                  <img
+                    src={src}
+                    alt={`Attachment ${index + 1}`}
+                    className="h-16 w-16 rounded-lg border border-line object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeAttachment(index)}
+                    disabled={busy}
+                    className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-line bg-surface text-[11px] text-muted hover:text-content disabled:opacity-40"
+                    aria-label={`Remove attachment ${index + 1}`}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              <span className="num text-[11px] text-muted">
+                {attachments.length}/{MAX_ATTACHMENTS}
+              </span>
+            </div>
           )}
+          <div className="flex items-end gap-2">
+            <label className="sr-only" htmlFor="chat-input">Message</label>
+            <textarea
+              id="chat-input"
+              className="input min-h-[48px] max-h-[200px] flex-1 resize-none text-[16px] sm:text-[13px]"
+              rows={1}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  void send(e as unknown as FormEvent)
+                }
+              }}
+              placeholder={
+                mode === 'pool'
+                  ? model
+                    ? modelHasVision
+                      ? `Ask ${model.label} or attach an image…`
+                      : `Ask ${model.label}…`
+                    : 'Ask anything…'
+                  : selectedKey
+                    ? `Ask via ${selectedKey.label}…`
+                    : 'Add a key on /keys…'
+              }
+              disabled={mode === 'byok' && !selectedKey}
+              style={{ height: 'auto' }}
+            />
+            {modelHasVision && (
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(event) => void attachImages(event)}
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={busy || attaching || attachments.length >= MAX_ATTACHMENTS}
+                  title="Attach images (this model accepts image input)"
+                >
+                  {attaching ? 'Reading…' : 'Attach'}
+                </Button>
+              </>
+            )}
+            {busy ? (
+              <Button type="button" variant="secondary" onClick={stop} title="Stop (Esc)">Stop</Button>
+            ) : (
+              <Button type="submit" disabled={!canSend} title={canSend ? 'Send (Enter)' : sendBlockReason}>Send</Button>
+            )}
+          </div>
         </form>
         <p className="num text-[11px] text-muted px-4 pb-4 flex-shrink-0">
           {mode === 'pool' ? (

@@ -1240,12 +1240,35 @@ app.patch('/api/admin/upstream-models/:providerId/:modelName', async (c) => {
   const upstreamProviderId = c.req.param('providerId')
   const upstreamModel = decodeURIComponent(c.req.param('modelName'))
   const body = await c.req.json<Record<string, unknown>>().catch(() => null)
-  if (!body || typeof body.supports_streaming !== 'boolean') {
-    return c.json({ error: 'invalid_input', message: 'supports_streaming must be a boolean.' }, 400)
+  if (!body) return c.json({ error: 'invalid_input', message: 'Send JSON.' }, 400)
+
+  const updates: string[] = []
+  const binds: unknown[] = []
+
+  if (body.supports_streaming !== undefined) {
+    if (typeof body.supports_streaming !== 'boolean') {
+      return c.json({ error: 'invalid_input', message: 'supports_streaming must be a boolean.' }, 400)
+    }
+    updates.push('supports_streaming = ?')
+    binds.push(body.supports_streaming ? 1 : 0)
   }
+
+  if (body.capabilities !== undefined) {
+    const capabilityError = validateCapabilities(body.capabilities)
+    if (capabilityError) {
+      return c.json({ error: 'invalid_input', message: capabilityError }, 400)
+    }
+    updates.push('capabilities = ?')
+    binds.push(JSON.stringify(body.capabilities))
+  }
+
+  if (updates.length === 0) {
+    return c.json({ error: 'invalid_input', message: 'Send capabilities or supports_streaming.' }, 400)
+  }
+
   const result = await c.env.DB.prepare(
-    'UPDATE freellm_upstream_models SET supports_streaming = ? WHERE upstream_provider_id = ? AND upstream_model = ?',
-  ).bind(body.supports_streaming ? 1 : 0, upstreamProviderId, upstreamModel).run()
+    `UPDATE freellm_upstream_models SET ${updates.join(', ')} WHERE upstream_provider_id = ? AND upstream_model = ?`,
+  ).bind(...binds, upstreamProviderId, upstreamModel).run()
   if ((result.meta?.changes ?? 0) === 0) return c.json({ error: 'not_found', message: 'Upstream model not found.' }, 404)
   return c.json({ ok: true })
 })

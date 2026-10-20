@@ -31,6 +31,21 @@ function minutesInput(ms: number | null): string {
   return ms == null ? '' : String(Math.round(ms / 60000))
 }
 
+/** `capabilities` arrives as a JSON string from D1; bad data must not crash admin. */
+function parseCapabilityTags(value: string | null): string[] {
+  if (!value) return []
+  try {
+    const parsed: unknown = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.filter((tag): tag is string => typeof tag === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+function capabilityTags(value: string): string[] {
+  return value.split(',').map((tag) => tag.trim().toLowerCase()).filter(Boolean)
+}
+
 export default function AdminUpstreamProviders() {
   const [providers, setProviders] = useState<UpstreamProvider[] | null>(null)
   const [models, setModels] = useState<UpstreamModel[]>([])
@@ -240,7 +255,7 @@ export default function AdminUpstreamProviders() {
           {managingId === provider.id && (
             <ModelCatalog
               provider={provider}
-              models={models.filter((m) => m.upstream_provider_id === provider.id)}
+              models={models}
               allProviders={providers}
               onChanged={load}
             />
@@ -420,11 +435,13 @@ function ModelCatalog({
   const [upstreamModel, setUpstreamModel] = useState('')
   const [contextWindow, setContextWindow] = useState('')
   const [maxOutput, setMaxOutput] = useState('')
+  const [capabilities, setCapabilities] = useState('')
   const [supportsStreaming, setSupportsStreaming] = useState(true)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
   const sameUrlProviders = allProviders.filter((p) => p.id !== provider.id && p.base_url === provider.base_url)
+  const providerModels = models.filter((m) => m.upstream_provider_id === provider.id)
 
   async function add(event: FormEvent) {
     event.preventDefault()
@@ -439,7 +456,7 @@ function ModelCatalog({
       await api.post('/admin/upstream-models', {
         upstream_provider_id: provider.id,
         upstream_model: name,
-        capabilities: [],
+        capabilities: capabilityTags(capabilities),
         context_window: contextWindow.trim() ? Number(contextWindow) : null,
         max_output_tokens: maxOutput.trim() ? Number(maxOutput) : null,
         supports_streaming: supportsStreaming,
@@ -447,6 +464,7 @@ function ModelCatalog({
       setUpstreamModel('')
       setContextWindow('')
       setMaxOutput('')
+      setCapabilities('')
       setSupportsStreaming(true)
       await onChanged()
     } catch (err) {
@@ -483,7 +501,7 @@ function ModelCatalog({
         await api.post('/admin/upstream-models', {
           upstream_provider_id: provider.id,
           upstream_model: m.upstream_model,
-          capabilities: m.capabilities,
+          capabilities: parseCapabilityTags(m.capabilities),
           context_window: m.context_window,
           max_output_tokens: m.max_output_tokens,
           supports_streaming: m.supports_streaming,
@@ -516,7 +534,7 @@ function ModelCatalog({
       <p className="text-[12px] font-medium uppercase tracking-wide text-muted">
         Upstream models — the exact names this provider accepts
       </p>
-      {models.length === 0 ? (
+      {providerModels.length === 0 ? (
         <>
           {sameUrlProviders.length > 0 ? (
             <div className="flex flex-col gap-2">
@@ -534,7 +552,7 @@ function ModelCatalog({
         </>
       ) : (
         <div className="flex flex-col divide-y divide-line">
-          {models.map((m) => (
+          {providerModels.map((m) => (
             <div key={m.upstream_model} className="flex flex-wrap items-center gap-3 py-2">
               <code className="num rounded bg-surface-2 px-2 py-1 text-[12px]">{m.upstream_model}</code>
               {m.context_window != null && <span className="num text-[12px] text-muted">{m.context_window.toLocaleString('en-US')} ctx</span>}
@@ -543,6 +561,7 @@ function ModelCatalog({
                 <input type="checkbox" checked={m.supports_streaming !== 0} disabled={busy} onChange={(event) => void setStreaming(m, event.target.checked)} />
                 Supports streaming
               </label>
+              <CapabilityEditor key={`${m.upstream_model}:${m.capabilities ?? ''}`} providerId={provider.id} model={m} disabled={busy} onChanged={onChanged} onError={setError} />
               <Button variant="ghost" size="sm" className="ml-auto text-loss" onClick={() => void remove(m)} disabled={busy}>Remove</Button>
             </div>
           ))}
@@ -552,11 +571,61 @@ function ModelCatalog({
         <Field label="Model name"><input className="input num w-56" value={upstreamModel} onChange={(e) => setUpstreamModel(e.target.value)} placeholder="gemini-2.5-flash" /></Field>
         <Field label="Context window (optional)"><input className="input num w-32" value={contextWindow} onChange={(e) => setContextWindow(e.target.value)} inputMode="numeric" placeholder="128000" /></Field>
         <Field label="Max output (optional)"><input className="input num w-32" value={maxOutput} onChange={(e) => setMaxOutput(e.target.value)} inputMode="numeric" placeholder="32000" /></Field>
+        <Field label="Capabilities (optional)"><input className="input num w-40" value={capabilities} onChange={(e) => setCapabilities(e.target.value)} placeholder="vision, coding" /></Field>
         <label className="flex items-center gap-2 py-2 text-[12px] text-muted"><input type="checkbox" checked={supportsStreaming} onChange={(event) => setSupportsStreaming(event.target.checked)} />Supports streaming</label>
         <Button type="submit" disabled={busy}>{busy ? 'Adding…' : 'Add model'}</Button>
       </form>
       {error && <p className="text-[12px] text-loss">{error}</p>}
     </div>
+  )
+}
+
+function CapabilityEditor({
+  providerId,
+  model,
+  disabled,
+  onChanged,
+  onError,
+}: {
+  providerId: string
+  model: UpstreamModel
+  disabled: boolean
+  onChanged: () => void | Promise<void>
+  onError: (message: string) => void
+}) {
+  const [value, setValue] = useState(parseCapabilityTags(model.capabilities).join(', '))
+  const [saving, setSaving] = useState(false)
+
+  async function save(event: FormEvent) {
+    event.preventDefault()
+    setSaving(true)
+    try {
+      await api.patch(`/admin/upstream-models/${providerId}/${encodeURIComponent(model.upstream_model)}`, {
+        capabilities: capabilityTags(value),
+      })
+      await onChanged()
+    } catch (err) {
+      onError(err instanceof ApiError ? err.message : 'Failed to update capabilities.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form className="flex items-center gap-1.5" onSubmit={(event) => void save(event)}>
+      <span className="text-[12px] text-muted">Tags</span>
+      <input
+        className="input num w-40"
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        disabled={disabled || saving}
+        placeholder="vision, coding"
+        aria-label={`Capabilities for ${model.upstream_model}`}
+      />
+      <Button type="submit" variant="secondary" size="sm" disabled={disabled || saving}>
+        {saving ? 'Saving…' : 'Save'}
+      </Button>
+    </form>
   )
 }
 

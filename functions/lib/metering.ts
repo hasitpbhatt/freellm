@@ -124,6 +124,8 @@ export async function settleRequest(
     battleId?: string
     usage?: Usage | null
     free?: boolean
+    /** Minimum charge for an aborted request (vision input already consumed). */
+    abortedMinCharge?: number
   },
 ): Promise<{ creditsCharged: number; source: 'reported' | 'flat_rate'; status: string; balance: { global: number; scoped: number }; alreadySettled: boolean }> {
   const { userId, requestId, model, settlement, latencyMs, usage, free } = params
@@ -183,7 +185,15 @@ export async function settleRequest(
   } else if (settlement.kind === 'aborted') {
     source = 'flat_rate'
     status = 'aborted'
-    charge = model.flat_rate_credits
+    // The upstream may already have ingested several images before the client
+    // disconnected, so the flat text rate can undercharge badly. Charge at
+    // least the image reserve the request was gated on.
+    const rawMin = params.abortedMinCharge
+    const minCharge =
+      typeof rawMin === 'number' && Number.isFinite(rawMin) && rawMin > 0
+        ? Math.min(Math.floor(rawMin), 1_000_000)
+        : 0
+    charge = Math.max(model.flat_rate_credits, minCharge)
   } else {
     source = 'flat_rate'
     status = 'failed'
@@ -344,10 +354,29 @@ async function readBalances(db: D1Database, userId: string, modelId: string): Pr
 /**
  * Cheap char/4 input estimate — used ONLY to bound the reserve. Billing
  * always uses provider-reported numbers or the flat rate, never this.
+ *
+ * Images are reserved at a flat per-image rate: upstream vision tokenizers
+ * differ (tile based vs. fixed), and the reserve only needs to be a safe
+ * upper bound. Settlement still uses the upstream-reported usage.
  */
-export function estimateReserve(messages: { content: string }[], maxOutputTokens: number): number {
+export const IMAGE_RESERVE_TOKENS = 3000
+
+export function estimateReserve(
+  messages: { content: string | Array<{ type: string; text?: string }> }[],
+  maxOutputTokens: number,
+): number {
   let chars = 0
-  for (const message of messages) chars += message.content.length
-  const inputEstimate = Math.ceil(chars / 4) + messages.length * 4
+  let images = 0
+  for (const message of messages) {
+    if (typeof message.content === 'string') {
+      chars += message.content.length
+      continue
+    }
+    for (const part of message.content) {
+      if (part.type === 'text') chars += part.text?.length ?? 0
+      else if (part.type === 'image_url') images += 1
+    }
+  }
+  const inputEstimate = Math.ceil(chars / 4) + messages.length * 4 + images * IMAGE_RESERVE_TOKENS
   return inputEstimate + maxOutputTokens
 }

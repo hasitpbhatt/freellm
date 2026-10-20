@@ -13,8 +13,10 @@
 
 import { Hono } from 'hono'
 import { requireAuth } from '../lib/middleware'
-import { estimateReserve, computeSpendable, placeHold, settleRequest, type Usage } from '../lib/metering'
-import { loadAlias, openCall, recordOutcome, resolveCandidates, type ModelProviderRow, type UpstreamProviderWithModel } from '../lib/providers' // up_labels is unused and can be removed in future
+import { estimateReserve, computeSpendable, placeHold, settleRequest, IMAGE_RESERVE_TOKENS, type Usage } from '../lib/metering'
+import { contentImageCount, contentTextLength, parseOpenAiMessages } from '../lib/openai-messages'
+import { aliasSupportsVision, loadAlias, openCall, recordOutcome, resolveCandidates, type ModelProviderRow, type UpstreamProviderWithModel } from '../lib/providers' // up_labels is unused and can be removed in future
+import { readJsonBody } from '../lib/request-body'
 import { canAccessModel, tierGatedMessage } from '../lib/tiers'
 import { dialConnection, connectionSettleModel, getUsableConnection } from '../lib/connections'
 import type { Bindings, ModelRow, UpstreamKeyRow, Variables } from '../lib/types'
@@ -51,13 +53,29 @@ function usageFromChunk(chunk: Record<string, unknown>): { input: number; output
 
 app.post('/api/chat', requireAuth, async (c) => {
   const user = c.get('user')
-  const payload = await c.req
-    .json<{ model?: unknown; messages?: unknown; request_id?: unknown; max_tokens?: unknown; key_mode?: unknown; key_id?: unknown; connection_id?: unknown; required_capabilities?: unknown }>()
-    .catch(() => null)
+  const parsed = await readJsonBody<{
+    model?: unknown
+    messages?: unknown
+    request_id?: unknown
+    max_tokens?: unknown
+    key_mode?: unknown
+    key_id?: unknown
+    connection_id?: unknown
+    required_capabilities?: unknown
+  }>(c.req.raw)
+  if (!parsed.ok) {
+    return c.json({ error: 'payload_too_large', message: 'Request body is too large.' }, 413)
+  }
+  const payload = parsed.value
 
   const slug = typeof payload?.model === 'string' ? payload.model.trim() : ''
   const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
-  const rawMessages = Array.isArray(payload?.messages) ? payload.messages : []
+  const parsedMessages = parseOpenAiMessages(payload?.messages)
+  if (!parsedMessages.ok) {
+    return c.json({ error: 'invalid_input', message: parsedMessages.error }, 400)
+  }
+  const messages = parsedMessages.messages
+  const imageCount = messages.reduce((count, message) => count + contentImageCount(message.content), 0)
   const keyMode = payload?.key_mode === 'byok' ? 'byok' : 'pool'
   // A connection call dials one of the caller's own stored credentials. New
   // clients send connection_id; key_mode=byok + key_id stays as an alias.
@@ -68,28 +86,27 @@ app.post('/api/chat', requireAuth, async (c) => {
         ? payload.key_id
         : ''
   const isConnectionCall = connectionId !== ''
-  // required_capabilities: array of capability strings (e.g., ["tools", "vision"])
+  // required_capabilities: array of capability strings (e.g., ["tools", "vision"]).
+  // Images are authoritative: add vision automatically so routing can never
+  // send them to a text-only config.
   const requiredCapabilities = Array.isArray(payload?.required_capabilities)
     ? payload.required_capabilities.filter((c): c is string => typeof c === 'string')
     : []
-
-  const messages = rawMessages
-    .filter(
-      (m): m is { role: 'system' | 'user' | 'assistant'; content: string } =>
-        !!m &&
-        typeof m === 'object' &&
-        typeof (m as { role?: unknown }).role === 'string' &&
-        typeof (m as { content?: unknown }).content === 'string',
-    )
-    .map((m) => ({ role: m.role, content: m.content }))
+  if (imageCount > 0 && !requiredCapabilities.includes('vision')) requiredCapabilities.push('vision')
 
   // A connection call does not need a Pool alias: its model comes from the
   // stored credential. Only the Pool path requires a model slug.
   if ((!slug && !isConnectionCall) || messages.length === 0 || !/^[\w.-]{2,48}$/.test(requestId)) {
     return c.json({ error: 'invalid_input', message: 'model, messages, and a request_id are required.' }, 400)
   }
-  if (messages.some((m) => m.content.length > 100_000)) {
+  if (messages.some((m) => contentTextLength(m.content) > 100_000)) {
     return c.json({ error: 'invalid_input', message: 'A single message is too long.' }, 400)
+  }
+  if (isConnectionCall && imageCount > 0) {
+    return c.json(
+      { error: 'vision_unsupported', message: 'Image input is not available with a personal connection yet.' },
+      400,
+    )
   }
 
   // Idempotency + alias load are independent: run them together so a
@@ -125,6 +142,15 @@ app.post('/api/chat', requireAuth, async (c) => {
 
   if (!isConnectionCall && (!alias || alias.providers.length === 0)) {
     return c.json({ error: 'model_unavailable', message: `"${slug}" is not in The Pool right now.` }, 404)
+  }
+  if (!isConnectionCall && alias && imageCount > 0 && !aliasSupportsVision(alias)) {
+    return c.json(
+      {
+        error: 'vision_unsupported',
+        message: `${alias.model.label} doesn't accept images — pick a vision model from the catalog.`,
+      },
+      400,
+    )
   }
 
   // Tier gate runs before any reserve/hold so a denied caller is never charged.
@@ -374,6 +400,7 @@ app.post('/api/chat', requireAuth, async (c) => {
           latencyMs: Date.now() - startedAt,
           usage,
           free: isByok,
+          abortedMinCharge: imageCount * IMAGE_RESERVE_TOKENS,
         })
         const outcomePromise =
           kind === 'completed' && !isByok && prov
@@ -493,13 +520,22 @@ app.get('/api/models', async (c) => {
     `SELECT m.slug, m.label, m.description, m.capabilities, m.context_window,
             m.max_output_tokens, m.flat_rate_credits, m.routing, m.access_tier, m.scoped_only,
             up.id AS up_id, up.label AS up_label, up.base_url,
-            up.status AS provider_status, up.avg_latency_ms
+            up.status AS provider_status, up.avg_latency_ms, up.cooldown_until AS provider_cooldown_until,
+            (SELECT COUNT(*) FROM freellm_upstream_keys k
+              WHERE k.upstream_provider_id = up.id
+                AND k.status != 'disabled'
+                AND (k.cooldown_until IS NULL OR k.cooldown_until <= ?)) AS usable_keys,
+            um.capabilities AS um_capabilities
      FROM freellm_models m
      LEFT JOIN freellm_model_providers mp ON mp.model_id = m.id AND mp.active = 1
      LEFT JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
+     LEFT JOIN freellm_upstream_models um
+       ON um.upstream_provider_id = up.id AND um.upstream_model = mp.upstream_model
      WHERE m.active = 1
      ORDER BY m.sort_order, m.slug`,
-  ).all<{
+  )
+    .bind(Date.now())
+    .all<{
     slug: string
     label: string
     description: string | null
@@ -515,6 +551,9 @@ app.get('/api/models', async (c) => {
     base_url: string | null
     provider_status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled' | null
     avg_latency_ms: number | null
+    provider_cooldown_until: number | null
+    usable_keys: number | null
+    um_capabilities: string | null
   }>()
 
   type PublicModel = {
@@ -532,7 +571,11 @@ app.get('/api/models', async (c) => {
     provider_count: number
   }
 
-  const bySlug = new Map<string, PublicModel & { statuses: string[]; up_labels: string[] }>()
+  const now = Date.now()
+  const bySlug = new Map<
+    string,
+    PublicModel & { statuses: string[]; up_labels: string[]; visionServable: boolean }
+  >()
   for (const row of rows.results) {
     let entry = bySlug.get(row.slug)
     if (!entry) {
@@ -551,8 +594,20 @@ app.get('/api/models', async (c) => {
         provider_count: 0,
         statuses: [],
         up_labels: [],
+        visionServable: false,
       }
       bySlug.set(row.slug, entry)
+    }
+    const configServes =
+      row.up_id !== null &&
+      row.provider_status !== 'disabled' &&
+      (row.provider_cooldown_until == null || row.provider_cooldown_until <= now) &&
+      (row.usable_keys ?? 0) > 0
+    if (configServes) {
+      for (const capability of parseCapabilities(row.um_capabilities)) {
+        if (capability === 'vision') entry.visionServable = true
+        if (!entry.capabilities.includes(capability)) entry.capabilities.push(capability)
+      }
     }
     if (row.provider_status && row.up_id) {
       entry.statuses.push(row.provider_status)
@@ -560,8 +615,13 @@ app.get('/api/models', async (c) => {
     }
   }
 
-  const models = Array.from(bySlug.values()).map(({ statuses, up_labels: _up_labels, ...model }) => ({
+  const models = Array.from(bySlug.values()).map(({ statuses, up_labels: _up_labels, visionServable, ...model }) => ({
     ...model,
+    // Alias metadata can describe intent, but `vision` is only advertised when a
+    // config can currently accept an image.
+    capabilities: [...model.capabilities]
+      .filter((capability) => capability !== 'vision' || visionServable)
+      .sort(),
     provider_count: statuses.length,
     status: statuses.includes('live')
       ? ('live' as const)

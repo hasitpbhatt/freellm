@@ -61,6 +61,42 @@ after(async () => {
   if (mf) await mf.dispose()
 })
 
+test('migration 0035: tags the VL model idempotently and leaves other models alone', async () => {
+  db = await freshDb()
+  const before = readdirSync(migrationsDir)
+    .filter((name) => name.endsWith('.sql') && !name.startsWith('0035'))
+    .sort()
+  await apply(before)
+
+  const now = Date.now()
+  await db.prepare(
+    `INSERT INTO freellm_upstream_providers (id, label, base_url, status, created_at, updated_at)
+     VALUES ('up-vl', 'NVIDIA', 'https://integrate.api.nvidia.com/v1', 'live', ?, ?)`,
+  ).bind(now, now).run()
+  const target = 'nvidia/nemotron-3.5-super-vl:free'
+  await db.batch([
+    ['up-vl', target, null],
+    ['up-vl', 'nvidia/other-model:free', '["coding"]'],
+    ['up-vl', 'nvidia/already-tagged:free', '["coding","vision"]'],
+    ['up-vl', 'nvidia/bad-json:free', 'not-json'],
+  ].map(([provider, model, caps]) =>
+    db.prepare(
+      `INSERT INTO freellm_upstream_models (upstream_provider_id, upstream_model, capabilities)
+       VALUES (?, ?, ?)`,
+    ).bind(provider, model, caps),
+  ))
+
+  await apply(['0035_tag_vision_models.sql'])
+
+  const rows = await db.prepare(
+    'SELECT upstream_model, capabilities FROM freellm_upstream_models ORDER BY upstream_model',
+  ).all<{ upstream_model: string; capabilities: string }>()
+  const capabilities = new Map(rows.results.map((row) => [row.upstream_model, row.capabilities]))
+  assert.deepEqual(JSON.parse(capabilities.get(target)!), ['vision'])
+  assert.deepEqual(JSON.parse(capabilities.get('nvidia/other-model:free')!), ['coding'])
+  assert.deepEqual(JSON.parse(capabilities.get('nvidia/already-tagged:free')!), ['coding', 'vision'])
+})
+
 test('parent-table rebuild preserves provider configs and billing history shape', async () => {
   db = await freshDb()
   await apply(ordered(['0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008', '0009', '0010']))

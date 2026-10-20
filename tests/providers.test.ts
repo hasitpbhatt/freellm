@@ -5,7 +5,9 @@ import {
   FAILED_PROVIDER_COOLDOWN_MS,
   LATENCY_WEIGHTED_EXPLORATION_RATE,
   MAX_PROVIDER_COOLDOWN_MS,
+  aliasSupportsVision,
   cooldownForAttempt,
+  configServesNow,
   openStreamingCall,
   recordOutcome,
   resolveCandidates,
@@ -361,6 +363,77 @@ test('openStreamingCall tries the next provider after an upstream refusal', asyn
   }
 })
 
+test('openStreamingCall retries another key on the same config after a 429', async () => {
+  const key = Buffer.alloc(32).toString('base64')
+  const env = { DB: db, ENCRYPTION_KEY: key } as unknown as Bindings
+  const now = Date.now()
+
+  await db.prepare(
+    `INSERT INTO freellm_models (id, slug, label, capabilities, flat_rate_credits, routing, active, sort_order, created_at, updated_at)
+     VALUES ('model_keyretry', 'keyretry-model', 'Key Retry Model', '[]', 2000, 'failover', 1, 0, ?, ?)`,
+  ).bind(now, now).run()
+
+  const upstream = await createUpstreamProvider('upstream-keyretry', {
+    base_url: 'https://keys.example/v1',
+    encryptionKey: key,
+  })
+  const second = await encryptSecret('second-key', key)
+  await db.prepare(
+    `INSERT INTO freellm_upstream_keys (id, upstream_provider_id, label, api_key_ciphertext, api_key_iv,
+                                        status, consecutive_failures, cooldown_until, priority, created_at, updated_at)
+     VALUES ('key-second', 'upstream-keyretry', 'second', ?, ?, 'live', 0, NULL, 1, ?, ?)`,
+  ).bind(second.ciphertext, second.iv, now, now).run()
+  upstream.keys.push({
+    id: 'key-second',
+    upstream_provider_id: 'upstream-keyretry',
+    label: 'second',
+    api_key_ciphertext: second.ciphertext,
+    api_key_iv: second.iv,
+    status: 'live',
+    consecutive_failures: 0,
+    cooldown_until: null,
+    last_used_at: null,
+    last_error: null,
+    priority: 1,
+    created_at: now,
+    updated_at: now,
+  })
+  const config = await createModelProvider('keyretry', 'upstream-keyretry', 0)
+
+  const authSeen: string[] = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    const auth = new Headers(init?.headers).get('authorization') ?? ''
+    authSeen.push(auth)
+    if (auth === 'Bearer test-key') return new Response('rate limited', { status: 429 })
+    return new Response('ok', { status: 200 })
+  }) as unknown as typeof fetch
+  try {
+    const opened = await openStreamingCall(
+      env,
+      {
+        model: { ...testModel, id: 'model_keyretry', slug: 'keyretry-model', routing: 'failover' },
+        providers: [{ ...config, upstream }],
+      },
+      [{ role: 'user', content: 'hi' }],
+      { maxTokens: 10 },
+    )
+    assert.equal('error' in opened, false)
+    if (!('error' in opened)) {
+      assert.equal(opened.key.id, 'key-second')
+      assert.equal(opened.response.status, 200)
+    }
+    assert.deepEqual(authSeen, ['Bearer test-key', 'Bearer second-key'])
+
+    const cooled = await db.prepare(
+      'SELECT cooldown_until FROM freellm_upstream_keys WHERE id = ?',
+    ).bind('key-upstream-keyretry').first<{ cooldown_until: number | null }>()
+    assert.ok((cooled?.cooldown_until ?? 0) > now, 'the rate-limited key is cooled')
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
 test('latency_weighted exploit orders by lowest EWMA, unknown last', async () => {
   const store = kvMock()
   const env = { DB: db, freellm_sessions: store } as unknown as Bindings
@@ -567,6 +640,110 @@ test('all-slow pool is still usable when nothing better exists', async () => {
     now,
   )
   assert.deepEqual(candidates.map((c) => c.id), ['slow-b', 'slow-a'])
+})
+
+function visionProvider(
+  capabilities: string[],
+  opts: {
+    upstreamStatus?: UpstreamProviderWithModel['status']
+    keyStatus?: UpstreamKeyRow['status']
+    keyCooldown?: number | null
+    upstreamCooldown?: number | null
+  } = {},
+): ModelProviderRow & { upstream: UpstreamProviderWithModel } {
+  const now = Date.now()
+  return {
+    id: 'mp-vision',
+    model_id: testModel.id,
+    upstream_provider_id: 'up-vision',
+    upstream_model: 'test-upstream',
+    priority: 0,
+    active: 1,
+    messages_served: 0,
+    created_at: now,
+    updated_at: now,
+    upstream: {
+      id: 'up-vision',
+      label: 'Vision',
+      base_url: 'https://example.com/v1',
+      status: opts.upstreamStatus ?? 'live',
+      last_checked_at: null,
+      last_error: null,
+      avg_latency_ms: null,
+      consecutive_failures: 0,
+      cooldown_until: opts.upstreamCooldown ?? null,
+      cooldown_base_ms: null,
+      created_at: now,
+      updated_at: now,
+      model_capabilities: capabilities,
+      supports_streaming: 1,
+      keys: [
+        {
+          id: 'key-vision',
+          upstream_provider_id: 'up-vision',
+          label: 'default',
+          api_key_ciphertext: '',
+          api_key_iv: '',
+          status: opts.keyStatus ?? 'live',
+          consecutive_failures: 0,
+          cooldown_until: opts.keyCooldown ?? null,
+          last_used_at: null,
+          last_error: null,
+          priority: 0,
+          created_at: now,
+          updated_at: now,
+        },
+      ],
+    },
+  }
+}
+
+test('vision support requires a live-capable config, not just a tag', () => {
+  assert.equal(
+    aliasSupportsVision({ model: testModel, providers: [visionProvider(['vision'])] }),
+    true,
+  )
+  assert.equal(
+    aliasSupportsVision({
+      model: testModel,
+      providers: [visionProvider(['vision'], { keyStatus: 'disabled' })],
+    }),
+    false,
+    'a config with no usable key cannot serve vision',
+  )
+  assert.equal(
+    aliasSupportsVision({
+      model: testModel,
+      providers: [visionProvider(['vision'], { upstreamStatus: 'disabled' })],
+    }),
+    false,
+    'a disabled upstream cannot serve vision',
+  )
+  assert.equal(
+    aliasSupportsVision({ model: testModel, providers: [visionProvider([])] }),
+    false,
+  )
+})
+
+test('configServesNow honours key and upstream cooldowns', () => {
+  const now = Date.now()
+  assert.equal(configServesNow(visionProvider(['vision']), now), true)
+  assert.equal(
+    configServesNow(visionProvider(['vision'], { keyCooldown: now + 60_000 }), now),
+    false,
+  )
+  assert.equal(
+    configServesNow(visionProvider(['vision'], { upstreamCooldown: now + 60_000 }), now),
+    false,
+  )
+  assert.equal(
+    configServesNow(visionProvider(['vision'], { upstreamStatus: 'disabled' }), now),
+    false,
+  )
+  assert.equal(
+    configServesNow(visionProvider(['vision'], { keyStatus: 'disabled' }), now),
+    false,
+  )
 })
 
 test('consecutive failures back off exponentially up to the cap', async () => {
