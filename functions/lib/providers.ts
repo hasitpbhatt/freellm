@@ -712,7 +712,7 @@ export async function openCall(
   env: Bindings,
   alias: AliasWithProviders,
   messages: ChatMessage[],
-  options: { maxTokens: number; sampling?: { temperature?: number; top_p?: number }; requiredCapabilities?: string[] },
+  options: { maxTokens: number; sampling?: { temperature?: number; top_p?: number }; requiredCapabilities?: string[]; deadlineMs?: number },
 ): Promise<
   | { provider: ModelProviderRow & { upstream: UpstreamProviderWithModel }; key: UpstreamKeyRow; response: Response; usage?: { input: number; output: number; total: number } | null; streaming: boolean }
   | { error: string }
@@ -720,12 +720,27 @@ export async function openCall(
   const candidates = await resolveCandidates(env, alias, Date.now(), { requiredCapabilities: options.requiredCapabilities })
   if (candidates.length === 0) return { error: 'no usable provider configs' }
 
+  // A caller with a shorter client-side timeout (fitness uses 60s) must get a
+  // response before it aborts. Cap the whole failover walk, not just one fetch.
+  const deadlineAt = options.deadlineMs === undefined ? null : Date.now() + Math.max(0, options.deadlineMs)
+  const remainingMs = () => (deadlineAt === null ? null : deadlineAt - Date.now())
+
   let lastError = ''
   for (const candidate of candidates) {
+    if (deadlineAt !== null && Date.now() >= deadlineAt) {
+      lastError = lastError || 'request deadline exceeded'
+      break
+    }
     const triedKeys = new Set<string>()
     // A 429 is a key-level quota signal. Walk the rest of this config's pool
     // before moving on, so one rate-limited key cannot fail the whole request.
     keyAttempt: while (true) {
+      const attemptRemaining = remainingMs()
+      if (attemptRemaining !== null && attemptRemaining <= 0) {
+        lastError = lastError || 'request deadline exceeded'
+        break
+      }
+      const attemptTimeout = attemptRemaining === null ? undefined : Math.max(1, attemptRemaining)
       const startedAt = Date.now()
       try {
         const selected = await providerApiKey(env, candidate.upstream, Date.now(), triedKeys)
@@ -744,7 +759,7 @@ export async function openCall(
             { id: candidate.id, base_url: candidate.upstream.base_url, upstream_model: candidate.upstream_model },
             selected.apiKey,
             messages,
-            { maxTokens: options.maxTokens, stream: true, sampling: options.sampling },
+            { maxTokens: options.maxTokens, stream: true, sampling: options.sampling, timeoutMs: attemptTimeout },
           )
           if (response.ok && response.body) return { provider: candidate, key: selected.key, response, streaming: true }
           lastError = `${response.status} ${response.statusText}`
@@ -770,7 +785,7 @@ export async function openCall(
             { id: candidate.id, base_url: candidate.upstream.base_url, upstream_model: candidate.upstream_model },
             selected.apiKey,
             messages,
-            { maxTokens: options.maxTokens, sampling: options.sampling },
+            { maxTokens: options.maxTokens, sampling: options.sampling, timeoutMs: attemptTimeout },
           )
           if (response.ok) return { provider: candidate, key: selected.key, response, usage, streaming: false }
           lastError = `${response.status} ${response.statusText}`

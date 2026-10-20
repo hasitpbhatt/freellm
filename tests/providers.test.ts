@@ -8,6 +8,7 @@ import {
   aliasSupportsVision,
   cooldownForAttempt,
   configServesNow,
+  openCall,
   openStreamingCall,
   recordOutcome,
   resolveCandidates,
@@ -429,6 +430,54 @@ test('openStreamingCall retries another key on the same config after a 429', asy
       'SELECT cooldown_until FROM freellm_upstream_keys WHERE id = ?',
     ).bind('key-upstream-keyretry').first<{ cooldown_until: number | null }>()
     assert.ok((cooled?.cooldown_until ?? 0) > now, 'the rate-limited key is cooled')
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+test('openCall stops failover once its total deadline is spent', async () => {
+  const key = Buffer.alloc(32).toString('base64')
+  const env = { DB: db, ENCRYPTION_KEY: key } as unknown as Bindings
+  const now = Date.now()
+
+  await db.prepare(
+    `INSERT OR REPLACE INTO freellm_models (id, slug, label, capabilities, flat_rate_credits, routing, active, sort_order, created_at, updated_at)
+     VALUES ('model_failover', 'failover-model', 'Failover Model', '[]', 2000, 'failover', 1, 0, ?, ?)`,
+  ).bind(now, now).run()
+
+  const upA = await createUpstreamProvider('upstream-deadline-a', {
+    base_url: 'https://deadline-a.example/v1',
+    encryptionKey: key,
+  })
+  const upB = await createUpstreamProvider('upstream-deadline-b', {
+    base_url: 'https://deadline-b.example/v1',
+    encryptionKey: key,
+  })
+  const mpA = await createModelProvider('deadline-a', 'upstream-deadline-a', 0)
+  const mpB = await createModelProvider('deadline-b', 'upstream-deadline-b', 1)
+
+  let calls = 0
+  const realFetch = globalThis.fetch
+  globalThis.fetch = (async () => {
+    calls += 1
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    return new Response('bad gateway', { status: 502 })
+  }) as unknown as typeof fetch
+  try {
+    const opened = await openCall(
+      env,
+      {
+        model: { ...testModel, id: 'model_failover', slug: 'failover-model', routing: 'failover' },
+        providers: [
+          { ...mpA, upstream: upA },
+          { ...mpB, upstream: upB },
+        ],
+      },
+      [{ role: 'user', content: 'hi' }],
+      { maxTokens: 10, deadlineMs: 5 },
+    )
+    assert.ok('error' in opened)
+    assert.equal(calls, 1, 'the second config is never dialed after the deadline')
   } finally {
     globalThis.fetch = realFetch
   }

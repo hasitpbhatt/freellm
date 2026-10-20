@@ -37,6 +37,10 @@ const V1_USER_RATE_LIMIT = 60
 const V1_GLOBAL_RATE_LIMIT = 600
 const V1_RATE_WINDOW_SECONDS = 60
 
+// Fitness aborts a scan at 60s. Leave headroom for response parsing and
+// settlement by capping the whole upstream failover walk for non-stream calls.
+const V1_NON_STREAM_DEADLINE_MS = 50_000
+
 type OpenAiMessage = ChatMessage
 
 /** OpenAI's error envelope, so SDKs surface a useful message instead of "undefined". */
@@ -356,7 +360,12 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
   await placeHold(c.env.DB, user.id, requestId, reserve)
 
   // ---- acquire (failover across provider configs) ----
-  const opened = await openCall(c.env, alias, messages, { maxTokens, sampling, requiredCapabilities })
+  const opened = await openCall(c.env, alias, messages, {
+    maxTokens,
+    sampling,
+    requiredCapabilities,
+    ...(stream ? {} : { deadlineMs: V1_NON_STREAM_DEADLINE_MS }),
+  })
   if ('error' in opened) {
     await settleRequest(c.env.DB, {
       userId: user.id,
