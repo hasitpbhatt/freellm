@@ -141,3 +141,33 @@ test('streamChat returns HTTP failures instead of throwing', async () => {
   assert.equal(result.completed, false)
   assert.equal(result.error, 'stepfun-5 is unavailable right now — no charge.')
 })
+
+import { MAX_WIRE_IMAGES, toWireMessages } from '../src/lib/chat'
+
+test('toWireMessages keeps the newest images and reports how many older ones were omitted', () => {
+  const messages = [
+    { role: 'user', content: 'old', images: ['a', 'b', 'c', 'd', 'e'] },
+    { role: 'assistant', content: 'noted' },
+    { role: 'user', content: 'new', images: ['f', 'g', 'h', 'i', 'j', 'k'] },
+  ]
+  const result = toWireMessages(messages)
+  assert.equal(result.omittedImages, 3)
+  assert.equal(result.messages.length, 3)
+  const first = result.messages[0].content
+  assert.ok(Array.isArray(first))
+  assert.deepEqual(first.filter((part) => part.type === 'image_url').map((part) => part.image_url.url), ['d', 'e'])
+  const last = result.messages[2].content
+  assert.ok(Array.isArray(last))
+  assert.deepEqual(last.filter((part) => part.type === 'image_url').map((part) => part.image_url.url), ['f', 'g', 'h', 'i', 'j', 'k'])
+  assert.equal(result.messages[1].content, 'noted')
+})
+
+test('toWireMessages leaves plain text untouched and respects a lower limit', () => {
+  const result = toWireMessages([{ role: 'user', content: 'hi' }])
+  assert.equal(result.omittedImages, 0)
+  assert.equal(result.messages[0].content, 'hi')
+  const capped = toWireMessages([{ role: 'user', content: '', images: ['a', 'b', 'c'] }], 1)
+  assert.equal(capped.omittedImages, 2)
+  assert.equal(MAX_WIRE_IMAGES, 8)
+})
+

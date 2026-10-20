@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { streamChat, type ChatSseEvent, type WireMessage } from '../lib/chat'
+import { MAX_WIRE_IMAGES, streamChat, toWireMessages, type ChatSseEvent } from '../lib/chat'
 import { api, normalizeCatalogModel, type CatalogModel } from '../lib/api'
 import { fileToImageDataUrl } from '../lib/image'
 import { useAuth } from '../lib/useAuth'
@@ -61,7 +61,6 @@ const statusDot: Record<string, string> = {
 
 const CHAT_STORAGE_KEY = 'freellm:chat:v1'
 const MAX_ATTACHMENTS = 4
-const MAX_WIRE_IMAGES = 8
 
 type ChatPersisted = { mode?: 'pool' | 'byok'; selectedModel?: string; selectedKeyId?: string }
 
@@ -79,33 +78,6 @@ function saveChatPersisted(state: ChatPersisted) {
 
 function requestClock(): number {
   return Date.now()
-}
-
-/**
- * Converts chat history to the wire shape. A long conversation can contain
- * more images than one request may carry, so keep the most recent ones and
- * leave older turns as text.
- */
-function toWireMessages(messages: Message[]): WireMessage[] {
-  let remaining = MAX_WIRE_IMAGES
-  const wire: WireMessage[] = new Array(messages.length)
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
-    const images = message.images ?? []
-    const keep = images.slice(Math.max(0, images.length - remaining))
-    remaining -= keep.length
-    wire[index] = {
-      role: message.role,
-      content:
-        keep.length > 0
-          ? [
-              ...(message.content ? [{ type: 'text' as const, text: message.content }] : []),
-              ...keep.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
-            ]
-          : message.content,
-    }
-  }
-  return wire
 }
 
 export default function Chat() {
@@ -352,12 +324,20 @@ export default function Chat() {
     const controller = new AbortController()
     abortRef.current = controller
 
+    const wire = toWireMessages(history)
+    if (wire.omittedImages > 0) {
+      setBanner({
+        kind: 'warn',
+        text: `${wire.omittedImages} older image${wire.omittedImages === 1 ? '' : 's'} not sent — the request allows at most ${MAX_WIRE_IMAGES} images. Text history was still sent.`,
+      })
+    }
+
     const payload = {
       // Connection mode dials the caller's own credential, so the model slug is
       // optional — the stored upstream_model is the default. Pool mode requires it.
       model: requestModelSlug ?? selectedKey?.upstream_model ?? '',
       request_id: requestId,
-      messages: toWireMessages(history),
+      messages: wire.messages,
       ...(mode === 'byok' && selectedKey ? { connection_id: selectedKey.id } : {}),
     }
 

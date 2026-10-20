@@ -18,6 +18,43 @@ export type WireContentPart =
 
 export type WireMessage = { role: string; content: string | WireContentPart[] }
 
+/** Oldest images are dropped first so the newest visual context still goes. */
+export const MAX_WIRE_IMAGES = 8
+
+export type WireHistoryMessage = { role: string; content: string; images?: string[] }
+
+/**
+ * Converts chat history to the wire shape. A long conversation can contain
+ * more images than one request may carry, so keep the most recent ones and
+ * report how many were omitted instead of silently pretending they were sent.
+ */
+export function toWireMessages(
+  messages: readonly WireHistoryMessage[],
+  maxImages: number = MAX_WIRE_IMAGES,
+): { messages: WireMessage[]; omittedImages: number } {
+  let remaining = Math.max(0, maxImages)
+  let omittedImages = 0
+  const wire: WireMessage[] = new Array(messages.length)
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    const images = message.images ?? []
+    const keep = images.slice(Math.max(0, images.length - remaining))
+    omittedImages += images.length - keep.length
+    remaining -= keep.length
+    wire[index] = {
+      role: message.role,
+      content:
+        keep.length > 0
+          ? [
+              ...(message.content ? [{ type: 'text' as const, text: message.content }] : []),
+              ...keep.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
+            ]
+          : message.content,
+    }
+  }
+  return { messages: wire, omittedImages }
+}
+
 export type StreamResult = { completed: boolean; error?: string; status?: number; shortfall?: number; retryable?: boolean }
 
 interface ErrorBody {
