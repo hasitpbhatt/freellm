@@ -26,6 +26,7 @@ import { newId, sha256Hex } from '../lib/crypto'
 import { dialConnection, connectionSettleModel, getUsableConnection } from '../lib/connections'
 import { readJsonBody } from '../lib/request-body'
 import { allowRequest } from '../lib/ratelimit'
+import { EMPTY_COMPLETION_REASON, isBillableCompletion } from '../lib/completion'
 import type { Bindings, Variables } from '../lib/types'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -467,6 +468,21 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
       }
     }
 
+    // An empty body is never a usable completion: it happens when the upstream
+    // stops at the caller's token budget before emitting the answer. The caller
+    // gets nothing, so it must not be charged for it.
+    if (!isBillableCompletion(content)) {
+      await settle('failed', null, EMPTY_COMPLETION_REASON)
+      return c.json(
+        openAiBody(
+          'server_error',
+          'The model returned an empty answer — no charge was made.',
+          'upstream_empty',
+        ),
+        502,
+      )
+    }
+
     const result = await settle('completed', usage)
     return c.json({
       id: completionId,
@@ -500,6 +516,7 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
   let roleSent = false
   let finishReason: string | null = null
   let settled = false
+  let sawContent = false
 
   const flushChunks = (controller: TransformStreamDefaultController<Uint8Array>) => {
     if (!roleSent) {
@@ -550,6 +567,7 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
           )
         }
         if (typeof choice.delta?.content === 'string' && choice.delta.content.length > 0) {
+          sawContent = true
           controller.enqueue(
             encoder.encode(sse([{ index: 0, delta: { content: choice.delta.content }, finish_reason: null }])),
           )
@@ -563,7 +581,11 @@ app.post('/v1/chat/completions', requireAuthOrToken, async (c) => {
       if (settled) return
       settled = true
       try {
-        await settle('completed', usage)
+        // No text ever reached the caller: that is not a completion, so it must
+        // not be billed. The upstream usually ran out of the caller's token
+        // budget before it emitted anything.
+        if (sawContent) await settle('completed', usage)
+        else await settle('failed', null, EMPTY_COMPLETION_REASON)
       } catch (err) {
         console.error('[v1] settle failed in flush', completionId, err)
       }
@@ -725,6 +747,17 @@ async function chatWithConnection(
       await settle('failed', null, err instanceof Error ? err.message : 'upstream response failed')
       return c.json(openAiBody('server_error', 'The upstream response failed — no charge was made.', 'upstream_failed'), 502)
     }
+    if (!isBillableCompletion(content)) {
+      await settle('failed', null, EMPTY_COMPLETION_REASON)
+      return c.json(
+        openAiBody(
+          'server_error',
+          'The model returned an empty answer — no charge was made.',
+          'upstream_empty',
+        ),
+        502,
+      )
+    }
     const result = await settle('completed', usage)
     return c.json({
       id: completionId,
@@ -759,6 +792,7 @@ async function chatWithConnection(
   let roleSent = false
   let finishReason: string | null = null
   let settled = false
+  let sawContent = false
 
   const flushChunks = (controller: TransformStreamDefaultController<Uint8Array>) => {
     if (!roleSent) {
@@ -800,6 +834,7 @@ async function chatWithConnection(
           )
         }
         if (typeof choice.delta?.content === 'string' && choice.delta.content.length > 0) {
+          sawContent = true
           controller.enqueue(
             encoder.encode(sse([{ index: 0, delta: { content: choice.delta.content }, finish_reason: null }])),
           )
@@ -813,7 +848,8 @@ async function chatWithConnection(
       if (settled) return
       settled = true
       try {
-        await settle('completed', usage)
+        if (sawContent) await settle('completed', usage)
+        else await settle('failed', null, EMPTY_COMPLETION_REASON)
       } catch (err) {
         console.error('[v1:connection] settle failed in flush', completionId, err)
       }
