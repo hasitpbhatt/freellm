@@ -1,0 +1,12 @@
+# Local secrets for `wrangler pages dev` — never commit (gitignored).
+# Generate ENCRYPTION_KEY with: openssl rand -base64 32
+ENCRYPTION_KEY="REPLACE_WITH_BASE64_32_BYTE_KEY"
+# Google sign-in. The BYOK vault's "Google / Gemini" provider reuses this
+# client unless the dedicated GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET
+# are set (they win when both exist). Whichever client is used must whitelist
+# /api/oauth/callback/google as a redirect URI and allow the
+# generative-language scope on its consent screen.
+GOOGLE_CLIENT_ID=""
+GOOGLE_CLIENT_SECRET=""
+# Upstream pool keys (Poolside, Agnes, Atria, …) are NOT env vars any more:
+# they live encrypted in D1's freellm_upstream_keys and are managed from /admin.

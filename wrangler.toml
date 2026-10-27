@@ -1,0 +1,30 @@
+name = "freellm"
+# NOTE: pinned to the newest date supported by the local workerd binary
+# bundled with wrangler 4.86 (Node 20 environment). Raise when wrangler
+# is upgraded on a Node 22+ machine — deploy will reject dates newer
+# than the running wrangler supports.
+compatibility_date = "2026-05-03"
+pages_build_output_dir = "./dist"
+
+# D1 (SQLite) — primary database (existing hasit-in db)
+[[d1_databases]]
+binding = "DB"
+database_name = "hasit-in"
+database_id = "ea3f54ed-75e6-4a45-b7b9-d80509efe4e8"
+migrations_dir = "migrations"
+
+# KV — sessions, rate limits, OAuth state
+[[kv_namespaces]]
+binding = "freellm_sessions"
+id = "788f902877224efe8294bedf0cf7fa92"
+
+[vars]
+ENVIRONMENT = "production"
+# Address that receives the admin role automatically at registration.
+# The very first account registered also becomes admin.
+# ADMIN_EMAIL = "admin@freellm.local"  # Set as secret instead
+
+# Secrets (set via `wrangler pages secret put <NAME>`, or .dev.vars locally):
+#   ENCRYPTION_KEY   — 32-byte base64 key for AES-256-GCM (provider bearers, BYOK vault)
+#   GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET — OAuth
+#   POOLSIDE_API_KEY / AGNES_API_KEY / ATRIA_API_KEY — legacy env keys (catalog now stores these encrypted in D1)

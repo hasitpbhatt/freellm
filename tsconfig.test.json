@@ -1,0 +1,21 @@
+{
+  // Test build: compiles the app libs + tests to CommonJS so Node's built-in
+  // test runner (`node --test`) can execute them with zero extra deps.
+  // Deliberately separate from `tsc -b` (the Vite/bundler solution) so the
+  // app build graph stays clean.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "node10",
+    "ignoreDeprecations": "6.0",
+    "lib": ["ES2022", "DOM"],
+    "types": ["node", "@cloudflare/workers-types"],
+    "outDir": "build-test",
+    "rootDir": ".",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["functions/lib/**/*.ts", "src/lib/api.ts", "src/lib/chat.ts", "tests/**/*.ts"]
+}

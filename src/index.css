@@ -1,0 +1,149 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* freellm design tokens — dark dev-tool
+   Color semantics (consistent across the whole product):
+     gain (green)  = credits earned
+     neutral       = credits spent
+     warn (amber)  = running low / streak at risk
+     loss (red)    = blocked / depleted                                */
+:root {
+  --bg: #0a0a0b;
+  --surface: #141416;
+  --surface-2: #1c1c20;
+  --border: #262629;
+  --text: #ededef;
+  --text-muted: #8b8b93;
+  --accent: #6366f1;
+  --accent-hover: #818cf8;
+  --green: #34d399;
+  --red: #f87171;
+  --amber: #fbbf24;
+}
+
+@layer base {
+  html {
+    @apply bg-bg text-content antialiased;
+    color-scheme: dark;
+  }
+
+  body {
+    @apply font-sans text-base;
+  }
+
+  /* All numbers in mono — the precision feel */
+  .num {
+    @apply font-mono tabular-nums;
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-bg;
+  }
+}
+
+@layer utilities {
+  .card {
+    @apply rounded-xl border border-line bg-surface;
+  }
+
+  .input {
+    @apply rounded-lg border border-line bg-surface-2 px-3 py-2 text-[13px] text-content placeholder:text-muted focus:border-accent focus:outline-none;
+    min-height: 44px;
+  }
+  /* 16px on touch screens kills iOS Safari auto-zoom on focus. */
+  @media (max-width: 640px) {
+    .input {
+      font-size: 16px;
+    }
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-[13px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+    min-height: 44px;
+  }
+
+  .btn-sm {
+    @apply px-3 py-1.5 text-[12px];
+    min-height: 40px;
+    min-width: 44px;
+  }
+
+  .btn-lg {
+    @apply px-6 py-2.5 text-[14px];
+  }
+
+  .btn-primary {
+    @apply btn bg-accent text-white hover:bg-accent-hover;
+  }
+
+  .btn-secondary {
+    @apply btn border border-line bg-surface-2 text-content hover:border-muted;
+  }
+
+  .btn-ghost {
+    @apply btn text-muted hover:text-content;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    max-height: 500px;
+  }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.2s ease-out;
+}
+
+.animate-slide-down {
+  animation: slide-down 0.2s ease-out;
+}
+
+.modal-overlay {
+  @apply fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4;
+}
+
+.modal-content {
+  @apply w-full max-w-md p-6;
+}
+
+.toast-container {
+  @apply fixed bottom-4 right-4 z-50 animate-slide-up;
+}
+
+@media (max-width: 640px) {
+  .toast-container {
+    left: 1rem;
+    right: 1rem;
+    /* Clear the fixed bottom tab bar (~56px) plus any safe-area inset. */
+    bottom: calc(4.5rem + env(safe-area-inset-bottom));
+  }
+}
