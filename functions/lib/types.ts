@@ -171,3 +171,18 @@ export type ConnectionRow = {
 export type Variables = {
   user: UserRow
 }
+export type ProxyRow = {
+  id: string
+  label: string
+  url: string
+  username: string | null
+  password_ciphertext: string | null
+  password_iv: string | null
+  status: string
+  cooldown_until: number | null
+  last_checked_at: number | null
+  last_error: string | null
+  enabled: number
+  created_at: number
+  updated_at: number
+}

@@ -290,7 +290,37 @@ for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.
         </p>
       </Section>
 
-      <Section title="3 · call it — curl">
+      <Section title="3 · call it — Python">
+        <p className="text-muted">
+          Same gateway, official SDK <code className="num">pip install openai</code> (v1+):
+        </p>
+        <CodeBlock
+          lang="python"
+          label="One completion + streamed retry"
+          code={`from openai import OpenAI
+
+client = OpenAI(base_url='${BASE_URL}', api_key='fl_…')  # from step 1
+
+res = client.chat.completions.create(
+    model='${exampleSlug}',  # any slug below
+    messages=[{'role': 'user', 'content': 'Explain large language models in one sentence.'}],
+)
+print(res.choices[0].message.content)
+
+# streamed:
+stream = client.chat.completions.create(
+    model='${exampleSlug}',
+    messages=[{'role': 'user', 'content': 'stream it'}],
+    stream=True,
+    stream_options={'include_usage': True},
+)
+for chunk in stream:
+    if chunk.choices and chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end='')`}
+        />
+      </Section>
+
+      <Section title="4 · call it — curl">
         <CodeBlock
           lang="bash"
           label="List models"
@@ -349,7 +379,7 @@ curl -s ${BASE_URL}/chat/completions \\
       </Section>
 
       {/* Reference */}
-      <Section title="4 · endpoints">
+      <Section title="5 · endpoints">
         <p className="text-muted">
           Gateway base URL is <code className="num">{BASE_URL}</code> for the <code className="num">/v1/*</code>{' '}
           OpenAI-compatible surface. The <code className="num">/api/*</code> native surface lives at the same
@@ -391,7 +421,7 @@ curl -s ${BASE_URL}/chat/completions \\
       </Section>
 
       {/* Billing + errors */}
-      <Section title="5 · billing and errors">
+      <Section title="6 · billing and errors">
         <p className="text-muted">
           Every pool completion is charged in credits equal to the tokens the provider reported. When a
           provider reports no usage, the model's flat rate applies (shown per model in{' '}

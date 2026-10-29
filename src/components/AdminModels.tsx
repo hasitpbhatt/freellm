@@ -27,6 +27,8 @@ const statusDot: Record<string, string> = {
 export default function AdminModels() {
   const [models, setModels] = useState<ModelAlias[] | null>(null)
   const [error, setError] = useState('')
+  const [cleaning, setCleaning] = useState(false)
+  const [cleanupMsg, setCleanupMsg] = useState('')
 
   const load = useCallback(async () => {
     try {
@@ -47,6 +49,21 @@ export default function AdminModels() {
     void load()
   }, [load])
 
+  async function cleanup() {
+    if (!confirm('Disable all model aliases with no active providers or all providers down/with no keys? This can be undone by re-enabling.')) return
+    setCleaning(true)
+    setCleanupMsg('')
+    try {
+      const res = await api.post<{ disabled: number; items: Array<{ slug: string; reason: string }> }>('/admin/models/cleanup')
+      setCleanupMsg(`Disabled ${res.disabled} alias(es).`)
+      await load()
+    } catch (e) {
+      setCleanupMsg(e instanceof ApiError ? e.message : 'Cleanup failed')
+    } finally {
+      setCleaning(false)
+    }
+  }
+
   if (error) {
     return (
       <div className="mx-auto max-w-md py-12 text-center">
@@ -61,13 +78,17 @@ export default function AdminModels() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-xl font-semibold">Model catalog</h1>
-        <p className="mt-1 text-[13px] text-muted">
-          Aliases group multiple upstream configs. A request to an alias multiplexes across its configs
-          using the routing strategy. latency_weighted prefers the lowest average latency and explores
-          round-robin ~15% of the time.
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">Model catalog</h1>
+          <p className="mt-1 text-[13px] text-muted">
+            Aliases group multiple upstream configs. A request to an alias multiplexes across its configs
+            using the routing strategy. latency_weighted prefers the lowest average latency and explores
+            round-robin ~15% of the time.
+          </p>
+          {cleanupMsg ? <p className="mt-1 text-[13px] text-muted">{cleanupMsg}</p> : null}
+        </div>
+        <Button variant="secondary" size="sm" onClick={cleanup} disabled={cleaning}>{cleaning ? 'Cleaning…' : 'Cleanup broken/empty aliases'}</Button>
       </div>
 
       <NewAliasForm onCreated={load} />

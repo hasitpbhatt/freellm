@@ -80,13 +80,20 @@ export default function Usage() {
       </div>
 
       {/* Summary */}
-      <div className="grid gap-4 sm:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Card className="p-4">
           <p className="text-[12px] uppercase tracking-wide text-muted">Spent</p>
           <p className="num mt-1 text-xl font-semibold">
             <Credits value={usage.totals.credits_spent} />
           </p>
           <p className="text-[12px] text-muted">credits lifetime</p>
+        </Card>
+        <Card className="p-4">
+          <p className="text-[12px] uppercase tracking-wide text-muted">Balance</p>
+          <p className="num mt-1 text-xl font-semibold">
+            <Credits value={usage.balance.total} />
+          </p>
+          <p className="text-[12px] text-muted">{usage.balance.scoped > 0 ? <><Credits value={usage.balance.scoped} /> scoped · <Credits value={usage.balance.global} /> global</> : 'all global credits'}</p>
         </Card>
         <Card className="p-4">
           <p className="text-[12px] uppercase tracking-wide text-muted">Messages</p>
