@@ -1601,3 +1601,38 @@ app.post('/api/admin/upstream-providers/:id/fetch-models', async (c) => {
     return c.json({ error: 'fetch_failed', message: String(e).slice(0, 200) }, 502)
   }
 })
+
+// ---------------------------------------------------------- test a single upstream model (from fetched list)
+app.post('/api/admin/upstream-providers/:id/test-model', async (c) => {
+  const id = c.req.param('id')
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null)
+  const upstreamModel = typeof body?.upstream_model === 'string' ? body.upstream_model.trim() : ''
+  if (!upstreamModel) return c.json({ error: 'invalid_input', message: 'upstream_model required' }, 400)
+  const provider = await c.env.DB.prepare('SELECT * FROM freellm_upstream_providers WHERE id = ?').bind(id).first<UpstreamProviderRow>()
+  if (!provider) return c.json({ error: 'not_found' }, 404)
+  const key = await c.env.DB.prepare(
+    'SELECT * FROM freellm_upstream_keys WHERE upstream_provider_id = ? ORDER BY priority ASC, created_at ASC LIMIT 1',
+  ).bind(id).first<UpstreamKeyRow>()
+  if (!key) return c.json({ error: 'no_key', message: 'Add a key to the pool first.' }, 400)
+  try {
+    const encKey = await requireEncryptionKey(c.env)
+    const apiKey = await decryptSecret(key.api_key_ciphertext, key.api_key_iv, encKey)
+    const base = provider.base_url.replace(/\/+$/, '')
+    const { assertSafeBaseUrl } = await import('../lib/validate')
+    assertSafeBaseUrl(base)
+    const started = Date.now()
+    const res = await fetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: upstreamModel, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1, temperature: 0 }),
+    })
+    const latencyMs = Date.now() - started
+    if (res.ok) {
+      return c.json({ ok: true, latencyMs, status: res.status })
+    }
+    const detail = (await res.text().catch(() => '')).slice(0, 200)
+    return c.json({ ok: false, latencyMs, status: res.status, error: detail }, 200)
+  } catch (e: any) {
+    return c.json({ ok: false, latencyMs: null, error: String(e).slice(0, 200) }, 200)
+  }
+})

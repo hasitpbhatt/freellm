@@ -427,6 +427,8 @@ function ModelCatalog({
   const [importList, setImportList] = useState<string[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [importError, setImportError] = useState('')
+  const [testing, setTesting] = useState<string | null>(null)
+  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; latencyMs: number | null; status?: number; error?: string }>>({})
 
   const sameUrlProviders = allProviders.filter((p) => p.id !== provider.id && p.base_url === provider.base_url)
 
@@ -444,6 +446,18 @@ function ModelCatalog({
       setImportError(e instanceof ApiError ? e.message : 'Failed to fetch models')
     } finally {
       setImporting(false)
+    }
+  }
+
+  async function testModel(name: string) {
+    setTesting(name)
+    try {
+      const data = await api.post<{ ok: boolean; latencyMs: number | null; status?: number; error?: string }>(`/admin/upstream-providers/${provider.id}/test-model`, { upstream_model: name })
+      setTestResults((prev) => ({ ...prev, [name]: data }))
+    } catch (e) {
+      setTestResults((prev) => ({ ...prev, [name]: { ok: false, latencyMs: null, error: e instanceof ApiError ? e.message : 'Test failed' } }))
+    } finally {
+      setTesting(null)
     }
   }
 
@@ -582,17 +596,26 @@ function ModelCatalog({
           </div>
           <div className="max-h-64 overflow-auto">
             <div className="flex flex-col gap-1">
-              {importList.map((name) => (
-                <label key={name} className="flex items-center gap-2 text-[13px] text-content">
-                  <input type="checkbox" checked={selected.has(name)} onChange={(e) => {
-                    const s = new Set(selected)
-                    if (e.target.checked) s.add(name)
-                    else s.delete(name)
-                    setSelected(s)
-                  }} />
-                  <code className="font-mono text-[12px]">{name}</code>
-                </label>
-              ))}
+              {importList.map((name) => {
+                const tr = testResults[name]
+                return (
+                  <div key={name} className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="flex items-center gap-2 text-[13px] text-content">
+                      <input type="checkbox" checked={selected.has(name)} onChange={(e) => {
+                        const s = new Set(selected)
+                        if (e.target.checked) s.add(name)
+                        else s.delete(name)
+                        setSelected(s)
+                      }} />
+                      <code className="font-mono text-[12px]">{name}</code>
+                    </label>
+                    <div className="flex items-center gap-2">
+                      {tr ? <span className={`text-[12px] ${tr.ok ? 'text-gain' : 'text-loss'}`}>{tr.ok ? `${tr.latencyMs}ms` : tr.error?.slice(0, 40) || `err${tr.status||''}`}</span> : null}
+                      <Button size="sm" variant="ghost" onClick={() => testModel(name)} disabled={testing === name || busy}>{testing === name ? 'Testing…' : 'Test'}</Button>
+                    </div>
+                  </div>
+                )
+              })}
             </div>
           </div>
         </div>
