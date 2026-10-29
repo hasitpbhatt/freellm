@@ -1636,3 +1636,48 @@ app.post('/api/admin/upstream-providers/:id/test-model', async (c) => {
     return c.json({ ok: false, latencyMs: null, error: String(e).slice(0, 200) }, 200)
   }
 })
+
+// ---------------------------------------------------------- cleanup broken/empty model aliases
+app.post('/api/admin/models/cleanup', async (c) => {
+  const me = c.get('user')
+  // Find aliases with no active providers
+  const empty = await c.env.DB.prepare(
+    `SELECT m.id, m.slug, m.label FROM freellm_models m
+     WHERE NOT EXISTS (
+       SELECT 1 FROM freellm_model_providers mp WHERE mp.model_id = m.id AND mp.active = 1
+     )`,
+  ).all<{ id: string; slug: string; label: string }>()
+  // Find aliases where all active providers point to providers with no keys or down (conservative)
+  const candidates = await c.env.DB.prepare(
+    `SELECT DISTINCT m.id, m.slug, m.label
+     FROM freellm_models m
+     JOIN freellm_model_providers mp ON mp.model_id = m.id AND mp.active = 1
+     JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
+     WHERE NOT EXISTS (
+       SELECT 1 FROM freellm_upstream_keys k WHERE k.upstream_provider_id = up.id AND k.status IN ('live','unknown')
+     )
+       AND up.status IN ('down','disabled')`,
+  ).all<{ id: string; slug: string; label: string }>()
+
+  const toDisable = new Map<string, { id: string; slug: string; label: string; reason: string }>()
+  for (const e of empty.results || []) toDisable.set(e.id, { ...e, reason: 'empty' })
+  for (const cnd of candidates.results || []) {
+    if (!toDisable.has(cnd.id)) toDisable.set(cnd.id, { ...cnd, reason: 'not_working' })
+  }
+
+  const ids = Array.from(toDisable.keys())
+  if (ids.length === 0) {
+    return c.json({ disabled: 0, items: [] })
+  }
+  const nowTs = now()
+  for (const id of ids) {
+    await c.env.DB.prepare('UPDATE freellm_models SET active = 0, updated_at = ? WHERE id = ?').bind(nowTs, id).run()
+  }
+  try {
+    const aid = crypto.randomUUID()
+    await c.env.DB.prepare(`INSERT INTO freellm_admin_audit_log (id, admin_id, action, target_type, target_id, justification, ip, user_agent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(aid, me?.id ?? null, 'models.cleanup', 'user', null, JSON.stringify({ disabled: ids.length, ids }), null, null, nowTs)
+      .run()
+  } catch {}
+  return c.json({ disabled: ids.length, items: Array.from(toDisable.values()) })
+})

@@ -429,6 +429,7 @@ function ModelCatalog({
   const [importError, setImportError] = useState('')
   const [testing, setTesting] = useState<string | null>(null)
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; latencyMs: number | null; status?: number; error?: string }>>({})
+  const [importSearch, setImportSearch] = useState('')
 
   const sameUrlProviders = allProviders.filter((p) => p.id !== provider.id && p.base_url === provider.base_url)
 
@@ -588,26 +589,48 @@ function ModelCatalog({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-[13px] text-content">Select models to add (none checked by default)</p>
             <div className="flex gap-2">
-              <Button size="sm" variant="ghost" onClick={() => setSelected(new Set(importList))}>Select all</Button>
+              <Button size="sm" variant="ghost" onClick={() => {
+                const q = importSearch.trim().toLowerCase()
+                const filtered = q ? importList.filter((n) => n.toLowerCase().includes(q)) : importList
+                setSelected(new Set(filtered))
+              }}>Select all visible</Button>
+              <Button size="sm" variant="ghost" onClick={() => {
+                const q = importSearch.trim().toLowerCase()
+                const filtered = q ? importList.filter((n) => n.toLowerCase().includes(q)) : importList
+                const ok = filtered.filter((n) => testResults[n]?.ok)
+                setSelected(new Set(ok))
+              }}>Select all tested OK</Button>
               <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>None</Button>
               <Button size="sm" onClick={addSelected} disabled={selected.size === 0 || busy}>{busy ? 'Adding…' : `Add ${selected.size} selected`}</Button>
-              <Button size="sm" variant="ghost" onClick={() => { setImportList([]); setSelected(new Set()) }}>Cancel</Button>
+              <Button size="sm" variant="ghost" onClick={() => { setImportList([]); setSelected(new Set()); setImportSearch('') }}>Cancel</Button>
             </div>
           </div>
+          <input
+            className="input"
+            placeholder="Search models by name..."
+            value={importSearch}
+            onChange={(e) => setImportSearch(e.target.value)}
+          />
           <div className="max-h-64 overflow-auto">
             <div className="flex flex-col gap-1">
-              {importList.map((name) => {
+              {(() => {
+                const q = importSearch.trim().toLowerCase()
+                const filtered = q ? importList.filter((n) => n.toLowerCase().includes(q)) : importList
+                return filtered
+              })().map((name) => {
                 const tr = testResults[name]
+                const already = models.some((m) => m.upstream_model === name)
                 return (
                   <div key={name} className="flex flex-wrap items-center justify-between gap-2">
                     <label className="flex items-center gap-2 text-[13px] text-content">
-                      <input type="checkbox" checked={selected.has(name)} onChange={(e) => {
+                      <input type="checkbox" checked={selected.has(name)} disabled={already} onChange={(e) => {
                         const s = new Set(selected)
                         if (e.target.checked) s.add(name)
                         else s.delete(name)
                         setSelected(s)
                       }} />
                       <code className="font-mono text-[12px]">{name}</code>
+                      {already ? <span className="text-[11px] text-muted">Already added</span> : null}
                     </label>
                     <div className="flex items-center gap-2">
                       {tr ? <span className={`text-[12px] ${tr.ok ? 'text-gain' : 'text-loss'}`}>{tr.ok ? `${tr.latencyMs}ms` : tr.error?.slice(0, 40) || `err${tr.status||''}`}</span> : null}
