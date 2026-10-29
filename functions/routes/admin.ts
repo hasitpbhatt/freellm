@@ -27,6 +27,7 @@ import {
   validateCapabilities,
 } from '../lib/validate'
 import type { Bindings, ModelProviderRow, ModelRow, UpstreamKeyRow, UpstreamProviderRow, Variables } from '../lib/types'
+import { createProxy, deleteProxy, listProxies, revealProxyPassword, testProxy, updateProxy } from '../lib/proxy'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -1459,3 +1460,144 @@ app.delete('/api/admin/email-blocks/:id', async (c) => {
 })
 
 export default app
+
+// ---------------------------------------------------------- proxies (global pool)
+app.get('/api/admin/proxies', async (c) => {
+  const proxies = await listProxies(c.env.DB)
+  return c.json({ proxies })
+})
+
+app.post('/api/admin/proxies', async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null)
+  const label = typeof body?.label === 'string' ? body.label.trim() : ''
+  const url = typeof body?.url === 'string' ? body.url.trim() : ''
+  if (!label || !url) return c.json({ error: 'invalid_input', message: 'label and url required' }, 400)
+  const me = c.get('user')
+  const proxy = await createProxy(c.env.DB, c.env, me?.id ?? null, {
+    label,
+    url,
+    username: typeof body?.username === 'string' ? body.username : null,
+    password: typeof body?.password === 'string' && body.password ? body.password : null,
+  })
+  return c.json({ proxy }, 201)
+})
+
+app.patch('/api/admin/proxies/:id', async (c) => {
+  const id = c.req.param('id')
+  const body = await c.req.json<Record<string, unknown>>().catch(() => null)
+  const me = c.get('user')
+  try {
+    const proxy = await updateProxy(c.env.DB, c.env, me?.id ?? null, id, {
+      label: typeof body?.label === 'string' ? body.label.trim() : undefined,
+      url: typeof body?.url === 'string' ? body.url.trim() : undefined,
+      username: body?.username === null ? null : typeof body?.username === 'string' ? body.username : undefined,
+      password: typeof body?.password === 'string' && body.password ? body.password : undefined,
+      enabled: typeof body?.enabled === 'boolean' ? (body.enabled ? 1 : 0) : typeof body?.enabled === 'number' ? body.enabled : undefined,
+    })
+    return c.json({ proxy })
+  } catch (e: any) {
+    if (e?.message === 'Proxy not found') return c.json({ error: 'not_found' }, 404)
+    throw e
+  }
+})
+
+app.delete('/api/admin/proxies/:id', async (c) => {
+  const id = c.req.param('id')
+  const me = c.get('user')
+  await deleteProxy(c.env.DB, me?.id ?? null, id)
+  return c.json({ ok: true })
+})
+
+app.post('/api/admin/proxies/:id/test', async (c) => {
+  const id = c.req.param('id')
+  const me = c.get('user')
+  try {
+    const test = await testProxy(c.env.DB, c.env, me?.id ?? null, id)
+    return c.json({ test })
+  } catch (e: any) {
+    if (e?.message === 'Proxy not found') return c.json({ error: 'not_found' }, 404)
+    throw e
+  }
+})
+
+app.post('/api/admin/proxies/:id/reveal', async (c) => {
+  const id = c.req.param('id')
+  const me = c.get('user')
+  const pw = await revealProxyPassword(c.env.DB, c.env, me?.id ?? null, id)
+  if (pw === null) return c.json({ error: 'not_found_or_no_password' }, 404)
+  return c.json({ password: pw })
+})
+
+// ---------------------------------------------------------- audit log
+app.get('/api/admin/audit', async (c) => {
+  const limit = Math.min(Number(c.req.query('limit')) || 100, 500)
+  const offset = Math.max(Number(c.req.query('offset')) || 0, 0)
+  const actorId = c.req.query('actor_id') || null
+  let sql = 'SELECT * FROM freellm_admin_audit_log'
+  const binds: any[] = []
+  if (actorId) {
+    sql += ' WHERE admin_id = ?'
+    binds.push(actorId)
+  }
+  sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?'
+  binds.push(limit, offset)
+  const rows = await c.env.DB.prepare(sql).bind(...binds).all()
+  // normalize for frontend
+  const logs = (rows.results || []).map((r: any) => ({
+    id: r.id,
+    actor_id: r.admin_id,
+    action: r.action,
+    target_type: r.target_type,
+    target_id: r.target_id,
+    ip: r.ip,
+    user_agent: r.user_agent,
+    metadata_json: r.justification,
+    created_at: r.created_at,
+  }))
+  return c.json({ logs, limit, offset })
+})
+
+// ---------------------------------------------------------- fetch models from upstream provider
+app.post('/api/admin/upstream-providers/:id/fetch-models', async (c) => {
+  const id = c.req.param('id')
+  const provider = await c.env.DB.prepare('SELECT * FROM freellm_upstream_providers WHERE id = ?').bind(id).first<UpstreamProviderRow>()
+  if (!provider) return c.json({ error: 'not_found' }, 404)
+  const key = await c.env.DB.prepare(
+    'SELECT * FROM freellm_upstream_keys WHERE upstream_provider_id = ? ORDER BY priority ASC, created_at ASC LIMIT 1',
+  ).bind(id).first<UpstreamKeyRow>()
+  if (!key) return c.json({ error: 'no_key', message: 'Add a key to the pool first.' }, 400)
+  try {
+    const encKey = await requireEncryptionKey(c.env)
+    const apiKey = await decryptSecret(key.api_key_ciphertext, key.api_key_iv, encKey)
+    const base = provider.base_url.replace(/\/+$/, '')
+    const { assertSafeBaseUrl } = await import('../lib/validate')
+    assertSafeBaseUrl(base)
+    const res = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' } })
+    if (res.status === 404 || res.status === 405) {
+      return c.json({ models: [], supported: false })
+    }
+    if (!res.ok) {
+      const detail = (await res.text().catch(() => '')).slice(0, 200)
+      return c.json({ error: 'fetch_failed', status: res.status, message: detail }, 502)
+    }
+    const json: any = await res.json().catch(() => ({}))
+    let models: string[] = []
+    if (Array.isArray(json?.data)) {
+      models = json.data.map((m: any) => m?.id).filter((x: any) => typeof x === 'string')
+    } else if (Array.isArray(json?.models)) {
+      models = json.models.map((m: any) => (typeof m === 'string' ? m : m?.id || m?.name)).filter((x: any) => typeof x === 'string')
+    }
+    // de-dupe
+    models = Array.from(new Set(models))
+    const me = c.get('user')
+    try {
+      const aid = crypto.randomUUID()
+      await c.env.DB.prepare(`INSERT INTO freellm_admin_audit_log (id, admin_id, action, target_type, target_id, justification, ip, user_agent, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(aid, me?.id ?? null, 'upstream_provider.fetch_models', 'upstream_provider', id, JSON.stringify({ count: models.length }), null, null, Date.now())
+        .run()
+    } catch {}
+    return c.json({ models, supported: true })
+  } catch (e: any) {
+    return c.json({ error: 'fetch_failed', message: String(e).slice(0, 200) }, 502)
+  }
+})

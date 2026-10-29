@@ -423,8 +423,55 @@ function ModelCatalog({
   const [supportsStreaming, setSupportsStreaming] = useState(true)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [importList, setImportList] = useState<string[]>([])
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [importError, setImportError] = useState('')
 
   const sameUrlProviders = allProviders.filter((p) => p.id !== provider.id && p.base_url === provider.base_url)
+
+  async function fetchModels() {
+    setImporting(true)
+    setImportError('')
+    setImportList([])
+    setSelected(new Set())
+    try {
+      const data = await api.post<{ models: string[]; supported?: boolean }>(`/admin/upstream-providers/${provider.id}/fetch-models`)
+      const list = data.models || []
+      setImportList(list)
+      setSelected(new Set()) // default none checked
+    } catch (e) {
+      setImportError(e instanceof ApiError ? e.message : 'Failed to fetch models')
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  async function addSelected() {
+    setBusy(true)
+    setImportError('')
+    try {
+      for (const name of Array.from(selected)) {
+        try {
+          await api.post('/admin/upstream-models', {
+            upstream_provider_id: provider.id,
+            upstream_model: name,
+            capabilities: [],
+            context_window: null,
+            max_output_tokens: null,
+            supports_streaming: true,
+          })
+        } catch {}
+      }
+      setImportList([])
+      setSelected(new Set())
+      await onChanged()
+    } catch (e) {
+      setImportError(e instanceof ApiError ? e.message : 'Failed to add models')
+    } finally {
+      setBusy(false)
+    }
+  }
 
   async function add(event: FormEvent) {
     event.preventDefault()
@@ -513,9 +560,43 @@ function ModelCatalog({
 
   return (
     <div className="flex flex-col gap-3 border-t border-line p-4">
-      <p className="text-[12px] font-medium uppercase tracking-wide text-muted">
-        Upstream models — the exact names this provider accepts
-      </p>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[12px] font-medium uppercase tracking-wide text-muted">
+          Upstream models — the exact names this provider accepts
+        </p>
+        <Button size="sm" variant="secondary" onClick={fetchModels} disabled={importing || busy}>
+          {importing ? 'Fetching…' : 'Fetch models from /v1/models'}
+        </Button>
+      </div>
+      {importError ? <p className="text-[13px] text-loss">{importError}</p> : null}
+      {importList.length > 0 ? (
+        <div className="flex flex-col gap-2 rounded border border-line p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[13px] text-content">Select models to add (none checked by default)</p>
+            <div className="flex gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setSelected(new Set(importList))}>Select all</Button>
+              <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>None</Button>
+              <Button size="sm" onClick={addSelected} disabled={selected.size === 0 || busy}>{busy ? 'Adding…' : `Add ${selected.size} selected`}</Button>
+              <Button size="sm" variant="ghost" onClick={() => { setImportList([]); setSelected(new Set()) }}>Cancel</Button>
+            </div>
+          </div>
+          <div className="max-h-64 overflow-auto">
+            <div className="flex flex-col gap-1">
+              {importList.map((name) => (
+                <label key={name} className="flex items-center gap-2 text-[13px] text-content">
+                  <input type="checkbox" checked={selected.has(name)} onChange={(e) => {
+                    const s = new Set(selected)
+                    if (e.target.checked) s.add(name)
+                    else s.delete(name)
+                    setSelected(s)
+                  }} />
+                  <code className="font-mono text-[12px]">{name}</code>
+                </label>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
       {models.length === 0 ? (
         <>
           {sameUrlProviders.length > 0 ? (
