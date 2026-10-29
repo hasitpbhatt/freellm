@@ -107,6 +107,13 @@ export default function Dashboard() {
 
   return (
     <div className="flex flex-col gap-6">
+      {/* Quick actions */}
+      <div className="flex flex-wrap gap-2">
+        <Link to="/chat"><Button size="sm">Start chat</Button></Link>
+        <Link to="/keys"><Button size="sm" variant="secondary">Add a key</Button></Link>
+        <Link to="/earn"><Button size="sm" variant="secondary">Earn more credits</Button></Link>
+        <Link to="/models"><Button size="sm" variant="ghost">Browse models</Button></Link>
+      </div>
       <div className="grid gap-4 sm:grid-cols-3">
         {/* Balance */}
         <Card className="p-4">

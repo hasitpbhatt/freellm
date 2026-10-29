@@ -109,9 +109,13 @@ export default function Keys() {
     savePersisted({ expandedIds })
   }, [expandedIds])
 
-  const handleAddKey = (key: ByokKey, _test: KeyTestResult) => {
+  const handleAddKey = (key: ByokKey, test: KeyTestResult) => {
     setKeys((prev) => [key, ...prev])
     setPersisted((p) => ({ ...p, lastAddedId: key.id }))
+    setBanner({
+      kind: test.ok ? 'ok' : 'err',
+      text: test.ok ? `Key added and verified ✓${test.latencyMs != null ? ` — ${test.latencyMs}ms` : ''}` : `Key added, but test failed: ${test.error ?? 'unknown error'}`,
+    })
   }
 
   const handleTest = async (id: string) => {

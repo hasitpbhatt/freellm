@@ -1,4 +1,14 @@
-import { connect } from 'cloudflare:sockets'
+// `cloudflare:sockets` is only available in the Workers runtime; importing it
+// statically breaks the plain-Node test run, so resolve it lazily here.
+let _connect: ((opts: { hostname: string; port: number }) => Promise<any>) | null = null
+async function socketsConnect(opts: { hostname: string; port: number }): Promise<any> {
+  if (!_connect) {
+    const mod = (await import('cloudflare:sockets')) as unknown as { connect: (o: { hostname: string; port: number }) => Promise<any> }
+    _connect = mod.connect
+  }
+  return _connect(opts)
+}
+
 import { decryptSecret, encryptSecret } from './crypto'
 import type { Bindings } from './types'
 import type { ProxyRow } from './types'
@@ -196,7 +206,7 @@ export async function testProxy(
   const start = now()
   try {
     const { host, port } = parseProxyUrl(row.url)
-    const connectPromise = connect({ hostname: host, port })
+    const connectPromise = socketsConnect({ hostname: host, port })
     const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('proxy connect timeout')), 10000))
     const sock = (await Promise.race([connectPromise, timeoutPromise])) as any
     const writer = sock.writable.getWriter()

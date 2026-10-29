@@ -20,6 +20,8 @@ export default function Models() {
   const { user } = useAuth()
   const [models, setModels] = useState<Model[] | null>(null)
   const [error, setError] = useState('')
+  const [search, setSearch] = useState('')
+  const [sort, setSort] = useState<'status' | 'label' | 'context'>('status')
 
   const load = () => {
     setError('')
@@ -54,6 +56,16 @@ export default function Models() {
   }
   if (models === null) return <LoadingState />
 
+  const statusRank: Record<string, number> = { live: 0, slow: 1, unknown: 2, down: 3 }
+  const q = search.trim().toLowerCase()
+  const visibleModels = models
+    .filter((m) => (q === '' ? true : m.label.toLowerCase().includes(q) || m.slug.toLowerCase().includes(q)))
+    .sort((a, b) => {
+      if (sort === 'status') return (statusRank[a.status] ?? 9) - (statusRank[b.status] ?? 9) || a.label.localeCompare(b.label)
+      if (sort === 'label') return a.label.localeCompare(b.label)
+      return (b.context_window ?? 0) - (a.context_window ?? 0)
+    })
+
   return (
     <div className="flex flex-col gap-6">
       <div>
@@ -71,8 +83,17 @@ export default function Models() {
         </EmptyState>
       )}
 
+      <div className="flex flex-wrap gap-2">
+        <input className="input min-w-[180px] flex-1" placeholder="Search models..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        <select className="input" value={sort} onChange={(e) => setSort(e.target.value as any)}>
+          <option value="status">Sort: status</option>
+          <option value="label">Sort: name</option>
+          <option value="context">Sort: context</option>
+        </select>
+      </div>
+
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {models.map((model) => (
+        {visibleModels.map((model) => (
           <Card key={model.slug} className="flex flex-col gap-2 p-4">
             <div className="flex items-center gap-2">
               <span className={`h-2 w-2 shrink-0 rounded-full ${statusDot[model.status]}`} aria-hidden="true" />

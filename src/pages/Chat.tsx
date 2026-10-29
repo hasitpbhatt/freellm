@@ -527,9 +527,6 @@ export default function Chat() {
                       </span>
                     )}
                     {opt.disabled && <span className="text-[11px] text-muted ml-auto">locked</span>}
-                    <span className="num text-[11px] text-muted ml-auto">
-                      flat {opt.flatRate.toLocaleString('en-US')} cr
-                    </span>
                   </div>
                 )}
               />
@@ -606,6 +603,11 @@ export default function Chat() {
               <p className="text-[13px]">
                 Ask {mode === 'pool' ? (model?.label ?? 'a model') : (selectedKey?.label ?? 'your key')} anything.
               </p>
+              <div className="flex flex-wrap justify-center gap-2 mt-2 max-w-md">
+                {['Explain quantum entanglement simply', 'Write a Python quicksort', 'Summarize this in 3 bullets: ', 'Debug this code: '].map((p) => (
+                  <button key={p} type="button" onClick={() => setInput(p)} className="rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] text-muted hover:text-content">{p}</button>
+                ))}
+              </div>
               <p className="num text-[12px] max-w-md">
                 {mode === 'pool'
                   ? 'Billing uses the provider\'s reported token counts; the flat rate applies only when usage is unreported or a stream is stopped early.'
@@ -715,7 +717,12 @@ export default function Chat() {
           {busy ? (
             <Button type="button" variant="secondary" onClick={stop} title="Stop (Esc)">Stop</Button>
           ) : (
-            <Button type="submit" disabled={!canSend} title={canSend ? 'Send (Enter)' : sendBlockReason}>Send</Button>
+            <>
+              {mode === 'pool' && (
+                <span className="num text-[12px] text-muted">{user.balance_credits.toLocaleString('en-US')} cr</span>
+              )}
+              <Button type="submit" disabled={!canSend} title={canSend ? 'Send (Enter)' : sendBlockReason}>Send</Button>
+            </>
           )}
         </form>
         <p className="num text-[11px] text-muted px-4 pb-4 flex-shrink-0">
