@@ -23,7 +23,10 @@ export default function Landing() {
           alive by contributors. 1 credit = 1 token.
         </p>
         <div className="flex flex-col sm:flex-row gap-4 justify-center">
-          <Link to="/keys" className="btn-primary px-8 py-3 text-sm font-medium">
+          <Link to="/chat" className="btn-primary px-8 py-3 text-sm font-medium">
+            Try a free chat →
+          </Link>
+          <Link to="/keys" className="btn-secondary px-8 py-3 text-sm font-medium">
             Start with Your Key →
           </Link>
           <Link to="/models" className="btn-secondary px-8 py-3 text-sm font-medium">

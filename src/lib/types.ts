@@ -99,3 +99,23 @@ export type ModelAlias = {
   updated_at: number
   providers: ModelProvider[]
 }
+
+/** A global proxy used on retry when upstream returns 429 or is blocked. */
+export type Proxy = {
+  id: string
+  label: string
+  url: string
+  username: string | null
+  has_password: boolean
+  status: 'unknown' | 'live' | 'slow' | 'down' | 'disabled'
+  enabled: number
+  cooldown_until: number | null
+  last_checked_at: number | null
+  last_error: string | null
+  created_at: number
+  updated_at: number
+}
+
+export type ProxyRevealed = Proxy & {
+  password?: string
+}

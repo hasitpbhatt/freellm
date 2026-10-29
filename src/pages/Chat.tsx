@@ -548,31 +548,34 @@ export default function Chat() {
       <header className="flex flex-col gap-3 p-4 bg-surface border-b border-line lg:flex-row lg:items-center lg:justify-between lg:px-6">
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-semibold">Chat</h1>
-          <div className="flex items-center gap-2" role="radiogroup" aria-label="Chat mode">
-            <button
-              role="radio"
-              aria-checked={mode === 'pool'}
-              onClick={() => { setMode('pool'); setSelectedKeyId('') }}
-              className={`px-3 py-1.5 text-[12px] font-medium rounded transition-colors ${
-                mode === 'pool'
-                  ? 'bg-accent text-white border-accent'
-                  : 'bg-surface-2 text-content hover:bg-surface-3 border-transparent'
-              }`}
-            >
-              The Pool
-            </button>
-            <button
-              role="radio"
-              aria-checked={mode === 'byok'}
-              onClick={() => setMode('byok')}
-              className={`px-3 py-1.5 text-[12px] font-medium rounded transition-colors ${
-                mode === 'byok'
-                  ? 'bg-accent text-white border-accent'
-                  : 'bg-surface-2 text-content hover:bg-surface-3 border-transparent'
-              }`}
-            >
-              Your Key
-            </button>
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-2" role="radiogroup" aria-label="Chat mode">
+              <button
+                role="radio"
+                aria-checked={mode === 'pool'}
+                onClick={() => { setMode('pool'); setSelectedKeyId('') }}
+                className={`px-3 py-1.5 text-[12px] font-medium rounded transition-colors ${
+                  mode === 'pool'
+                    ? 'bg-accent text-white border-accent'
+                    : 'bg-surface-2 text-content hover:bg-surface-3 border-transparent'
+                }`}
+              >
+                The Pool
+              </button>
+              <button
+                role="radio"
+                aria-checked={mode === 'byok'}
+                onClick={() => setMode('byok')}
+                className={`px-3 py-1.5 text-[12px] font-medium rounded transition-colors ${
+                  mode === 'byok'
+                    ? 'bg-accent text-white border-accent'
+                    : 'bg-surface-2 text-content hover:bg-surface-3 border-transparent'
+                }`}
+              >
+                Your Key
+              </button>
+            </div>
+            <p className="text-[11px] text-muted">{mode === 'pool' ? 'Uses credits (1 credit = 1 token). Earn more on Earn.' : 'Uses your own API key.'}</p>
           </div>
         </div>
 
@@ -599,9 +602,6 @@ export default function Chat() {
                       </span>
                     )}
                     {opt.disabled && <span className="text-[11px] text-muted ml-auto">locked</span>}
-                    <span className="num text-[11px] text-muted ml-auto">
-                      flat {opt.flatRate.toLocaleString('en-US')} cr
-                    </span>
                   </div>
                 )}
               />
@@ -644,9 +644,6 @@ export default function Chat() {
                   image input
                 </span>
               )}
-              <span className="num ml-auto text-muted">
-                flat {model.flat_rate_credits.toLocaleString('en-US')} cr if usage unreported
-              </span>
               {modelLocked && (
                 <span className="text-warn">requires {model.access_tier} tier — upgrade not available yet</span>
               )}
@@ -686,6 +683,11 @@ export default function Chat() {
               <p className="text-[13px]">
                 Ask {mode === 'pool' ? (model?.label ?? 'a model') : (selectedKey?.label ?? 'your key')} anything.
               </p>
+              <div className="flex flex-wrap justify-center gap-2 mt-2 max-w-md">
+                {['Explain quantum entanglement simply', 'Write a Python quicksort', 'Summarize this in 3 bullets: ', 'Debug this code: '].map((p) => (
+                  <button key={p} type="button" onClick={() => setInput(p)} className="rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] text-muted hover:text-content">{p}</button>
+                ))}
+              </div>
               <p className="num text-[12px] max-w-md">
                 {mode === 'pool'
                   ? 'Billing uses the provider\'s reported token counts; the flat rate applies only when usage is unreported or a stream is stopped early.'
