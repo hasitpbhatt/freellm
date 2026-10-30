@@ -112,6 +112,8 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
   const [editingAlias, setEditingAlias] = useState(false)
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null)
   const [actionError, setActionError] = useState('')
+  const [metrics, setMetrics] = useState<{ totalRequests: number; totalInputTokens: number; totalOutputTokens: number; totalTokens: number } | null>(null)
+  const [metricsError, setMetricsError] = useState('')
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({})
 
   async function testProvider(providerId: string) {
@@ -250,6 +252,50 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
     )
   }
 
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const data = await api.get<{ totalRequests: number; totalInputTokens: number; totalOutputTokens: number; totalTokens: number }>(
+          `/admin/models/${model.slug}/metrics`,
+        )
+        if (!cancelled) setMetrics(data)
+      } catch (e) {
+        if (!cancelled) setMetricsError(e instanceof ApiError ? e.message : 'Failed to load model metrics.')
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [model.slug])
+
+  const renderMetrics = () => {
+    if (metrics === null && metricsError) {
+      return <p className="px-4 py-3 text-[12px] text-loss">{metricsError}</p>
+    }
+    if (metrics === null) return null
+    return (
+      <div className="grid grid-cols-4 gap-4 px-4 py-3 text-[12px] border-t border-line bg-surface-2">
+        <div>
+          <span className="block font-medium text-muted">Requests</span>
+          <span className="num text-gain">{metrics.totalRequests.toLocaleString('en-US')}</span>
+        </div>
+        <div>
+          <span className="block font-medium text-muted">Input tokens</span>
+          <span className="num text-primary">{metrics.totalInputTokens.toLocaleString('en-US')}</span>
+        </div>
+        <div>
+          <span className="block font-medium text-muted">Output tokens</span>
+          <span className="num text-primary">{metrics.totalOutputTokens.toLocaleString('en-US')}</span>
+        </div>
+        <div>
+          <span className="block font-medium text-muted">Total tokens</span>
+          <span className="num text-accent">{metrics.totalTokens.toLocaleString('en-US')}</span>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <Card>
       <div className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-3">
@@ -309,6 +355,8 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
           }}
         />
       )}
+
+      {renderMetrics()}
 
       <div className="flex flex-col divide-y divide-line">
         {model.providers.map((provider) => renderProviderRow(provider))}
