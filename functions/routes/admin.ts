@@ -28,6 +28,7 @@ import {
 } from '../lib/validate'
 import type { Bindings, ModelProviderRow, ModelRow, UpstreamKeyRow, UpstreamProviderRow, Variables } from '../lib/types'
 import { createProxy, deleteProxy, listProxies, revealProxyPassword, testProxy, updateProxy } from '../lib/proxy'
+import { readModelMetrics } from '../lib/metering'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -387,7 +388,17 @@ app.patch('/api/admin/models/:id', async (c) => {
   return c.json({ model: { ...model, capabilities: safeParseArray(model!.capabilities) } })
 })
 
-// ------------------------------------------------------- delete alias
+// ------------------------------------------------------- model request/token metrics
+
+// GET /api/admin/models/:slug/metrics — distribution of requests + tokens per model.
+// Lightweight: reads the four aggregate columns incremented in settleRequest.
+app.get('/api/admin/models/:slug/metrics', async (c) => {
+  const slug = c.req.param('slug')
+  const metrics = await readModelMetrics(c.env.DB, slug)
+  return c.json({ slug, ...metrics })
+})
+
+// ------------------------------------------------ delete alias
 
 app.delete('/api/admin/models/:id', async (c) => {
   const id = c.req.param('id')

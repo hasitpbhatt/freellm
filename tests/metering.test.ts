@@ -311,3 +311,40 @@ test('settle: scoped-only with short scoped balance throws without charging glob
   )
   assert.deepEqual(await readBalances(db, userId), { global: 10_000, scoped: 40 })
 })
+
+test('settle: increments model-level counters', async () => {
+  const userId = await seedUser(db, { balanceCredits: 5_000 })
+  // First settlement
+  const first = await settle(userId, 'req-1')
+  assert.equal(first.creditsCharged, 100)
+  const modelAfterFirst = await db.prepare('SELECT total_requests, total_input_tokens, total_output_tokens, total_tokens FROM freellm_models WHERE slug = ?').bind(testModel.slug).first()
+  assert.ok(modelAfterFirst, 'model found')
+  assert.equal(modelAfterFirst!.total_requests, 1)
+  assert.equal(modelAfterFirst!.total_input_tokens, 30)
+  assert.equal(modelAfterFirst!.total_output_tokens, 70)
+  assert.equal(modelAfterFirst!.total_tokens, 100)
+  
+  // Second settlement
+  const second = await settle(userId, 'req-2')
+  assert.equal(second.creditsCharged, 100)
+  const modelAfterSecond = await db.prepare('SELECT total_requests, total_input_tokens, total_output_tokens, total_tokens FROM freellm_models WHERE slug = ?').bind(testModel.slug).first()
+  assert.ok(modelAfterSecond, 'model found')
+  assert.equal(modelAfterSecond!.total_requests, 2)
+  assert.equal(modelAfterSecond!.total_input_tokens, 60)
+  assert.equal(modelAfterSecond!.total_output_tokens, 140)
+  assert.equal(modelAfterSecond!.total_tokens, 200)
+})
+
+
+test('readModelMetrics: returns tracked model usage', async () => {
+  const { readModelMetrics } = await import('../functions/lib/metering')
+  const userId = await seedUser(db, { balanceCredits: 5_000 })
+  await settle(userId, 'test-metrics-1')
+  
+  const metrics = await readModelMetrics(db, 'test-model')
+  assert.equal(metrics.totalRequests, 1)
+  assert.equal(metrics.totalInputTokens, 30)
+  assert.equal(metrics.totalOutputTokens, 70)
+  assert.equal(metrics.totalTokens, 100)
+})
+
