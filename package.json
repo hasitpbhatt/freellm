@@ -9,7 +9,7 @@
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
     "lint": "oxlint",
-    "test": "tsc -p tsconfig.test.json && node scripts/test-pkg.cjs && node --test \"build-test/**/*.test.js\"",
+    "test": "tsc -p tsconfig.test.json && node scripts/test-pkg.cjs && node --test build-test/",
     "test:watch": "tsc -p tsconfig.test.json --watch --preserveWatchOutput & node --test --watch build-test/",
     "preview": "vite preview",
     "db:create": "wrangler d1 create hasit-in",

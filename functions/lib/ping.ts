@@ -3,6 +3,7 @@
 
 import { SLOW_THRESHOLD_MS } from './providers'
 import { assertSafeBaseUrl } from './validate'
+import { pickProxy, markProxyCooldown } from './proxy'
 
 export type PingResult = {
   ok: boolean
@@ -47,6 +48,14 @@ export async function pingProvider(
       error: `${response.status} ${response.statusText}${detail ? ` — ${detail}` : ''}`,
     }
   } catch (err) {
+    try {
+      // @ts-ignore
+      const db = (globalThis as any).DB
+      if (db) {
+        const proxy = await pickProxy(db)
+        if (proxy) await markProxyCooldown(db, proxy.id, 60000)
+      }
+    } catch {}
     return {
       ok: false,
       status: 'down',

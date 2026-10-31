@@ -27,6 +27,8 @@ const statusDot: Record<string, string> = {
 export default function AdminModels() {
   const [models, setModels] = useState<ModelAlias[] | null>(null)
   const [error, setError] = useState('')
+  const [cleaning, setCleaning] = useState(false)
+  const [cleanupMsg, setCleanupMsg] = useState('')
 
   const load = useCallback(async () => {
     try {
@@ -47,6 +49,21 @@ export default function AdminModels() {
     void load()
   }, [load])
 
+  async function cleanup() {
+    if (!confirm('Disable all model aliases with no active providers or all providers down/with no keys? This can be undone by re-enabling.')) return
+    setCleaning(true)
+    setCleanupMsg('')
+    try {
+      const res = await api.post<{ disabled: number; items: Array<{ slug: string; reason: string }> }>('/admin/models/cleanup')
+      setCleanupMsg(`Disabled ${res.disabled} alias(es).`)
+      await load()
+    } catch (e) {
+      setCleanupMsg(e instanceof ApiError ? e.message : 'Cleanup failed')
+    } finally {
+      setCleaning(false)
+    }
+  }
+
   if (error) {
     return (
       <div className="mx-auto max-w-md py-12 text-center">
@@ -61,13 +78,17 @@ export default function AdminModels() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-xl font-semibold">Model catalog</h1>
-        <p className="mt-1 text-[13px] text-muted">
-          Aliases group multiple upstream configs. A request to an alias multiplexes across its configs
-          using the routing strategy. latency_weighted prefers the lowest average latency and explores
-          round-robin ~15% of the time.
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">Model catalog</h1>
+          <p className="mt-1 text-[13px] text-muted">
+            Aliases group multiple upstream configs. A request to an alias multiplexes across its configs
+            using the routing strategy. latency_weighted prefers the lowest average latency and explores
+            round-robin ~15% of the time.
+          </p>
+          {cleanupMsg ? <p className="mt-1 text-[13px] text-muted">{cleanupMsg}</p> : null}
+        </div>
+        <Button variant="secondary" size="sm" onClick={cleanup} disabled={cleaning}>{cleaning ? 'Cleaning…' : 'Cleanup broken/empty aliases'}</Button>
       </div>
 
       <NewAliasForm onCreated={load} />
@@ -91,6 +112,8 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
   const [editingAlias, setEditingAlias] = useState(false)
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null)
   const [actionError, setActionError] = useState('')
+  const [metrics, setMetrics] = useState<{ totalRequests: number; totalInputTokens: number; totalOutputTokens: number; totalTokens: number } | null>(null)
+  const [metricsError, setMetricsError] = useState('')
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({})
 
   async function testProvider(providerId: string) {
@@ -229,6 +252,50 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
     )
   }
 
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const data = await api.get<{ totalRequests: number; totalInputTokens: number; totalOutputTokens: number; totalTokens: number }>(
+          `/admin/models/${model.slug}/metrics`,
+        )
+        if (!cancelled) setMetrics(data)
+      } catch (e) {
+        if (!cancelled) setMetricsError(e instanceof ApiError ? e.message : 'Failed to load model metrics.')
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [model.slug])
+
+  const renderMetrics = () => {
+    if (metrics === null && metricsError) {
+      return <p className="px-4 py-3 text-[12px] text-loss">{metricsError}</p>
+    }
+    if (metrics === null) return null
+    return (
+      <div className="grid grid-cols-4 gap-4 px-4 py-3 text-[12px] border-t border-line bg-surface-2">
+        <div>
+          <span className="block font-medium text-muted">Requests</span>
+          <span className="num text-gain">{metrics.totalRequests.toLocaleString('en-US')}</span>
+        </div>
+        <div>
+          <span className="block font-medium text-muted">Input tokens</span>
+          <span className="num text-primary">{metrics.totalInputTokens.toLocaleString('en-US')}</span>
+        </div>
+        <div>
+          <span className="block font-medium text-muted">Output tokens</span>
+          <span className="num text-primary">{metrics.totalOutputTokens.toLocaleString('en-US')}</span>
+        </div>
+        <div>
+          <span className="block font-medium text-muted">Total tokens</span>
+          <span className="num text-accent">{metrics.totalTokens.toLocaleString('en-US')}</span>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <Card>
       <div className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-3">
@@ -288,6 +355,8 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
           }}
         />
       )}
+
+      {renderMetrics()}
 
       <div className="flex flex-col divide-y divide-line">
         {model.providers.map((provider) => renderProviderRow(provider))}

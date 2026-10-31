@@ -348,7 +348,7 @@ export default function Earn() {
         <Card>
           <CardHeader title="Tasks" />
           <div className="flex flex-col divide-y divide-line">
-            {state.tasks.map((task) => (
+            {[...state.tasks].sort((a, b) => Number(a.completed) - Number(b.completed)).map((task) => (
               <div key={task.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
                 {task.completed ? (
                   <>

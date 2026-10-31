@@ -6,16 +6,20 @@ import AdminVault from '../components/AdminVault'
 import AdminUsers from '../components/AdminUsers'
 import AdminEmailBlocks from '../components/AdminEmailBlocks'
 import AdminUpstreamProviders from '../components/AdminUpstreamProviders'
+import AdminProxies from '../components/AdminProxies'
+import AdminAudit from '../components/AdminAudit'
 
-type Tab = 'models' | 'providers' | 'promos' | 'vault' | 'users' | 'blocks'
+type Tab = 'models' | 'providers' | 'proxies' | 'promos' | 'vault' | 'users' | 'blocks' | 'audit'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'models', label: 'Model catalog' },
   { id: 'providers', label: 'Upstream providers' },
+  { id: 'proxies', label: 'Proxies' },
   { id: 'promos', label: 'Promo codes' },
   { id: 'vault', label: 'Vault (BYOK)' },
   { id: 'users', label: 'Users' },
   { id: 'blocks', label: 'Email blocks' },
+  { id: 'audit', label: 'Audit log' },
 ]
 
 export default function Admin() {
@@ -23,7 +27,7 @@ export default function Admin() {
   const [searchParams, setSearchParams] = useSearchParams()
   const rawTab = searchParams.get('tab')
   const tab: Tab =
-    rawTab === 'providers' || rawTab === 'promos' || rawTab === 'vault' || rawTab === 'users' || rawTab === 'blocks' ? rawTab : 'models'
+    rawTab === 'providers' || rawTab === 'proxies' || rawTab === 'promos' || rawTab === 'vault' || rawTab === 'users' || rawTab === 'blocks' || rawTab === 'audit' ? rawTab : 'models'
 
   if (authLoading) return <p className="py-12 text-center text-[13px] text-muted" role="status">Checking admin access…</p>
   if (!user) {
@@ -60,14 +64,18 @@ export default function Admin() {
           <AdminModels />
         ) : tab === 'providers' ? (
           <AdminUpstreamProviders />
+        ) : tab === 'proxies' ? (
+          <AdminProxies />
         ) : tab === 'promos' ? (
           <AdminPromos />
         ) : tab === 'vault' ? (
           <AdminVault />
         ) : tab === 'users' ? (
           <AdminUsers />
-        ) : (
+        ) : tab === 'blocks' ? (
           <AdminEmailBlocks />
+        ) : (
+          <AdminAudit />
         )}
       </div>
     </div>

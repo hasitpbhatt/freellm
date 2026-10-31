@@ -281,6 +281,15 @@ export async function settleRequest(
         timestamp,
       ),
     db.prepare('DELETE FROM freellm_credit_holds WHERE request_id = ?').bind(requestId),
+    // Increment per-model aggregates: request count + token distribution.
+    // Runs atomically with the usage event so the ledger stays consistent.
+    db.prepare(
+      `UPDATE freellm_models SET total_requests = total_requests + 1,
+          total_input_tokens = total_input_tokens + ?,
+          total_output_tokens = total_output_tokens + ?,
+          total_tokens = total_tokens + ?
+       WHERE slug = ?`
+    ).bind(inputTokens ?? 0, outputTokens ?? 0, totalTokens ?? 0, model.slug),
   ]
 
   if (!isFree && fromGlobal > 0) {
@@ -360,6 +369,36 @@ async function readBalances(db: D1Database, userId: string, modelId: string): Pr
  * upper bound. Settlement still uses the upstream-reported usage.
  */
 export const IMAGE_RESERVE_TOKENS = 3000
+
+/**
+ * Reads the lightweight model-level metrics that are incremented on every
+ * settled request. Returns { totalRequests, totalInputTokens, totalOutputTokens,
+ * totalTokens }. Missing columns (old installs) default to 0.
+ */
+export async function readModelMetrics(
+  db: D1Database,
+  modelSlug: string,
+): Promise<{ totalRequests: number; totalInputTokens: number; totalOutputTokens: number; totalTokens: number }> {
+  const row = await db
+    .prepare(
+      `SELECT COALESCE(total_requests, 0) AS total_requests,
+              COALESCE(total_input_tokens, 0) AS total_input_tokens,
+              COALESCE(total_output_tokens, 0) AS total_output_tokens,
+              COALESCE(total_tokens, 0) AS total_tokens
+       FROM freellm_models WHERE slug = ?`,
+    )
+    .bind(modelSlug)
+    .first<
+      { total_requests: number; total_input_tokens: number; total_output_tokens: number; total_tokens: number }
+    >()
+  if (!row) return { totalRequests: 0, totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0 }
+  return {
+    totalRequests: row.total_requests,
+    totalInputTokens: row.total_input_tokens,
+    totalOutputTokens: row.total_output_tokens,
+    totalTokens: row.total_tokens,
+  }
+}
 
 export function estimateReserve(
   messages: { content: string | Array<{ type: string; text?: string }> }[],

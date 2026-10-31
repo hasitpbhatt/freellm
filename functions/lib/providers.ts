@@ -37,6 +37,7 @@
 
 import { decryptSecret } from './crypto'
 import type { ChatContentPart } from './openai-messages'
+import { pickProxy, markProxyCooldown } from './proxy'
 import type { Bindings, ModelProviderRow, ModelRow, UpstreamKeyRow, UpstreamProviderRow, UpstreamProviderWithModel } from './types'
 import { assertSafeBaseUrl } from './validate'
 
@@ -689,6 +690,13 @@ export async function openStreamingCall(
         if (response.status === 429) continue keyAttempt
       } catch (err) {
         lastError = err instanceof Error ? err.message : 'network error'
+        // If blocked/network error, note proxy pool availability (direct-first; proxies used on retry path if configured)
+        try {
+          const proxy = await pickProxy(env.DB)
+          if (proxy && /network|blocked|timeout|ECONN|ENOTFOUND/i.test(lastError)) {
+            await markProxyCooldown(env.DB, proxy.id, 60000)
+          }
+        } catch {}
         await recordOutcome(env, candidate.upstream.id, candidate.id, {
           ok: false,
           latencyMs: Date.now() - startedAt,
@@ -801,6 +809,13 @@ export async function openCall(
         }
       } catch (err) {
         lastError = err instanceof Error ? err.message : 'network error'
+        // If blocked/network error, note proxy pool availability (direct-first; proxies used on retry path if configured)
+        try {
+          const proxy = await pickProxy(env.DB)
+          if (proxy && /network|blocked|timeout|ECONN|ENOTFOUND/i.test(lastError)) {
+            await markProxyCooldown(env.DB, proxy.id, 60000)
+          }
+        } catch {}
         await recordOutcome(env, candidate.upstream.id, candidate.id, {
           ok: false,
           latencyMs: Date.now() - startedAt,
