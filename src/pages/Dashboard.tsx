@@ -57,12 +57,12 @@ export default function Dashboard() {
     }
   }, [user, loading, loadData])
 
-  if (loading) return <p className="py-12 text-center text-[13px] text-muted">Loading…</p>
+  if (loading) return <p className="py-12 text-center text-sm text-muted">Loading…</p>
   if (!user) {
     return (
       <Card className="mx-auto max-w-md p-8 text-center">
         <h1 className="text-lg font-semibold">Dashboard</h1>
-        <p className="mt-2 text-[13px] text-muted">Sign in to see your balance and activity.</p>
+        <p className="mt-2 text-sm text-muted">Sign in to see your balance and activity.</p>
         <div className="mt-4 flex justify-center gap-3">
           <Link to="/login"><Button>Sign in with Google</Button></Link>
         </div>
@@ -73,7 +73,7 @@ export default function Dashboard() {
     return (
       <Card className="mx-auto max-w-md p-8 text-center">
         <h1 className="text-lg font-semibold">Dashboard</h1>
-        <p className="mt-2 text-[13px] text-muted">Could not load your activity. Check your connection and try again.</p>
+        <p className="mt-2 text-sm text-muted">Could not load your activity. Check your connection and try again.</p>
         <div className="mt-4 flex justify-center gap-3">
           <Button onClick={() => void loadData()}>Retry</Button>
         </div>
@@ -117,28 +117,28 @@ export default function Dashboard() {
       <div className="grid gap-4 sm:grid-cols-3">
         {/* Balance */}
         <Card className="p-4">
-          <p className="text-[12px] uppercase tracking-wide text-muted">Balance</p>
+          <p className="text-xs uppercase tracking-wide text-muted">Balance</p>
           <p className="num mt-1 text-2xl font-semibold">{user.balance_credits.toLocaleString('en-US')}</p>
-          <p className="text-[12px] text-muted">credits · 1 credit = 1 token on any model</p>
-          <Link to="/usage" className="mt-2 inline-block text-[13px] text-accent hover:underline">Usage →</Link>
+          <p className="text-xs text-muted">credits · 1 credit = 1 token on any model</p>
+          <Link to="/usage" className="mt-2 inline-block text-sm text-accent hover:underline">Usage →</Link>
         </Card>
 
         {/* Streak */}
         <Card className="p-4">
-          <p className="text-[12px] uppercase tracking-wide text-muted">Streak</p>
+          <p className="text-xs uppercase tracking-wide text-muted">Streak</p>
           <p className="num mt-1 text-2xl font-semibold">
             <span aria-hidden="true">🔥</span> {earn ? earn.checkin.streak : '—'}
             <span className="sr-only"> day streak{earn && earn.checkin.streak !== 1 ? 's' : ''}</span>
           </p>
-          <p className="text-[12px] text-muted">days checked in</p>
+          <p className="text-xs text-muted">days checked in</p>
           {hasCheckedIn ? (
-            <p className="mt-2 text-[13px] text-muted">Checked in today <span aria-hidden="true">✓</span></p>
+            <p className="mt-2 text-sm text-muted">Checked in today <span aria-hidden="true">✓</span></p>
           ) : earn && !earn.verified ? (
             <>
               <Button className="mt-2" variant="secondary" disabled onClick={() => void checkIn()}>
                 Check in
               </Button>
-              <p className="mt-1 text-[12px] text-muted">
+              <p className="mt-1 text-xs text-muted">
                 Verify your email first — <Link to="/earn" className="text-accent hover:underline">get a verification link on the Earn page →</Link>
               </p>
             </>
@@ -151,30 +151,30 @@ export default function Dashboard() {
 
         {/* Referrals */}
         <Card className="p-4">
-          <p className="text-[12px] uppercase tracking-wide text-muted">Referrals</p>
+          <p className="text-xs uppercase tracking-wide text-muted">Referrals</p>
           <p className="num mt-1 text-2xl font-semibold">
             {earn?.referral.qualified ?? 0}
-            <span className="text-[13px] text-muted"> paid</span>
+            <span className="text-sm text-muted"> paid</span>
           </p>
-          <p className="num text-[12px] text-muted">{earn?.referral.pending ?? 0} pending</p>
-          <Link to="/earn#referral-section" className="mt-2 inline-block text-[13px] text-accent hover:underline">Invite →</Link>
+          <p className="num text-xs text-muted">{earn?.referral.pending ?? 0} pending</p>
+          <Link to="/earn#referral-section" className="mt-2 inline-block text-sm text-accent hover:underline">Invite →</Link>
         </Card>
       </div>
 
       {/* First-run checklist — teaches the model through action */}
       <Card>
-        <CardHeader title="Getting started" action={<span className="num text-[12px] text-muted">{completed}/4</span>} />
+        <CardHeader title="Getting started" action={<span className="num text-xs text-muted">{completed}/4</span>} />
         <div className="flex flex-col divide-y divide-line">
           {checklist.map((item) => (
             <div key={item.label} className="flex items-center gap-3 px-4 py-3">
               <span className={item.done ? 'text-gain' : 'text-muted'} aria-hidden="true">{item.done ? '✅' : '○'}</span>
               <span className="sr-only">{item.done ? 'Done' : 'Not started'}: </span>
               <div className="flex flex-col">
-                <span className="text-[13px] font-medium">{item.label}</span>
-                <span className="text-[12px] text-muted">{item.detail}</span>
+                <span className="text-sm font-medium">{item.label}</span>
+                <span className="text-xs text-muted">{item.detail}</span>
               </div>
               {!item.done && (
-                <Link to={item.to} className="ml-auto btn-secondary btn-sm min-w-[64px] px-3 py-1.5 text-[12px] font-medium rounded-md border border-line bg-surface hover:bg-surface-2 text-content transition-colors" aria-label={`${item.label} — open ${item.label.toLowerCase()} page`}>
+                <Link to={item.to} className="ml-auto btn-secondary btn-sm min-w-[64px] px-3 py-1.5 text-xs font-medium rounded-md border border-line bg-surface hover:bg-surface-2 text-content transition-colors" aria-label={`${item.label} — open ${item.label.toLowerCase()} page`}>
                   Go
                 </Link>
               )}
@@ -185,20 +185,20 @@ export default function Dashboard() {
 
       {/* Recent activity */}
       <Card>
-        <CardHeader title="Recent activity" action={<Link to="/usage" className="text-[13px] text-accent hover:underline">All usage →</Link>} />
-        {ledger === null && <p className="p-4 text-[13px] text-muted">Loading…</p>}
-        {ledger?.length === 0 && <p className="p-4 text-[13px] text-muted">Nothing yet — check in to get started.</p>}
+        <CardHeader title="Recent activity" action={<Link to="/usage" className="text-sm text-accent hover:underline">All usage →</Link>} />
+        {ledger === null && <p className="p-4 text-sm text-muted">Loading…</p>}
+        {ledger?.length === 0 && <p className="p-4 text-sm text-muted">Nothing yet — check in to get started.</p>}
         <div className="flex flex-col divide-y divide-line">
           {ledger?.slice(0, 8).map((entry, index) => (
             <div key={index} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5">
-              <span className={`num w-24 shrink-0 text-right text-[13px] ${entry.delta > 0 ? 'text-gain' : entry.delta < 0 ? 'text-loss' : 'text-content'}`} aria-label={entry.delta > 0 ? `+${entry.delta} earned` : `${entry.delta} spent`}>
+              <span className={`num w-24 shrink-0 text-right text-sm ${entry.delta > 0 ? 'text-gain' : entry.delta < 0 ? 'text-loss' : 'text-content'}`} aria-label={entry.delta > 0 ? `+${entry.delta} earned` : `${entry.delta} spent`}>
                 {formatDelta(entry.delta)}
               </span>
-              <span className="min-w-0 truncate text-[13px]">{REASON_LABELS[entry.reason] ?? 'Other activity'}</span>
+              <span className="min-w-0 truncate text-sm">{REASON_LABELS[entry.reason] ?? 'Other activity'}</span>
               {typeof entry.meta?.model === 'string' && (
-                <span className="min-w-0 max-w-full truncate text-[12px] text-muted">{entry.meta.model}</span>
+                <span className="min-w-0 max-w-full truncate text-xs text-muted">{entry.meta.model}</span>
               )}
-              <span className="num ml-auto shrink-0 text-[12px] text-muted" title={new Date(entry.created_at).toLocaleString()}>{relativeTime(entry.created_at)}</span>
+              <span className="num ml-auto shrink-0 text-xs text-muted" title={new Date(entry.created_at).toLocaleString()}>{relativeTime(entry.created_at)}</span>
             </div>
           ))}
         </div>

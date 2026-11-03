@@ -75,15 +75,15 @@ export function MobileMenu({ open, onClose }: MobileMenuProps) {
               {user.username.slice(0, 1).toUpperCase()}
             </div>
             <div className="min-w-0">
-              <p className="truncate text-[13px] font-medium">{user.username}</p>
-              <Link to="/earn" onClick={onClose} className="flex min-h-[44px] items-center gap-1 text-[12px] text-muted hover:text-content">
+              <p className="truncate text-sm font-medium">{user.username}</p>
+              <Link to="/earn" onClick={onClose} className="flex min-h-[44px] items-center gap-1 text-xs text-muted hover:text-content">
                 <span className="text-accent" aria-hidden="true">◇</span>
                 <Credits value={user.balance_credits} /> credits
               </Link>
             </div>
           </div>
 
-          <p className="mb-1 px-1 text-[11px] font-medium uppercase tracking-wide text-muted">More</p>
+          <p className="mb-1 px-1 text-xs font-medium uppercase tracking-wide text-muted">More</p>
           <nav aria-label="Secondary">
             <ul className="flex flex-col">
               {secondaryItems.map((item) => (
@@ -99,8 +99,8 @@ export function MobileMenu({ open, onClose }: MobileMenuProps) {
                   >
                     {({ isActive }) => (
                       <>
-                        <span className="text-[13px] font-medium" aria-current={isActive ? 'page' : undefined}>{item.label}</span>
-                        <span className="text-[11px] text-muted">{item.desc}</span>
+                        <span className="text-sm font-medium" aria-current={isActive ? 'page' : undefined}>{item.label}</span>
+                        <span className="text-xs text-muted">{item.desc}</span>
                       </>
                     )}
                   </NavLink>
@@ -111,7 +111,7 @@ export function MobileMenu({ open, onClose }: MobileMenuProps) {
 
           {user.role === 'admin' && (
             <>
-              <p className="mb-1 mt-4 px-1 text-[11px] font-medium uppercase tracking-wide text-muted">Operator</p>
+              <p className="mb-1 mt-4 px-1 text-xs font-medium uppercase tracking-wide text-muted">Operator</p>
               <NavLink
                 to="/admin"
                 onClick={onClose}
@@ -123,8 +123,8 @@ export function MobileMenu({ open, onClose }: MobileMenuProps) {
               >
                 {({ isActive }) => (
                   <>
-                    <span className="text-[13px] font-medium" aria-current={isActive ? 'page' : undefined}>Admin</span>
-                    <span className="text-[11px] text-muted">Users, vault, catalog</span>
+                    <span className="text-sm font-medium" aria-current={isActive ? 'page' : undefined}>Admin</span>
+                    <span className="text-xs text-muted">Users, vault, catalog</span>
                   </>
                 )}
               </NavLink>
@@ -135,14 +135,14 @@ export function MobileMenu({ open, onClose }: MobileMenuProps) {
         <div className="border-t border-line p-4">
           <a
             href="mailto:help@freellm.hasit.in"
-            className="flex min-h-[44px] items-center gap-2 rounded-lg px-3 py-2 text-[13px] text-muted hover:bg-surface-2 hover:text-content"
+            className="flex min-h-[44px] items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted hover:bg-surface-2 hover:text-content"
           >
             <span aria-hidden="true">✉</span> help@freellm.hasit.in
           </a>
           <button
             type="button"
             onClick={() => { onClose(); void logout() }}
-            className="flex min-h-[44px] w-full items-center gap-2 rounded-lg px-3 py-2 text-[13px] text-muted hover:bg-surface-2 hover:text-content"
+            className="flex min-h-[44px] w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted hover:bg-surface-2 hover:text-content"
           >
             <span aria-hidden="true">⏻</span> Sign out
           </button>

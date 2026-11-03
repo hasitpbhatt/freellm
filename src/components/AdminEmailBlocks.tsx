@@ -83,20 +83,20 @@ export default function AdminEmailBlocks() {
   if (error) {
     return (
       <div className="mx-auto max-w-md py-12 text-center">
-        <p className="text-[13px] text-loss" role="alert">{error}</p>
+        <p className="text-sm text-loss" role="alert">{error}</p>
         <Button onClick={() => void load()} className="mt-4">
           Retry
         </Button>
       </div>
     )
   }
-  if (blocks === null) return <p className="py-12 text-center text-[13px] text-muted">Loading…</p>
+  if (blocks === null) return <p className="py-12 text-center text-sm text-muted">Loading…</p>
 
   return (
     <div className="flex flex-col gap-6">
       <div>
         <h1 className="text-xl font-semibold">Email blocks</h1>
-        <p className="mt-1 text-[13px] text-muted">
+        <p className="mt-1 text-sm text-muted">
           {blocks.length} rule{blocks.length === 1 ? '' : 's'} · regexes matched against the lowercased
           email at sign-in — a match rejects new and returning sign-ins alike.
         </p>
@@ -105,7 +105,7 @@ export default function AdminEmailBlocks() {
       <Card>
         <form className="flex flex-col gap-3 p-4 sm:flex-row sm:items-end" onSubmit={submit}>
           <label className="flex flex-1 flex-col gap-1.5">
-            <span className="text-[12px] font-medium uppercase tracking-wide text-muted">
+            <span className="text-xs font-medium uppercase tracking-wide text-muted">
               Regex — matched against the lowercased email
             </span>
             <input
@@ -125,9 +125,9 @@ export default function AdminEmailBlocks() {
           </Button>
         </form>
         {formError && (
-          <p role="alert" className="px-4 pb-4 text-[13px] text-loss">{formError}</p>
+          <p role="alert" className="px-4 pb-4 text-sm text-loss">{formError}</p>
         )}
-        <p className="px-4 pb-4 text-[12px] text-muted">
+        <p className="px-4 pb-4 text-xs text-muted">
           Examples: <code className="num">.*@spam\.com$</code> blocks a domain ·{' '}
           <code className="num">^test.*</code> blocks a prefix ·{' '}
           <code className="num">^.*\+spam@</code> blocks plus-addressed spam. Keep them
@@ -136,13 +136,13 @@ export default function AdminEmailBlocks() {
       </Card>
 
       {message && (
-        <p role={message.kind === 'err' ? 'alert' : 'status'} className={`text-[13px] ${message.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
+        <p role={message.kind === 'err' ? 'alert' : 'status'} className={`text-sm ${message.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
           {message.text}
         </p>
       )}
 
       {blocks.length === 0 ? (
-        <Card className="p-8 text-center text-[13px] text-muted">
+        <Card className="p-8 text-center text-sm text-muted">
           No block rules — every Google email can sign in.
         </Card>
       ) : (
@@ -150,8 +150,8 @@ export default function AdminEmailBlocks() {
           <div className="flex flex-col divide-y divide-line">
             {blocks.map((b) => (
               <div key={b.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3">
-                <code className="num min-w-0 flex-1 break-all text-[13px]">{b.pattern}</code>
-                <span className="num shrink-0 text-[12px] text-muted" title={new Date(b.created_at).toLocaleString()}>
+                <code className="num min-w-0 flex-1 break-all text-sm">{b.pattern}</code>
+                <span className="num shrink-0 text-xs text-muted" title={new Date(b.created_at).toLocaleString()}>
                   added {new Date(b.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
                 </span>
                 <Button variant="secondary" size="sm" className="text-loss hover:bg-loss/10" onClick={() => void remove(b)}>

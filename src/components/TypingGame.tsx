@@ -89,13 +89,13 @@ export default function TypingGame() {
       <CardHeader
         title="Typing sprint"
         action={
-          <span className="num text-[12px] text-muted" role="status">
+          <span className="num text-xs text-muted" role="status">
             {playsLeft === null ? '…' : `${playsLeft}/3 paid plays left today`}
           </span>
         }
       />
       <div className="flex flex-col gap-3 p-4">
-        <p className="text-[13px] text-muted">
+        <p className="text-sm text-muted">
           Retype the dealt phrase exactly — {tiers.map((t) => `${t.min_wpm}+ wpm pays ${t.reward.toLocaleString('en-US')} cr`).join(', ')}.
         </p>
         {phase.name === 'idle' && (
@@ -105,14 +105,14 @@ export default function TypingGame() {
         )}
         {phase.name === 'typing' && phrase !== null && (
           <>
-            <p className="break-words rounded-lg border border-line bg-surface-2 p-3 font-mono text-[13px]" aria-label="Phrase to type">
+            <p className="break-words rounded-lg border border-line bg-surface-2 p-3 font-mono text-sm" aria-label="Phrase to type">
               {phrase}
             </p>
             <label className="sr-only" htmlFor="typing-input">Retype the phrase exactly</label>
             <textarea
               id="typing-input"
               ref={textareaRef}
-              className="input min-h-[120px] font-mono text-[16px] sm:text-[13px]"
+              className="input min-h-[120px] font-mono text-[16px] sm:text-sm"
               value={typed}
               onChange={(e) => onType(e.target.value)}
               onFocus={() => {
@@ -124,7 +124,7 @@ export default function TypingGame() {
               autoCapitalize="off"
               spellCheck={false}
             />
-            <p className="num text-[12px] text-muted" role="status">
+            <p className="num text-xs text-muted" role="status">
               {typed.length}/{phrase.length} chars
               {wrongAt >= 0 ? ` — first mistake at char ${wrongAt + 1}, fix it to finish` : typed ? ' — matching so far' : ''}
             </p>
@@ -132,7 +132,7 @@ export default function TypingGame() {
         )}
         {phase.name === 'done' && (
           <div className="flex flex-col items-start gap-2">
-            <p role="status" className={`text-[13px] ${phase.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
+            <p role="status" className={`text-sm ${phase.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
               {phase.text}
             </p>
             <Button variant="secondary" onClick={() => void start()}>

@@ -38,10 +38,10 @@ export function ErrorBanner({ message, kind, onDismiss }: ErrorBannerProps) {
     >
       <div className="flex items-start gap-3">
         <span className="font-bold text-lg flex-shrink-0">{icons[kind]}</span>
-        <p className="flex-1 text-[13px] leading-relaxed">{message}</p>
+        <p className="flex-1 text-sm leading-relaxed">{message}</p>
         <button
           onClick={onDismiss}
-          className="min-h-[44px] min-w-[44px] px-2 text-[12px] text-current/70 hover:text-current transition-colors flex-shrink-0"
+          className="min-h-[44px] min-w-[44px] px-2 text-xs text-current/70 hover:text-current transition-colors flex-shrink-0"
           aria-label="Dismiss message"
         >
           Dismiss

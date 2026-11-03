@@ -5,7 +5,7 @@ export default function NotFound() {
   return (
     <Card className="mx-auto max-w-md">
       <CardHeader title="Page not found" />
-      <div className="p-6 text-center text-[13px] text-muted">
+      <div className="p-6 text-center text-sm text-muted">
         <p className="mb-4">The page you're looking for doesn't exist or has been moved.</p>
         <div className="flex flex-col gap-2 sm:flex-row sm:justify-center">
           <Link to="/" className="btn-secondary">Go home</Link>

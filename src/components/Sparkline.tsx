@@ -1,5 +1,3 @@
-import type { ReactNode } from 'react'
-
 type SparklinePoint = { day: string; value: number }
 
 type SparklineProps = {
@@ -29,7 +27,7 @@ export function Sparkline({
   const points = data.filter((p) => p.value != null && Number.isFinite(p.value))
   if (points.length === 0) {
     return (
-      <div className="flex h-[40px] items-center justify-center text-[11px] text-muted">
+      <div className="flex h-[40px] items-center justify-center text-xs text-muted">
         No data
       </div>
     )
@@ -80,7 +78,7 @@ export function Sparkline({
 
   return (
     <div className="flex items-center gap-3 min-w-[150px]">
-      <svg width={width} height={height} className="text-[10px]" aria-label={label ?? 'usage trend'}>
+      <svg width={width} height={height} className="text-2xs" aria-label={label ?? 'usage trend'}>
         {showZeroLine && max > 0 && (
           <line
             x1={padX}
@@ -116,9 +114,9 @@ export function Sparkline({
         )}
       </svg>
       <div className="flex flex-col min-w-0">
-        {label && <span className="block text-[11px] font-medium text-content truncate">{label}</span>}
-        <span className="block text-[11px] font-semibold text-content">{peakLabel}{unit ?? ''}</span>
-        <span className="block text-[10px] text-muted">{points.length} days</span>
+        {label && <span className="block text-xs font-medium text-content truncate">{label}</span>}
+        <span className="block text-xs font-semibold text-content">{peakLabel}{unit ?? ''}</span>
+        <span className="block text-2xs text-muted">{points.length} days</span>
       </div>
     </div>
   )

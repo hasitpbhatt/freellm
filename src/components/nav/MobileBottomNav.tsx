@@ -67,7 +67,7 @@ export function MobileBottomNav() {
             <NavLink
               to={tab.to}
               className={({ isActive }) =>
-                `flex min-h-[56px] flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition-colors ${
+                `flex min-h-[56px] flex-col items-center justify-center gap-0.5 text-2xs font-medium transition-colors ${
                   isActive ? 'text-accent' : 'text-muted hover:text-content'
                 }`
               }

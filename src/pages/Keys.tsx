@@ -276,12 +276,12 @@ export default function Keys() {
   const openBulkImport = () => { setShowAddForm(true); }
   const openConnectAccount = () => { document.getElementById('oauth-section')?.scrollIntoView({ behavior: 'smooth' }) }
 
-  if (authLoading) return <div className="py-12 text-center text-[13px] text-muted">Loading…</div>
+  if (authLoading) return <div className="py-12 text-center text-sm text-muted">Loading…</div>
   if (!user) {
     return (
       <Card className="mx-auto max-w-md p-8 text-center">
         <h1 className="text-lg font-semibold">Your Keys</h1>
-        <p className="mt-2 text-[13px] text-muted">
+        <p className="mt-2 text-sm text-muted">
           Sign in to store your own provider keys and chat free.
         </p>
         <div className="mt-4 flex justify-center gap-3">
@@ -297,14 +297,14 @@ export default function Keys() {
         <Card className="flex flex-col gap-3 p-6">
           <div className="flex items-baseline justify-between gap-4 flex-wrap">
             <h1 className="text-2xl font-semibold">Your Keys</h1>
-            <span className="num text-[13px] text-muted">Door 1 of Two Doors</span>
+            <span className="num text-sm text-muted">Door 1 of Two Doors</span>
           </div>
-          <p className="text-[13px] text-muted max-w-2xl">
+          <p className="text-sm text-muted max-w-2xl">
             Bring your own OpenAI-compatible endpoint. Chatting through your key is <strong>free and unmetered</strong> —
             it never touches The Pool. Add each account separately — multiple accounts are allowed, and each stays
             strictly yours (never pooled or shared). Use only tokens from your own provider accounts.
           </p>
-          <p className="text-[12px] text-warn">
+          <p className="text-xs text-warn">
             ⚠ Security: API keys are stored encrypted and revealable to the operator for auditability.
             OAuth tokens are never revealable — not even to the operator. Do not share your freellm account
             if you use sensitive provider credentials.
@@ -342,7 +342,7 @@ export default function Keys() {
             />
           ) : (
             <div className="p-6 text-center">
-              <p className="text-[13px] text-muted mb-4">
+              <p className="text-sm text-muted mb-4">
                 Add a single API key or import multiple keys at once.
               </p>
               <div className="flex flex-col sm:flex-row gap-3 justify-center">
@@ -360,9 +360,9 @@ export default function Keys() {
         <Card>
           <CardHeader title="Stored keys" />
           {loading ? (
-            <div className="p-6 text-center text-[13px] text-muted">Loading keys…</div>
+            <div className="p-6 text-center text-sm text-muted">Loading keys…</div>
           ) : keys.length === 0 ? (
-            <div className="p-6 text-center text-[13px] text-muted">
+            <div className="p-6 text-center text-sm text-muted">
               No keys yet. Add one above to start chatting for free.
             </div>
           ) : (
@@ -392,7 +392,7 @@ export default function Keys() {
         </Card>
 
         <Card className="p-4 border-accent/30">
-          <p className="text-[13px] text-center text-muted">
+          <p className="text-sm text-center text-muted">
             <strong>Door 1 — Your Key:</strong> free, your endpoint, your key, no balance check.
             <br />
             <strong>Door 2 — The Pool:</strong> community-funded models, 1 cr = 1 token, earn on /earn.

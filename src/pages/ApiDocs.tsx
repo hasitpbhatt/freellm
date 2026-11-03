@@ -21,12 +21,12 @@ function CodeBlock({ code, lang, label }: { code: string; lang?: string; label?:
   const [copyFailed, setCopyFailed] = useState(false)
   return (
     <div className="relative">
-      {label && <p className="mb-1 text-[12px] font-medium text-muted">{label}</p>}
-      <pre className="num overflow-x-auto rounded-lg border border-line bg-surface-2 p-3 pr-20 text-[12px] leading-relaxed">
+      {label && <p className="mb-1 text-xs font-medium text-muted">{label}</p>}
+      <pre className="num overflow-x-auto rounded-lg border border-line bg-surface-2 p-3 pr-20 text-xs leading-relaxed">
         <code className="break-words">{code}</code>
       </pre>
       <button
-        className="absolute right-2 top-2 min-h-[40px] min-w-[44px] rounded-md border border-line bg-bg px-2 py-1 text-[11px] text-muted transition-colors hover:text-content"
+        className="absolute right-2 top-2 min-h-[40px] min-w-[44px] rounded-md border border-line bg-bg px-2 py-1 text-xs text-muted transition-colors hover:text-content"
         aria-label={label ? `Copy ${label}` : 'Copy code'}
         onClick={async () => {
           try {
@@ -49,7 +49,7 @@ function Section({ title, children, id }: { title: string; children: React.React
   return (
     <Card id={id}>
       <CardHeader title={title} />
-      <div className="flex flex-col gap-3 p-4 text-[13px] leading-relaxed">{children}</div>
+      <div className="flex flex-col gap-3 p-4 text-sm leading-relaxed">{children}</div>
     </Card>
   )
 }
@@ -130,7 +130,7 @@ export default function ApiDocs() {
     }
   }
 
-  if (authLoading) return <p className="py-12 text-center text-[13px] text-muted">Loading…</p>
+  if (authLoading) return <p className="py-12 text-center text-sm text-muted">Loading…</p>
 
   // Examples below use the first live model; replace with any slug from the list.
   const exampleSlug = models[0]?.slug ?? 'stepfun-5'
@@ -139,7 +139,7 @@ export default function ApiDocs() {
     <div className="flex flex-col gap-6">
       <div>
         <h1 className="text-xl font-semibold">Use the Pool from your code</h1>
-        <p className="mt-1 text-[13px] text-muted">
+        <p className="mt-1 text-sm text-muted">
           freellm is an OpenAI-compatible gateway to community-funded models. Credits are 1:1 with
           tokens — earn them on <Link to="/earn" className="text-accent hover:underline">/earn</Link> (daily
           check-in, tasks, referrals) and spend them here.
@@ -147,13 +147,13 @@ export default function ApiDocs() {
       </div>
 
       {banner && (
-        <p role={banner.kind === 'err' ? 'alert' : 'status'} className={`break-all text-[13px] ${banner.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
+        <p role={banner.kind === 'err' ? 'alert' : 'status'} className={`break-all text-sm ${banner.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
           {banner.kind === 'ok' ? '✓ ' : '⚠ '}{banner.text}
         </p>
       )}
 
       {/* Page contents */}
-      <nav className="p-4 rounded-lg border border-line bg-surface-2/50 text-[12px]">
+      <nav className="p-4 rounded-lg border border-line bg-surface-2/50 text-xs">
         <p className="font-medium text-content mb-2">On this page</p>
         <ol className="list-decimal list-inside space-y-1 text-muted">
           <li><a href="#step-1-key" className="text-accent hover:underline">1 · Create an API key</a></li>
@@ -168,9 +168,9 @@ export default function ApiDocs() {
       {/* Step 1 — a key */}
       {user ? (
         <Card id="step-1-key">
-          <CardHeader title="1 · Create an API key" action={<span className="num text-[12px] text-muted">fl_… · Bearer</span>} />
+          <CardHeader title="1 · Create an API key" action={<span className="num text-xs text-muted">fl_… · Bearer</span>} />
           <div className="flex flex-col gap-4 p-4">
-            <p className="text-[13px] text-muted">
+            <p className="text-sm text-muted">
               A key spends from your credit balance. It is shown once and stored hashed — losing it means
               creating a new one. {user.email_verified !== 1 ? (
                 <>Your email is <strong>not verified yet</strong> — <Link to="/earn" className="text-accent hover:underline">verify it on the Earn page</Link> before creating keys.</>
@@ -180,7 +180,7 @@ export default function ApiDocs() {
             </p>
             <form className="flex flex-col gap-3 sm:flex-row sm:items-end" onSubmit={createToken}>
               <label className="flex flex-1 flex-col gap-1.5">
-                <span className="text-[12px] font-medium uppercase tracking-wide text-muted">Label — shown in the list below so you know which script uses it</span>
+                <span className="text-xs font-medium uppercase tracking-wide text-muted">Label — shown in the list below so you know which script uses it</span>
                 <Input
                   value={label}
                   onChange={(e) => setLabel(e.target.value)}
@@ -195,7 +195,7 @@ export default function ApiDocs() {
             </form>
             {newToken && (
               <div className="flex flex-col gap-2 rounded-lg border border-gain/40 bg-gain/5 p-3">
-                <span className="text-[12px] text-gain">
+                <span className="text-xs text-gain">
                   Copy this key now — it is stored hashed and never shown again. Don't navigate away first.
                 </span>
                 <CodeBlock code={newToken} label="Your new API key" />
@@ -205,9 +205,9 @@ export default function ApiDocs() {
               <div className="flex flex-col divide-y divide-line">
                 {tokens.map((token) => (
                   <div key={token.id} className="flex flex-wrap items-center gap-3 py-2.5">
-                    <span className="text-[13px]">{token.label}</span>
-                    <code className="num text-[12px] text-muted" title="Key prefix (identifies the key — not usable as a key)">prefix {token.token_prefix}</code>
-                    <span className="num text-[12px] text-muted">
+                    <span className="text-sm">{token.label}</span>
+                    <code className="num text-xs text-muted" title="Key prefix (identifies the key — not usable as a key)">prefix {token.token_prefix}</code>
+                    <span className="num text-xs text-muted">
                       last used {token.last_used_at ? new Date(token.last_used_at).toLocaleString() : 'never'}
                     </span>
                     <Button
@@ -227,7 +227,7 @@ export default function ApiDocs() {
         </Card>
       ) : (
         <Card className="p-6 text-center">
-          <p className="text-[13px] text-muted">
+          <p className="text-sm text-muted">
             <Link to="/login" className="text-accent hover:underline">Sign in</Link> to create an API key.
           </p>
         </Card>
@@ -272,7 +272,7 @@ for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.
           <div className="flex flex-col divide-y divide-line">
             {models.map((m) => (
               <div key={m.slug} className="flex flex-wrap items-center gap-2 py-2">
-                <code className="num min-w-0 break-all text-[12px] text-accent">{m.slug}</code>
+                <code className="num min-w-0 break-all text-xs text-accent">{m.slug}</code>
                 <button
                   className="btn-secondary btn-sm"
                   aria-label={`Copy slug ${m.slug}`}
@@ -287,13 +287,13 @@ for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.
                 >
                   Copy
                 </button>
-                <span className="min-w-0 flex-1 truncate text-[13px] text-muted" title={m.label}>{m.label}</span>
+                <span className="min-w-0 flex-1 truncate text-sm text-muted" title={m.label}>{m.label}</span>
                 {m.access_tier !== 'free' && (
-                  <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent">
+                  <span className="rounded bg-accent/10 px-1.5 py-0.5 text-xs font-medium text-accent">
                     🔒 {m.access_tier}
                   </span>
                 )}
-                <span className="num ml-auto text-[12px] text-muted">{m.status}</span>
+                <span className="num ml-auto text-xs text-muted">{m.status}</span>
               </div>
             ))}
           </div>
@@ -400,12 +400,12 @@ curl -s ${BASE_URL}/chat/completions \\
         </p>
         <div className="flex flex-col divide-y divide-line">
           <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2.5">
-            <code className="num text-[12px] text-accent">GET /v1/models</code>
-            <span className="text-[13px]">Model list, OpenAI shape. No auth.</span>
+            <code className="num text-xs text-accent">GET /v1/models</code>
+            <span className="text-sm">Model list, OpenAI shape. No auth.</span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2.5">
-            <code className="num text-[12px] text-accent">POST /v1/chat/completions</code>
-            <span className="text-[13px]">
+            <code className="num text-xs text-accent">POST /v1/chat/completions</code>
+            <span className="text-sm">
               OpenAI request/response. Accepts <code className="num">model</code>, <code className="num">messages</code>,{' '}
               <code className="num">max_tokens</code>, <code className="num">temperature</code>,{' '}
               <code className="num">top_p</code>, <code className="num">stream</code>,{' '}
@@ -417,14 +417,14 @@ curl -s ${BASE_URL}/chat/completions \\
             </span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2.5">
-            <code className="num text-[12px] text-accent">GET /api/models</code>
-            <span className="text-[13px]">
+            <code className="num text-xs text-accent">GET /api/models</code>
+            <span className="text-sm">
               Richer catalog: status per model, flat rate, context window. No auth.
             </span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2.5">
-            <code className="num text-[12px] text-accent">POST /api/chat</code>
-            <span className="text-[13px]">
+            <code className="num text-xs text-accent">POST /api/chat</code>
+            <span className="text-sm">
               Native metering endpoint (session cookie only): explicit <code className="num">request_id</code>{' '}
               idempotency, <code className="num">usage</code>/<code className="num">settled</code> SSE events, and
               BYOK via <code className="num">connection_id</code> (a vault credential).
@@ -444,20 +444,20 @@ curl -s ${BASE_URL}/chat/completions \\
         </p>
         <div className="flex flex-col divide-y divide-line">
           <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2">
-            <code className="num text-[12px] text-accent">402 insufficient_credits</code>
-            <span className="text-[13px]">Top up on <Link to="/earn" className="text-accent hover:underline">/earn</Link>.</span>
+            <code className="num text-xs text-accent">402 insufficient_credits</code>
+            <span className="text-sm">Top up on <Link to="/earn" className="text-accent hover:underline">/earn</Link>.</span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2">
-            <code className="num text-[12px] text-accent">403 upgrade_required</code>
-            <span className="text-[13px]">Locked tier — no charge. Ask an admin for access.</span>
+            <code className="num text-xs text-accent">403 upgrade_required</code>
+            <span className="text-sm">Locked tier — no charge. Ask an admin for access.</span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2">
-            <code className="num text-[12px] text-accent">502 upstream_failed</code>
-            <span className="text-[13px]">Provider error — no charge. Retry shortly.</span>
+            <code className="num text-xs text-accent">502 upstream_failed</code>
+            <span className="text-sm">Provider error — no charge. Retry shortly.</span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-4 gap-y-1 py-2">
-            <code className="num text-[12px] text-accent">404 model_not_found</code>
-            <span className="text-[13px]">Unknown slug — pick one from the list in step 2.</span>
+            <code className="num text-xs text-accent">404 model_not_found</code>
+            <span className="text-sm">Unknown slug — pick one from the list in step 2.</span>
           </div>
         </div>
         <p className="text-muted">
@@ -465,7 +465,7 @@ curl -s ${BASE_URL}/chat/completions \\
         </p>
       </Section>
 
-      <p className="text-[12px] text-muted">
+      <p className="text-xs text-muted">
         The frontend is open source — see the <code className="num">functions/</code> directory for the metering
         and failover implementation.
       </p>

@@ -43,7 +43,7 @@ export default function Landing() {
             <Link to="/keys" className="block group">
               <Card className="h-full overflow-hidden hover:scale-[1.02] transition-all duration-200 border-2 border-accent/40 bg-surface group-hover:border-accent/60">
                 <div className="flex items-center justify-between border-b border-line px-6 py-4">
-                  <h2 className="text-[13px] font-semibold tracking-wide text-accent uppercase">
+                  <h2 className="text-sm font-semibold tracking-wide text-accent uppercase">
                     Door 1: BYOK Vault
                   </h2>
                 </div>
@@ -88,7 +88,7 @@ export default function Landing() {
             <Link to="/models" className="block group">
               <Card className="h-full overflow-hidden hover:scale-[1.02] transition-all duration-200 border-2 border-gain/40 bg-surface group-hover:border-gain/60">
                 <div className="flex items-center justify-between border-b border-line px-6 py-4">
-                  <h2 className="text-[13px] font-semibold tracking-wide text-gain uppercase">
+                  <h2 className="text-sm font-semibold tracking-wide text-gain uppercase">
                     Door 2: Model Marketplace
                   </h2>
                 </div>
@@ -145,7 +145,7 @@ export default function Landing() {
             <div className="card p-6 text-center">
               <div className="text-accent text-2xl mb-3" aria-hidden="true">🔥</div>
               <h3 className="font-semibold text-content mb-2">Daily check-in</h3>
-              <p className="text-muted text-[13px] leading-relaxed">
+              <p className="text-muted text-sm leading-relaxed">
                 Check in every day: +50,000 credits base, with streak bonuses at 7 and 30 days.
                 Verify your email to start.
               </p>
@@ -153,7 +153,7 @@ export default function Landing() {
             <div className="card p-6 text-center">
               <div className="text-gain text-2xl mb-3" aria-hidden="true">🤝</div>
               <h3 className="font-semibold text-content mb-2">Refer a friend</h3>
-              <p className="text-muted text-[13px] leading-relaxed">
+              <p className="text-muted text-sm leading-relaxed">
                 Send your referral link. When a friend checks in for 7 days or uses 200,000 tokens,
                 you get +500,000 credits.
               </p>
@@ -161,7 +161,7 @@ export default function Landing() {
             <div className="card p-6 text-center">
               <div className="text-accent text-2xl mb-3" aria-hidden="true">🔌</div>
               <h3 className="font-semibold text-content mb-2">Contribute keys</h3>
-              <p className="text-muted text-[13px] leading-relaxed">
+              <p className="text-muted text-sm leading-relaxed">
                 Share your keys with The Pool. You earn when the community uses them — your keys,
                 your terms, your rewards.
               </p>

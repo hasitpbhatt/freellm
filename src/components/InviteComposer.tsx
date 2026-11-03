@@ -85,7 +85,7 @@ export default function InviteComposer({ link }: InviteComposerProps) {
   return (
     <Card className="p-4 space-y-3">
       <h4 className="font-medium flex items-center gap-2">
-        <span className="text-[14px]" aria-hidden="true">📤</span>
+        <span className="text-sm" aria-hidden="true">📤</span>
         Share your invite link
       </h4>
       <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
@@ -94,7 +94,7 @@ export default function InviteComposer({ link }: InviteComposerProps) {
             key={t.platform}
             type="button"
             onClick={() => handleShare(t)}
-            className={`flex flex-col items-center gap-1.5 px-3 py-2.5 rounded-lg border border-line text-[11px] transition-colors ${t.color} ${copied === t.platform ? 'bg-accent/20 border-accent' : ''}`}
+            className={`flex flex-col items-center gap-1.5 px-3 py-2.5 rounded-lg border border-line text-xs transition-colors ${t.color} ${copied === t.platform ? 'bg-accent/20 border-accent' : ''}`}
             aria-label={`Share via ${t.label}`}
           >
             <span className="text-[18px]" aria-hidden="true">{t.icon}</span>
@@ -103,9 +103,9 @@ export default function InviteComposer({ link }: InviteComposerProps) {
         ))}
       </div>
       {copied && (
-        <p className="text-center text-[12px] text-gain animate-pulse">Copied to clipboard!</p>
+        <p className="text-center text-xs text-gain animate-pulse">Copied to clipboard!</p>
       )}
-      <p className="text-center text-[11px] text-muted">
+      <p className="text-center text-xs text-muted">
         Your link: <code className="num break-all">{link}</code>
       </p>
     </Card>

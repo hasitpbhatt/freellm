@@ -114,7 +114,7 @@ export function KeyCard({
       {/* Swipe hint: the action behind the row, revealed as the finger moves. */}
       {reveal !== 'none' && (
         <div
-          className={`pointer-events-none absolute inset-y-0 flex items-center px-4 text-[12px] font-medium ${
+          className={`pointer-events-none absolute inset-y-0 flex items-center px-4 text-xs font-medium ${
             reveal === 'left' ? 'right-0 bg-loss/20 text-loss' : 'left-0 bg-gain/20 text-gain'
           }`}
           aria-hidden="true"
@@ -144,25 +144,25 @@ export function KeyCard({
           >
             <span className={`h-2.5 w-2.5 rounded-full ${statusDot[keyData.status]}`} />
             <span className="font-medium text-sm">{keyData.label}</span>
-            <span className={`num rounded px-2 py-0.5 text-[11px] ${isDown ? 'bg-loss/20 text-loss' : 'bg-gain/20 text-gain'}`}>
+            <span className={`num rounded px-2 py-0.5 text-xs ${isDown ? 'bg-loss/20 text-loss' : 'bg-gain/20 text-gain'}`}>
               {statusLabel[keyData.status]}
             </span>
             {keyData.auth_kind === 'oauth' && (
-              <span className="num rounded bg-surface-2 px-2 py-0.5 text-[10px] text-muted">OAuth</span>
+              <span className="num rounded bg-surface-2 px-2 py-0.5 text-2xs text-muted">OAuth</span>
             )}
             {keyData.auth_kind === 'api_key' && (
-              <span className="num rounded bg-surface-2 px-2 py-0.5 text-[10px] text-muted">API key</span>
+              <span className="num rounded bg-surface-2 px-2 py-0.5 text-2xs text-muted">API key</span>
             )}
             {keyData.protocol === 'codex' && (
-              <span className="num rounded bg-accent/10 px-2 py-0.5 text-[10px] text-accent">Codex</span>
+              <span className="num rounded bg-accent/10 px-2 py-0.5 text-2xs text-accent">Codex</span>
             )}
             {isNew && (
-              <span className="num rounded bg-gain/20 px-2 py-0.5 text-[10px] text-gain">New</span>
+              <span className="num rounded bg-gain/20 px-2 py-0.5 text-2xs text-gain">New</span>
             )}
             {keyData.expired && (
-              <span className="num rounded bg-loss/20 px-2 py-0.5 text-[10px] text-loss">Expired</span>
+              <span className="num rounded bg-loss/20 px-2 py-0.5 text-2xs text-loss">Expired</span>
             )}
-            <span className="num font-mono text-[11px] text-muted">{keyData.key_masked}</span>
+            <span className="num font-mono text-xs text-muted">{keyData.key_masked}</span>
             <span className="text-muted">▾</span>
           </button>
           <div className="flex flex-wrap gap-2">
@@ -213,7 +213,7 @@ export function KeyCard({
           </div>
         </div>
         {isExpanded && (
-          <div className="mt-3 pt-3 border-t border-line space-y-1 text-[12px] text-muted animate-slide-down">
+          <div className="mt-3 pt-3 border-t border-line space-y-1 text-xs text-muted animate-slide-down">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <div className="min-w-0 break-all"><span className="font-medium">Base URL:</span> {keyData.base_url}</div>
               <div className="min-w-0 break-all"><span className="font-medium">Upstream model:</span> <code className="font-mono">{keyData.upstream_model}</code></div>

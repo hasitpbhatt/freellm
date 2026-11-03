@@ -107,27 +107,27 @@ export default function AdminVault() {
   if (error) {
     return (
       <div className="mx-auto max-w-md py-12 text-center">
-        <p className="text-[13px] text-loss" role="alert">{error}</p>
+        <p className="text-sm text-loss" role="alert">{error}</p>
         <Button onClick={() => void load()} className="mt-4">
           Retry
         </Button>
       </div>
     )
   }
-  if (keys === null) return <p className="py-12 text-center text-[13px] text-muted">Loading…</p>
+  if (keys === null) return <p className="py-12 text-center text-sm text-muted">Loading…</p>
 
   return (
     <div className="flex flex-col gap-6">
       <div>
         <h1 className="text-xl font-semibold">Vault (BYOK)</h1>
-        <p className="mt-1 text-[13px] text-muted">
+        <p className="mt-1 text-sm text-muted">
           All user-provided keys across the platform. Keys are encrypted at rest (AES-256-GCM).
           Reveal decrypts one key at a time and shows it inline — every reveal hits the server audit log.
         </p>
       </div>
 
       {keys.length === 0 && (
-        <Card className="p-8 text-center text-[13px] text-muted">
+        <Card className="p-8 text-center text-sm text-muted">
           No BYOK keys stored yet. Keys appear here when users add them on the Keys page.
         </Card>
       )}
@@ -139,11 +139,11 @@ export default function AdminVault() {
               <span className={`h-2 w-2 rounded-full ${statusDot[k.status]}`} aria-hidden="true" />
               <span className="sr-only">{statusLabel[k.status]}: </span>
               <span className="font-medium">{k.label}</span>
-              <span className="num rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted">
+              <span className="num rounded bg-surface-2 px-1.5 py-0.5 text-xs text-muted">
                 {statusLabel[k.status]}
               </span>
             </div>
-            <dl className="flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-muted">
+            <dl className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
               <div><dt className="sr-only">Masked key</dt><dd className="num font-mono">{k.key_masked}</dd></div>
               <div><dt className="sr-only">Owner</dt><dd>@{k.username} · {k.email}</dd></div>
               <div><dt className="sr-only">Endpoint</dt><dd>{k.base_url}</dd></div>
@@ -180,7 +180,7 @@ export default function AdminVault() {
                 id="revealed-key-value"
                 readOnly
                 onFocus={(e) => e.target.select()}
-                className="input w-full font-mono text-[12px] min-h-[60px] pr-20"
+                className="input w-full font-mono text-xs min-h-[60px] pr-20"
                 value={revealedKey.key}
               />
               <Button
@@ -192,7 +192,7 @@ export default function AdminVault() {
                 Copy
               </Button>
             </div>
-            <p className="text-[12px] text-muted">
+            <p className="text-xs text-muted">
               Decrypted on demand for this viewing. Copying puts it in your system clipboard — clear
               the clipboard after use. Closing hides it again.
             </p>
@@ -207,7 +207,7 @@ export default function AdminVault() {
       {toast && (
         <div className="toast-container" role={toast.kind === 'err' ? 'alert' : 'status'}>
           <Card className={`border-${toast.kind === 'ok' ? 'gain' : 'loss'} max-w-sm`}>
-            <p className="p-3 text-[13px]">{toast.kind === 'ok' ? '✓ ' : '⚠ '}{toast.text}</p>
+            <p className="p-3 text-sm">{toast.kind === 'ok' ? '✓ ' : '⚠ '}{toast.text}</p>
           </Card>
         </div>
       )}

@@ -108,7 +108,7 @@ export function KeyForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <div>
-        <label className="block text-[12px] font-medium mb-1">Account type</label>
+        <label className="block text-xs font-medium mb-1">Account type</label>
         <div className="flex gap-2" role="radiogroup" aria-label="Account type">
           {(['openai', 'codex'] as const).map((protocol) => (
             <button
@@ -117,56 +117,56 @@ export function KeyForm({
               role="radio"
               aria-checked={form.protocol === protocol}
               onClick={() => setForm({ ...form, protocol })}
-              className={`rounded border px-3 py-2 text-[12px] min-h-[44px] ${form.protocol === protocol ? 'border-accent bg-accent/10 text-content' : 'border-line text-muted'}`}
+              className={`rounded border px-3 py-2 text-xs min-h-[44px] ${form.protocol === protocol ? 'border-accent bg-accent/10 text-content' : 'border-line text-muted'}`}
             >
               {protocol === 'openai' ? 'OpenAI-compatible' : 'Codex (ChatGPT)'}
             </button>
           ))}
         </div>
-        <p className="mt-1 text-[12px] text-muted">
+        <p className="mt-1 text-xs text-muted">
           {form.protocol === 'codex'
             ? 'Your own ChatGPT Codex account, dialled through the Responses API. Prefer Connect above — manual entry needs a pasted token.'
             : 'Any OpenAI-compatible endpoint with a static bearer key.'}
         </p>
       </div>
       <div>
-        <label className="block text-[12px] font-medium mb-1">Label</label>
+        <label className="block text-xs font-medium mb-1">Label</label>
         <Input
           value={form.label}
           onChange={(e: ChangeEvent<HTMLInputElement>) => setForm({ ...form, label: e.target.value })}
           placeholder="e.g. My OpenAI, Team Anthropic proxy"
           className={errors.label ? 'border-loss' : ''}
         />
-        {errors.label && <p className="mt-1 text-[12px] text-loss">{errors.label}</p>}
+        {errors.label && <p className="mt-1 text-xs text-loss">{errors.label}</p>}
       </div>
       <div>
-        <label className="block text-[12px] font-medium mb-1">Base URL{form.protocol === 'codex' ? ' (optional)' : ''}</label>
+        <label className="block text-xs font-medium mb-1">Base URL{form.protocol === 'codex' ? ' (optional)' : ''}</label>
         <Input
           value={form.base_url}
           onChange={(e: ChangeEvent<HTMLInputElement>) => setForm({ ...form, base_url: e.target.value })}
           placeholder={form.protocol === 'codex' ? 'empty = default ChatGPT Codex endpoint' : 'https://api.openai.com/v1'}
           className={errors.base_url ? 'border-loss' : ''}
         />
-        {errors.base_url && <p className="mt-1 text-[12px] text-loss">{errors.base_url}</p>}
+        {errors.base_url && <p className="mt-1 text-xs text-loss">{errors.base_url}</p>}
       </div>
       {form.protocol === 'codex' && (
-        <p className="text-[12px] text-warn">
+        <p className="text-xs text-warn">
           Codex accounts need a ChatGPT OAuth token — use Connect above instead of pasting here.
         </p>
       )}
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
-          <label className="block text-[12px] font-medium mb-1">Upstream Model</label>
+          <label className="block text-xs font-medium mb-1">Upstream Model</label>
           <Input
             value={form.upstream_model}
             onChange={(e: ChangeEvent<HTMLInputElement>) => setForm({ ...form, upstream_model: e.target.value })}
             placeholder={form.protocol === 'codex' ? 'gpt-5.5' : 'gpt-4o'}
             className={errors.upstream_model ? 'border-loss' : ''}
           />
-          {errors.upstream_model && <p className="mt-1 text-[12px] text-loss">{errors.upstream_model}</p>}
+          {errors.upstream_model && <p className="mt-1 text-xs text-loss">{errors.upstream_model}</p>}
         </div>
         <div>
-          <label className="block text-[12px] font-medium mb-1">API Key</label>
+          <label className="block text-xs font-medium mb-1">API Key</label>
           <Input
             type="password"
             value={form.api_key}
@@ -174,7 +174,7 @@ export function KeyForm({
             placeholder="sk-…"
             className={errors.api_key ? 'border-loss' : ''}
           />
-          {errors.api_key && <p className="mt-1 text-[12px] text-loss">{errors.api_key}</p>}
+          {errors.api_key && <p className="mt-1 text-xs text-loss">{errors.api_key}</p>}
         </div>
       </div>
       <div className="flex flex-col sm:flex-row gap-2 justify-end">
@@ -191,7 +191,7 @@ export function KeyForm({
 
       {bulkMode && (
         <div className="border-t border-line pt-4 space-y-4">
-          <p className="text-[13px] text-muted">
+          <p className="text-sm text-muted">
             Paste a JSON array of key objects. Each object should have: label, base_url, upstream_model, api_key, auth_kind ('api_key' or 'oauth'), protocol ('openai' or 'codex'), and optional fields: account_id, refresh_token, expires_at.
           </p>
           <textarea
@@ -215,7 +215,7 @@ export function KeyForm({
     "protocol": "openai"
   }
 ]'
-            className="w-full h-64 font-mono text-[12px] p-3 rounded border border-line bg-surface min-h-[44px]"
+            className="w-full h-64 font-mono text-xs p-3 rounded border border-line bg-surface min-h-[44px]"
           />
           <div className="flex flex-col sm:flex-row gap-2 justify-end">
             <Button type="button" variant="secondary" onClick={() => { setBulkMode(false); setBulkKeys('') }} className="min-h-[44px]">

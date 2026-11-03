@@ -155,7 +155,7 @@ export default function TodayCard({
 
   return (
     <Card id={id} className="today-card">
-      <CardHeader title="Today" action={<span className="num text-[11px] text-muted">UTC reset</span>} />
+      <CardHeader title="Today" action={<span className="num text-xs text-muted">UTC reset</span>} />
 
       <div className="p-4 flex flex-col gap-4">
         {/* Streak ring + earned today */}
@@ -184,33 +184,33 @@ export default function TodayCard({
                   className="text-gain"
                   style={{ transform: 'rotate(-90deg)', transformOrigin: 'center' }}
                 />
-                <text x="28" y="30" textAnchor="middle" dominantBaseline="central" className="num text-[14px] font-bold fill-content" aria-hidden="true">
+                <text x="28" y="30" textAnchor="middle" dominantBaseline="central" className="num text-sm font-bold fill-content" aria-hidden="true">
                   {streak}
                 </text>
               </svg>
               {/* Streak freeze indicator */}
               {streakFreezes > 0 && (
                 <div className="absolute -top-1 -right-1 flex items-center gap-1 bg-surface px-2 py-0.5 rounded-full border border-accent/30 shadow-lg" aria-label={`Streak freezes available: ${streakFreezes}`}>
-                  <span className="text-[14px]" aria-hidden="true">❄️</span>
-                  <span className="num text-[11px] font-bold text-accent">{streakFreezes}</span>
+                  <span className="text-sm" aria-hidden="true">❄️</span>
+                  <span className="num text-xs font-bold text-accent">{streakFreezes}</span>
                 </div>
               )}
             </div>
             <div>
-              <p className="text-[12px] text-muted">Current streak</p>
+              <p className="text-xs text-muted">Current streak</p>
               <p className="num text-2xl font-bold text-content">{streak}</p>
             </div>
           </div>
 
           <div className="flex flex-col items-end gap-1 shrink-0">
-            <p className="num text-[12px] text-muted" aria-live="polite" aria-atomic="true">
+            <p className="num text-xs text-muted" aria-live="polite" aria-atomic="true">
               Resets in {timeStr}
             </p>
             <div className="flex items-baseline gap-1">
               <span className="num text-xl font-bold text-gain today-card__earned" aria-label={`Earned today: ${earnedToday.toLocaleString()} credits`}>
                 {earnedDisplay}
               </span>
-              <span className="text-[11px] text-muted">cr</span>
+              <span className="text-xs text-muted">cr</span>
             </div>
           </div>
         </div>
@@ -232,10 +232,10 @@ export default function TodayCard({
                     <polyline points="20 6 9 17 4 12" />
                   </svg>
                 ) : (
-                  <span className="num text-[10px] text-muted">{seg.key === 'checkin' ? '1' : seg.key === 'typing' ? '2' : seg.key === 'memory' ? '3' : '4'}</span>
+                  <span className="num text-2xs text-muted">{seg.key === 'checkin' ? '1' : seg.key === 'typing' ? '2' : seg.key === 'memory' ? '3' : '4'}</span>
                 )}
               </div>
-              <span className={`text-[10px] ${seg.done ? 'text-gain' : 'text-muted'}`}>{seg.label}</span>
+              <span className={`text-2xs ${seg.done ? 'text-gain' : 'text-muted'}`}>{seg.label}</span>
             </div>
           ))}
         </div>
@@ -253,7 +253,7 @@ export default function TodayCard({
 
         {/* Streak at risk banner */}
         {streak > 0 && !checkedInToday && hoursLeft < 6 && (
-          <div className="flex items-center gap-2 rounded-lg bg-warn/10 border border-warn/30 p-3 text-[12px] text-warn" role="alert">
+          <div className="flex items-center gap-2 rounded-lg bg-warn/10 border border-warn/30 p-3 text-xs text-warn" role="alert">
             <span aria-hidden="true">⚠</span>
             <span className="flex-1">Streak at risk — {hoursLeft}h left to check in</span>
           </div>
@@ -261,7 +261,7 @@ export default function TodayCard({
 
         {/* Freeze used today banner */}
         {freezeUsedToday && (
-          <div className="flex items-center gap-2 rounded-lg bg-accent/10 border border-accent/30 p-3 text-[12px] text-accent" role="status">
+          <div className="flex items-center gap-2 rounded-lg bg-accent/10 border border-accent/30 p-3 text-xs text-accent" role="status">
             <span aria-hidden="true">❄️</span>
             <span className="flex-1">Streak freeze used — your streak was saved!</span>
           </div>
@@ -269,7 +269,7 @@ export default function TodayCard({
 
         {/* First visit hint */}
         {isFirstVisit && (
-          <p className="text-[13px] text-muted text-center">
+          <p className="text-sm text-muted text-center">
             Start your streak → check in, play 2 arcade games, earn the clear bonus.
           </p>
         )}
@@ -277,7 +277,7 @@ export default function TodayCard({
         {/* Achievements */}
         {achievements.length > 0 && (
           <details className="group" open={showAchievements} onToggle={() => setShowAchievements(!showAchievements)}>
-            <summary className="flex items-center gap-2 cursor-pointer list-none text-[12px] text-muted">
+            <summary className="flex items-center gap-2 cursor-pointer list-none text-xs text-muted">
               <span>Achievements</span>
               <span className="num">{achievements.length}</span>
               <svg className="w-4 h-4 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -286,7 +286,7 @@ export default function TodayCard({
             </summary>
             <div className="flex flex-wrap gap-2 mt-2 animate-slide-down">
               {achievements.map((a) => (
-                <span key={a.id} className="px-2 py-1 rounded-full bg-gain/10 text-gain text-[11px] font-medium">{a.label}</span>
+                <span key={a.id} className="px-2 py-1 rounded-full bg-gain/10 text-gain text-xs font-medium">{a.label}</span>
               ))}
             </div>
           </details>
@@ -294,7 +294,7 @@ export default function TodayCard({
 
         {/* Day 7 Streak Chest teaser */}
         {streak > 0 && streak < 7 && !progress.clear && (
-          <p className="text-[12px] text-muted text-center">
+          <p className="text-xs text-muted text-center">
             Day 7 → Streak Chest (500k cr + title)
           </p>
         )}

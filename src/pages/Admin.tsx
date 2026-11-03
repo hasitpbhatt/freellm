@@ -29,17 +29,17 @@ export default function Admin() {
   const tab: Tab =
     rawTab === 'providers' || rawTab === 'proxies' || rawTab === 'promos' || rawTab === 'vault' || rawTab === 'users' || rawTab === 'blocks' || rawTab === 'audit' ? rawTab : 'models'
 
-  if (authLoading) return <p className="py-12 text-center text-[13px] text-muted" role="status">Checking admin access…</p>
+  if (authLoading) return <p className="py-12 text-center text-sm text-muted" role="status">Checking admin access…</p>
   if (!user) {
     return (
       <div className="mx-auto max-w-md py-12 text-center">
-        <p className="text-[13px] text-muted">Sign in as an admin to open this console.</p>
+        <p className="text-sm text-muted">Sign in as an admin to open this console.</p>
         <Link to="/login" className="btn-primary mt-4 inline-block">Sign in</Link>
       </div>
     )
   }
   if (user.role !== 'admin') {
-    return <p className="py-12 text-center text-[13px] text-loss" role="alert">Admin access required.</p>
+    return <p className="py-12 text-center text-sm text-loss" role="alert">Admin access required.</p>
   }
 
   return (
@@ -96,7 +96,7 @@ function TabButton({
       role="tab"
       aria-selected={active}
       onClick={onClick}
-      className={`-mb-px min-h-[44px] whitespace-nowrap border-b-2 px-3 py-2.5 text-[13px] font-medium transition-colors ${
+      className={`-mb-px min-h-[44px] whitespace-nowrap border-b-2 px-3 py-2.5 text-sm font-medium transition-colors ${
         active ? 'border-accent text-content' : 'border-transparent text-muted hover:text-content'
       }`}
     >

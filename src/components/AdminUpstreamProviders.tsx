@@ -135,18 +135,18 @@ export default function AdminUpstreamProviders() {
   if (error) {
     return (
       <div className="mx-auto max-w-md py-12 text-center">
-        <p className="text-[13px] text-loss" role="alert">{error}</p>
+        <p className="text-sm text-loss" role="alert">{error}</p>
         <Button onClick={() => void load()} className="mt-4">Retry</Button>
       </div>
     )
   }
-  if (providers === null) return <p className="py-12 text-center text-[13px] text-muted">Loading…</p>
+  if (providers === null) return <p className="py-12 text-center text-sm text-muted">Loading…</p>
 
   return (
     <div className="flex flex-col gap-6">
       <div>
         <h1 className="text-xl font-semibold">Upstream providers</h1>
-        <p className="mt-1 text-[13px] text-muted">
+        <p className="mt-1 text-sm text-muted">
           The shared endpoints behind your aliases. Create a provider here once — name, base URL, and bearer
           keys — then map it into any alias with one of its upstream models. Health, cooldown, and latency
           are tracked per provider across every alias that uses it.
@@ -163,7 +163,7 @@ export default function AdminUpstreamProviders() {
       />
 
       {providers.length === 0 && (
-        <Card className="p-8 text-center text-[13px] text-muted">
+        <Card className="p-8 text-center text-sm text-muted">
           No upstream providers yet. Add one above — then map it into aliases from the Model catalog tab.
         </Card>
       )}
@@ -173,21 +173,21 @@ export default function AdminUpstreamProviders() {
           <div className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-3">
             <span className={`h-2 w-2 rounded-full ${statusDot[provider.status]}`} aria-hidden="true" />
             <span className="sr-only">{provider.status}</span>
-            <h2 className="text-[15px] font-semibold">{provider.label}</h2>
-            <code className="num rounded bg-surface-2 px-1.5 py-0.5 text-[12px] text-muted">{provider.base_url}</code>
-            <span className="num text-[12px] text-muted">{provider.key_masked ?? (provider.key_count === 0 ? 'no keys' : '••••')}</span>
+            <h2 className="text-base font-semibold">{provider.label}</h2>
+            <code className="num rounded bg-surface-2 px-1.5 py-0.5 text-xs text-muted">{provider.base_url}</code>
+            <span className="num text-xs text-muted">{provider.key_masked ?? (provider.key_count === 0 ? 'no keys' : '••••')}</span>
             {provider.avg_latency_ms != null && (
-              <span className="num text-[12px] text-muted" title="Rolling average stream latency across all aliases using this provider">
+              <span className="num text-xs text-muted" title="Rolling average stream latency across all aliases using this provider">
                 {provider.avg_latency_ms}ms avg
               </span>
             )}
-            <span className="num text-[12px] text-muted" title="How long this provider waits before retry after a failure (doubles per consecutive failure)">
+            <span className="num text-xs text-muted" title="How long this provider waits before retry after a failure (doubles per consecutive failure)">
               {formatCooldown(provider.cooldown_base_ms)}
             </span>
-            <span className="num text-[12px] text-muted">
+            <span className="num text-xs text-muted">
               {models.filter((m) => m.upstream_provider_id === provider.id).length} model{models.filter((m) => m.upstream_provider_id === provider.id).length === 1 ? '' : 's'}
             </span>
-            <span className="num text-[12px] text-muted">{provider.key_count ?? 0} key{provider.key_count === 1 ? '' : 's'}</span>
+            <span className="num text-xs text-muted">{provider.key_count ?? 0} key{provider.key_count === 1 ? '' : 's'}</span>
             <div className="ml-auto flex gap-2">
               <Button variant="secondary" size="sm" onClick={() => void testProvider(provider.id)} disabled={busyKey !== null}>
                 {busyKey === `test:${provider.id}` ? 'Testing…' : 'Test'}
@@ -207,7 +207,7 @@ export default function AdminUpstreamProviders() {
             </div>
           </div>
 
-          {actionError && <p role="alert" className="px-4 pt-2 text-[12px] text-loss">{actionError}</p>}
+          {actionError && <p role="alert" className="px-4 pt-2 text-xs text-loss">{actionError}</p>}
 
           {editingId === provider.id && (
             <ProviderForm
@@ -223,7 +223,7 @@ export default function AdminUpstreamProviders() {
 
           {revealed?.id === provider.id && (
             <div className="flex flex-col gap-2 border-b border-line bg-warn/5 p-4">
-              <p className="text-[12px] text-warn">
+              <p className="text-xs text-warn">
                 Bearer keys for "{provider.label}" — copied to clipboard when possible. Clear them from the clipboard after use.
               </p>
               <div className="flex flex-col gap-2">
@@ -231,8 +231,8 @@ export default function AdminUpstreamProviders() {
                     const keyText = k.api_key ?? ''
                     return (
                       <div key={k.id} className="flex items-center gap-2">
-                        <span className="text-[12px] text-muted">{k.label}:</span>
-                        <code className="num flex-1 break-all text-[12px]">{keyText}</code>
+                        <span className="text-xs text-muted">{k.label}:</span>
+                        <code className="num flex-1 break-all text-xs">{keyText}</code>
                         <Button variant="secondary" size="sm" onClick={() => { void navigator.clipboard.writeText(keyText).catch(() => {}) }}>
                           Copy
                         </Button>
@@ -245,12 +245,12 @@ export default function AdminUpstreamProviders() {
           )}
 
           {testResults[provider.id] && (
-            <p className={`w-full px-4 pt-2 text-[12px] ${testResults[provider.id].ok ? 'text-gain' : 'text-loss'}`}>
+            <p className={`w-full px-4 pt-2 text-xs ${testResults[provider.id].ok ? 'text-gain' : 'text-loss'}`}>
               {testResults[provider.id].ok ? 'OK' : 'Failed'} · {testResults[provider.id].latencyMs ?? '—'}ms
               {testResults[provider.id].error ? ` — ${testResults[provider.id].error}` : ''}
             </p>
           )}
-          {provider.last_error && <p className="w-full px-4 pt-1 text-[12px] text-muted">Last error: {provider.last_error}</p>}
+          {provider.last_error && <p className="w-full px-4 pt-1 text-xs text-muted">Last error: {provider.last_error}</p>}
 
           {managingId === provider.id && (
             <ModelCatalog
@@ -373,7 +373,7 @@ function ProviderForm({
   return (
     <Card className="p-4">
       <form className="grid gap-3 sm:grid-cols-2" onSubmit={submit}>
-        <p className="text-[13px] font-medium sm:col-span-2">{editing ? `Edit "${provider!.label}"` : 'New upstream provider'}</p>
+        <p className="text-sm font-medium sm:col-span-2">{editing ? `Edit "${provider!.label}"` : 'New upstream provider'}</p>
         <Field label="Label">
           <input className="input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Poolside API" required />
         </Field>
@@ -395,7 +395,7 @@ function ProviderForm({
         {editing && provider && provider.key_count !== undefined && (
           <Field label="Key pool" className="sm:col-span-2">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[12px] text-muted">Pool has {provider.key_count} key{provider.key_count === 1 ? '' : 's'}</span>
+              <span className="text-xs text-muted">Pool has {provider.key_count} key{provider.key_count === 1 ? '' : 's'}</span>
               <Button type="button" variant="secondary" size="sm" onClick={addKey} disabled={busy}>
                 {busy ? 'Adding…' : 'Add key to pool'}
               </Button>
@@ -403,7 +403,7 @@ function ProviderForm({
             {provider.keys && provider.keys.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1">
                 {provider.keys.map((k) => (
-                  <span key={k.id} className="px-2 py-0.5 text-[11px] bg-surface-2 rounded">
+                  <span key={k.id} className="px-2 py-0.5 text-xs bg-surface-2 rounded">
                     {k.label}: {k.key_masked} {k.status !== 'unknown' && k.status !== 'live' && `(${k.status})`}
                   </span>
                 ))}
@@ -411,7 +411,7 @@ function ProviderForm({
             )}
           </Field>
         )}
-        {error && <p className="text-[13px] text-loss sm:col-span-2">{error}</p>}
+        {error && <p className="text-sm text-loss sm:col-span-2">{error}</p>}
         <div className="flex gap-2 sm:col-span-2">
           <Button type="submit" disabled={busy}>{busy ? 'Saving…' : editing ? 'Save provider' : 'Create provider'}</Button>
           <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
@@ -594,18 +594,18 @@ function ModelCatalog({
   return (
     <div className="flex flex-col gap-3 border-t border-line p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-[12px] font-medium uppercase tracking-wide text-muted">
+        <p className="text-xs font-medium uppercase tracking-wide text-muted">
           Upstream models — the exact names this provider accepts
         </p>
         <Button size="sm" variant="secondary" onClick={fetchModels} disabled={importing || busy}>
           {importing ? 'Fetching…' : 'Fetch models from /v1/models'}
         </Button>
       </div>
-      {importError ? <p className="text-[13px] text-loss">{importError}</p> : null}
+      {importError ? <p className="text-sm text-loss">{importError}</p> : null}
       {importList.length > 0 ? (
         <div className="flex flex-col gap-2 rounded border border-line p-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-[13px] text-content">Select models to add (none checked by default)</p>
+            <p className="text-sm text-content">Select models to add (none checked by default)</p>
             <div className="flex gap-2">
               <Button size="sm" variant="ghost" onClick={() => {
                 const q = importSearch.trim().toLowerCase()
@@ -640,18 +640,18 @@ function ModelCatalog({
                 const already = models.some((m) => m.upstream_model === name)
                 return (
                   <div key={name} className="flex flex-wrap items-center justify-between gap-2">
-                    <label className="flex items-center gap-2 text-[13px] text-content">
+                    <label className="flex items-center gap-2 text-sm text-content">
                       <input type="checkbox" checked={selected.has(name)} disabled={already} onChange={(e) => {
                         const s = new Set(selected)
                         if (e.target.checked) s.add(name)
                         else s.delete(name)
                         setSelected(s)
                       }} />
-                      <code className="font-mono text-[12px]">{name}</code>
-                      {already ? <span className="text-[11px] text-muted">Already added</span> : null}
+                      <code className="font-mono text-xs">{name}</code>
+                      {already ? <span className="text-xs text-muted">Already added</span> : null}
                     </label>
                     <div className="flex items-center gap-2">
-                      {tr ? <span className={`text-[12px] ${tr.ok ? 'text-gain' : 'text-loss'}`}>{tr.ok ? `${tr.latencyMs}ms` : tr.error?.slice(0, 40) || `err${tr.status||''}`}</span> : null}
+                      {tr ? <span className={`text-xs ${tr.ok ? 'text-gain' : 'text-loss'}`}>{tr.ok ? `${tr.latencyMs}ms` : tr.error?.slice(0, 40) || `err${tr.status||''}`}</span> : null}
                       <Button size="sm" variant="ghost" onClick={() => testModel(name)} disabled={testing === name || busy}>{testing === name ? 'Testing…' : 'Test'}</Button>
                     </div>
                   </div>
@@ -665,7 +665,7 @@ function ModelCatalog({
         <>
           {sameUrlProviders.length > 0 ? (
             <div className="flex flex-col gap-2">
-              <p className="text-[13px] text-muted">No models registered yet. Other providers with the same base URL have models — copy them:</p>
+              <p className="text-sm text-muted">No models registered yet. Other providers with the same base URL have models — copy them:</p>
               <div className="flex flex-wrap gap-2">
                 {sameUrlProviders.map((sp) => (
                   <Button key={sp.id} variant="secondary" size="sm" onClick={() => void copyModelsFrom(sp)} disabled={busy}>
@@ -673,18 +673,18 @@ function ModelCatalog({
                   </Button>
                 ))}
               </div>
-              <p className="text-[13px] text-muted">Or add manually below:</p>
+              <p className="text-sm text-muted">Or add manually below:</p>
             </div>
-          ) : <p className="text-[13px] text-muted">No models registered yet — add the first below.</p>}
+          ) : <p className="text-sm text-muted">No models registered yet — add the first below.</p>}
         </>
       ) : (
         <div className="flex flex-col divide-y divide-line">
           {providerModels.map((m) => (
             <div key={m.upstream_model} className="flex flex-wrap items-center gap-3 py-2">
-              <code className="num rounded bg-surface-2 px-2 py-1 text-[12px]">{m.upstream_model}</code>
-              {m.context_window != null && <span className="num text-[12px] text-muted">{m.context_window.toLocaleString('en-US')} ctx</span>}
-              {m.max_output_tokens != null && <span className="num text-[12px] text-muted">{m.max_output_tokens.toLocaleString('en-US')} max out</span>}
-              <label className="flex items-center gap-2 text-[12px] text-muted">
+              <code className="num rounded bg-surface-2 px-2 py-1 text-xs">{m.upstream_model}</code>
+              {m.context_window != null && <span className="num text-xs text-muted">{m.context_window.toLocaleString('en-US')} ctx</span>}
+              {m.max_output_tokens != null && <span className="num text-xs text-muted">{m.max_output_tokens.toLocaleString('en-US')} max out</span>}
+              <label className="flex items-center gap-2 text-xs text-muted">
                 <input type="checkbox" checked={m.supports_streaming !== 0} disabled={busy} onChange={(event) => void setStreaming(m, event.target.checked)} />
                 Supports streaming
               </label>
@@ -699,10 +699,10 @@ function ModelCatalog({
         <Field label="Context window (optional)"><input className="input num w-32" value={contextWindow} onChange={(e) => setContextWindow(e.target.value)} inputMode="numeric" placeholder="128000" /></Field>
         <Field label="Max output (optional)"><input className="input num w-32" value={maxOutput} onChange={(e) => setMaxOutput(e.target.value)} inputMode="numeric" placeholder="32000" /></Field>
         <Field label="Capabilities (optional)"><input className="input num w-40" value={capabilities} onChange={(e) => setCapabilities(e.target.value)} placeholder="vision, coding" /></Field>
-        <label className="flex items-center gap-2 py-2 text-[12px] text-muted"><input type="checkbox" checked={supportsStreaming} onChange={(event) => setSupportsStreaming(event.target.checked)} />Supports streaming</label>
+        <label className="flex items-center gap-2 py-2 text-xs text-muted"><input type="checkbox" checked={supportsStreaming} onChange={(event) => setSupportsStreaming(event.target.checked)} />Supports streaming</label>
         <Button type="submit" disabled={busy}>{busy ? 'Adding…' : 'Add model'}</Button>
       </form>
-      {error && <p className="text-[12px] text-loss">{error}</p>}
+      {error && <p className="text-xs text-loss">{error}</p>}
     </div>
   )
 }
@@ -740,7 +740,7 @@ function CapabilityEditor({
 
   return (
     <form className="flex items-center gap-1.5" onSubmit={(event) => void save(event)}>
-      <span className="text-[12px] text-muted">Tags</span>
+      <span className="text-xs text-muted">Tags</span>
       <input
         className="input num w-40"
         value={value}
@@ -759,7 +759,7 @@ function CapabilityEditor({
 function Field({ label, children, className = '' }: { label: string; children: React.ReactNode; className?: string }) {
   return (
     <label className={`flex flex-col gap-1.5 ${className}`}>
-      <span className="text-[12px] font-medium uppercase tracking-wide text-muted">{label}</span>
+      <span className="text-xs font-medium uppercase tracking-wide text-muted">{label}</span>
       {children}
     </label>
   )

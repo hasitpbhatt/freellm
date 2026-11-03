@@ -79,7 +79,7 @@ export default function WeeklyQuests() {
           <span aria-hidden="true">📋</span>
           Weekly Quests
         </h3>
-        <span className="text-[11px] text-muted">Ends {weekEndStr}</span>
+        <span className="text-xs text-muted">Ends {weekEndStr}</span>
       </div>
 
       <div className="space-y-2" role="list" aria-label="Weekly quests">
@@ -95,13 +95,13 @@ export default function WeeklyQuests() {
               <div className="flex items-center gap-2 mb-1">
                 <h4 className="font-medium text-sm truncate">{quest.title}</h4>
                 {quest.claimed && (
-                  <span className="px-2 py-0.5 text-[10px] font-medium bg-gain/20 text-gain rounded-full">Claimed</span>
+                  <span className="px-2 py-0.5 text-2xs font-medium bg-gain/20 text-gain rounded-full">Claimed</span>
                 )}
                 {quest.completed && !quest.claimed && (
-                  <span className="px-2 py-0.5 text-[10px] font-medium bg-accent/20 text-accent rounded-full animate-pulse">Ready to claim</span>
+                  <span className="px-2 py-0.5 text-2xs font-medium bg-accent/20 text-accent rounded-full animate-pulse">Ready to claim</span>
                 )}
               </div>
-              <p className="text-[12px] text-muted truncate">{quest.description}</p>
+              <p className="text-xs text-muted truncate">{quest.description}</p>
               <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-surface-3" role="progressbar" aria-valuenow={quest.progress_pct} aria-valuemin={0} aria-valuemax={100} aria-label={`${quest.title} progress`}>
                 <div
                   className={`h-full transition-all duration-300 ${
@@ -111,10 +111,10 @@ export default function WeeklyQuests() {
                 />
               </div>
               <div className="flex items-center justify-between mt-1">
-                <span className="text-[11px] text-muted">
+                <span className="text-xs text-muted">
                   {quest.current.toLocaleString()} / {quest.target.toLocaleString()}
                 </span>
-                <span className="num text-[12px] font-bold text-gain">+{(quest.reward / 1000).toFixed(0)}k cr</span>
+                <span className="num text-xs font-bold text-gain">+{(quest.reward / 1000).toFixed(0)}k cr</span>
               </div>
             </div>
 
@@ -123,7 +123,7 @@ export default function WeeklyQuests() {
                 type="button"
                 onClick={() => handleClaim(quest)}
                 disabled={claiming === quest.id}
-                className="shrink-0 px-4 py-2 rounded-lg bg-accent text-accent-fg font-medium text-[13px] hover:opacity-90 disabled:opacity-50 min-w-[100px]"
+                className="shrink-0 px-4 py-2 rounded-lg bg-accent text-accent-fg font-medium text-sm hover:opacity-90 disabled:opacity-50 min-w-[100px]"
                 aria-label={`Claim ${quest.reward.toLocaleString()} credits for ${quest.title}`}
               >
                 {claiming === quest.id ? 'Claiming…' : 'Claim'}
@@ -133,7 +133,7 @@ export default function WeeklyQuests() {
         ))}
       </div>
 
-      <p className="text-center text-[11px] text-muted">
+      <p className="text-center text-xs text-muted">
         Quests rotate every Monday 00:00 UTC. Complete them during the week to earn bonus credits!
       </p>
     </Card>

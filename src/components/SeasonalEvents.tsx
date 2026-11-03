@@ -168,7 +168,7 @@ export default function SeasonalEvents() {
             <h3 className="font-bold text-lg">{event.name}</h3>
             <p className="text-sm text-muted">{event.description}</p>
           </div>
-          <div className="ml-auto text-right text-[11px] text-muted">
+          <div className="ml-auto text-right text-xs text-muted">
             Ends {new Date(event.end_at).toLocaleDateString()}
           </div>
         </div>
@@ -192,13 +192,13 @@ export default function SeasonalEvents() {
                   >
                     <div className="flex-1 min-w-0">
                       <h4 className="font-medium text-sm">{quest.name}</h4>
-                      <p className="text-[12px] text-muted">{quest.description}</p>
+                      <p className="text-xs text-muted">{quest.description}</p>
                       <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-surface-3" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
                         <div className={`h-full transition-all duration-300 ${claimed ? 'bg-gain' : completed ? 'bg-accent' : 'bg-muted'}`} style={{ width: `${pct}%` }} />
                       </div>
                       <div className="flex items-center justify-between mt-1">
-                        <span className="text-[11px] text-muted">{progress.toLocaleString()} / {quest.target.toLocaleString()}</span>
-                        <span className="num text-[12px] font-bold text-gain">+{(quest.reward / 1000).toFixed(0)}k cr</span>
+                        <span className="text-xs text-muted">{progress.toLocaleString()} / {quest.target.toLocaleString()}</span>
+                        <span className="num text-xs font-bold text-gain">+{(quest.reward / 1000).toFixed(0)}k cr</span>
                       </div>
                     </div>
 
@@ -213,7 +213,7 @@ export default function SeasonalEvents() {
                       </Button>
                     )}
                     {claimed && (
-                      <span className="px-2 py-1 text-[11px] font-medium bg-gain/20 text-gain rounded-full shrink-0">Claimed</span>
+                      <span className="px-2 py-1 text-xs font-medium bg-gain/20 text-gain rounded-full shrink-0">Claimed</span>
                     )}
                   </div>
                 )
@@ -240,7 +240,7 @@ export default function SeasonalEvents() {
                           {cosmetic.unlocked && !cosmetic.equipped && <span className="px-1.5 py-0.5 text-[9px] font-medium bg-gain/20 text-gain rounded">Unlocked</span>}
                           {!cosmetic.unlocked && <span className="px-1.5 py-0.5 text-[9px] font-medium text-muted">Locked</span>}
                         </div>
-                        <p className="text-[11px] text-muted">{cosmetic.description}</p>
+                        <p className="text-xs text-muted">{cosmetic.description}</p>
                       </div>
                       {cosmetic.unlocked && (
                         <Button
@@ -292,9 +292,9 @@ export default function SeasonalEvents() {
             <span className="text-2xl" aria-hidden="true">{event.icon}</span>
             <div className="flex-1 min-w-0">
               <h4 className="font-medium text-sm truncate">{event.name}</h4>
-              <p className="text-[12px] text-muted truncate">{event.description}</p>
+              <p className="text-xs text-muted truncate">{event.description}</p>
             </div>
-            <span className="text-[11px] text-muted shrink-0">
+            <span className="text-xs text-muted shrink-0">
               Ends {new Date(event.end_at).toLocaleDateString()}
             </span>
           </button>

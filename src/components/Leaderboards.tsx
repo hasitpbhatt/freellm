@@ -71,7 +71,7 @@ export default function Leaderboards() {
           Leaderboards
         </h3>
         {weekStart && (
-          <span className="text-[11px] text-muted">
+          <span className="text-xs text-muted">
             Week of {new Date(weekStart).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
           </span>
         )}
@@ -80,7 +80,7 @@ export default function Leaderboards() {
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as LeaderboardType)} className="w-full">
         <TabsList className="grid grid-cols-4 bg-surface-2 p-1" aria-label="Leaderboard categories">
           {(Object.entries(leaderboardConfig) as [LeaderboardType, typeof leaderboardConfig[LeaderboardType]][]).map(([key, cfg]) => (
-            <TabsTrigger key={key} value={key} className="text-[12px] py-2">
+            <TabsTrigger key={key} value={key} className="text-xs py-2">
               <span className="flex items-center justify-center gap-1">
                 <span aria-hidden="true">{cfg.icon}</span>
                 <span>{cfg.label}</span>
@@ -115,7 +115,7 @@ export default function Leaderboards() {
                       {entry.avatar_url ? (
                         <img src={entry.avatar_url} alt="" className="w-7 h-7 rounded-full" />
                       ) : (
-                        <div className="w-7 h-7 rounded-full bg-surface-3 flex items-center justify-center text-[12px]" aria-hidden="true">
+                        <div className="w-7 h-7 rounded-full bg-surface-3 flex items-center justify-center text-xs" aria-hidden="true">
                           {entry.username[0]?.toUpperCase() ?? '?'}
                         </div>
                       )}
@@ -125,7 +125,7 @@ export default function Leaderboards() {
                       <span className={`num font-bold ${index < 3 ? 'text-accent' : 'text-content'}`}>
                         {entry[config.valueKey]?.toLocaleString() ?? '—'}
                       </span>
-                      <span className="text-[11px] text-muted">{config.valueLabel}</span>
+                      <span className="text-xs text-muted">{config.valueLabel}</span>
                     </div>
                   </div>
                 ))}
@@ -135,7 +135,7 @@ export default function Leaderboards() {
         ))}
       </Tabs>
 
-      <p className="text-center text-[11px] text-muted">
+      <p className="text-center text-xs text-muted">
         Leaderboards update weekly. Play arcade games, maintain your streak, and invite friends to climb the ranks!
       </p>
     </Card>

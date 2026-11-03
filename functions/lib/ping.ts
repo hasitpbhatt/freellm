@@ -3,7 +3,6 @@
 
 import { SLOW_THRESHOLD_MS } from './providers'
 import { assertSafeBaseUrl } from './validate'
-import { pickProxy, markProxyCooldown } from './proxy'
 import type { ProxyRow } from './types'
 
 export type PingResult = {

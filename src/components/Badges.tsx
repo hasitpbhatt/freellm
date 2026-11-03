@@ -112,7 +112,7 @@ export default function Badges() {
           <span aria-hidden="true">🏅</span>
           Badges
           {unnotifiedCount > 0 && (
-            <span className="px-2 py-0.5 text-[10px] font-medium bg-gain/20 text-gain rounded-full animate-pulse">
+            <span className="px-2 py-0.5 text-2xs font-medium bg-gain/20 text-gain rounded-full animate-pulse">
               {unnotifiedCount} new
             </span>
           )}
@@ -121,7 +121,7 @@ export default function Badges() {
           type="button"
           onClick={handleCheck}
           disabled={checking}
-          className="px-3 py-1.5 text-[12px] font-medium rounded-lg bg-surface-2 border border-line hover:bg-surface-3 disabled:opacity-50"
+          className="px-3 py-1.5 text-xs font-medium rounded-lg bg-surface-2 border border-line hover:bg-surface-3 disabled:opacity-50"
           aria-label="Check for new badges"
         >
           {checking ? 'Checking…' : 'Check for new'}
@@ -134,7 +134,7 @@ export default function Badges() {
           if (!badges) return null
           return (
             <div key={cat} className="space-y-2">
-              <h4 className="text-[11px] font-semibold text-muted uppercase tracking-wide">{categoryLabels[cat]}</h4>
+              <h4 className="text-xs font-semibold text-muted uppercase tracking-wide">{categoryLabels[cat]}</h4>
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2" role="list">
                 {badges.map((badge) => (
                   <div
@@ -158,9 +158,9 @@ export default function Badges() {
                           </span>
                         )}
                       </div>
-                      <p className={`text-[11px] ${badge.earned ? 'text-muted' : 'text-line'}`}>{badge.description}</p>
+                      <p className={`text-xs ${badge.earned ? 'text-muted' : 'text-line'}`}>{badge.description}</p>
                       {badge.reward > 0 && (
-                        <span className="num text-[11px] text-gain">+{(badge.reward / 1000).toFixed(0)}k cr</span>
+                        <span className="num text-xs text-gain">+{(badge.reward / 1000).toFixed(0)}k cr</span>
                       )}
                     </div>
 
@@ -168,7 +168,7 @@ export default function Badges() {
                       <button
                         type="button"
                         onClick={() => handleNotify(badge.id)}
-                        className="absolute top-2 right-2 w-5 h-5 rounded-full bg-gain/20 text-gain flex items-center justify-center text-[10px] hover:bg-gain/30"
+                        className="absolute top-2 right-2 w-5 h-5 rounded-full bg-gain/20 text-gain flex items-center justify-center text-2xs hover:bg-gain/30"
                         aria-label={`Mark ${badge.name} as seen`}
                       >
                         ✓
@@ -194,7 +194,7 @@ export default function Badges() {
         })}
       </div>
 
-      <p className="text-center text-[11px] text-muted">
+      <p className="text-center text-xs text-muted">
         Earn badges by completing challenges. Each badge gives a one-time credit bonus!
       </p>
     </Card>

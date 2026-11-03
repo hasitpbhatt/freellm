@@ -467,12 +467,12 @@ export default function Chat() {
     return () => window.removeEventListener('keydown', onKey)
   }, [busy])
 
-  if (authLoading) return <p className="py-12 text-center text-[13px] text-muted">Loading…</p>
+  if (authLoading) return <p className="py-12 text-center text-sm text-muted">Loading…</p>
   if (!user) {
     return (
       <Card className="mx-auto max-w-md p-8 text-center">
         <h1 className="text-lg font-semibold">Chat</h1>
-        <p className="mt-2 text-[13px] text-muted">
+        <p className="mt-2 text-sm text-muted">
           Sign in to chat with The Pool. Credits spend 1:1 on tokens — earn them on the{' '}
           <Link to="/earn" className="text-accent hover:underline">earn page</Link>, or bring your own key (free).
         </p>
@@ -554,7 +554,7 @@ export default function Chat() {
                 role="radio"
                 aria-checked={mode === 'pool'}
                 onClick={() => { setMode('pool'); setSelectedKeyId('') }}
-                className={`px-3 py-1.5 text-[12px] font-medium rounded transition-colors ${
+                className={`px-3 py-1.5 text-xs font-medium rounded transition-colors ${
                   mode === 'pool'
                     ? 'bg-accent text-white border-accent'
                     : 'bg-surface-2 text-content hover:bg-surface-3 border-transparent'
@@ -566,7 +566,7 @@ export default function Chat() {
                 role="radio"
                 aria-checked={mode === 'byok'}
                 onClick={() => setMode('byok')}
-                className={`px-3 py-1.5 text-[12px] font-medium rounded transition-colors ${
+                className={`px-3 py-1.5 text-xs font-medium rounded transition-colors ${
                   mode === 'byok'
                     ? 'bg-accent text-white border-accent'
                     : 'bg-surface-2 text-content hover:bg-surface-3 border-transparent'
@@ -575,7 +575,7 @@ export default function Chat() {
                 Your Key
               </button>
             </div>
-            <p className="text-[11px] text-muted">{mode === 'pool' ? 'Uses credits (1 credit = 1 token). Earn more on Earn.' : 'Uses your own API key.'}</p>
+            <p className="text-xs text-muted">{mode === 'pool' ? 'Uses credits (1 credit = 1 token). Earn more on Earn.' : 'Uses your own API key.'}</p>
           </div>
         </div>
 
@@ -592,16 +592,16 @@ export default function Chat() {
                     <span className={`h-2 w-2 rounded-full ${statusDot[opt.status]}`} aria-hidden="true" />
                     <span className="font-medium">{opt.label}</span>
                     {opt.vision && (
-                      <span className="rounded bg-gain/10 px-1.5 py-0.5 text-[10px] font-medium text-gain">
+                      <span className="rounded bg-gain/10 px-1.5 py-0.5 text-2xs font-medium text-gain">
                         vision
                       </span>
                     )}
                     {opt.tier !== 'free' && (
-                      <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">
+                      <span className="rounded bg-accent/10 px-1.5 py-0.5 text-2xs font-medium text-accent">
                         🔒 {opt.tier}
                       </span>
                     )}
-                    {opt.disabled && <span className="text-[11px] text-muted ml-auto">locked</span>}
+                    {opt.disabled && <span className="text-xs text-muted ml-auto">locked</span>}
                   </div>
                 )}
               />
@@ -618,9 +618,9 @@ export default function Chat() {
                   <div className="flex items-center gap-2">
                     <span className={`h-2 w-2 rounded-full ${statusDot[opt.status]}`} aria-hidden="true" />
                     <span className="font-medium truncate">{opt.label}</span>
-                    <span className="num text-[11px] text-muted font-mono ml-auto">{opt.keyMasked}</span>
+                    <span className="num text-xs text-muted font-mono ml-auto">{opt.keyMasked}</span>
                     {opt.latency != null && (
-                      <span className="num text-[11px] text-muted">{formatLatency(opt.latency)}</span>
+                      <span className="num text-xs text-muted">{formatLatency(opt.latency)}</span>
                     )}
                   </div>
                 )}
@@ -635,12 +635,12 @@ export default function Chat() {
         {/* Active model/key info banner */}
         <div className="px-4 py-2 border-b border-line bg-surface-2/50 flex-shrink-0">
           {mode === 'pool' && model && (
-            <div className="flex flex-wrap items-center gap-3 text-[13px]">
+            <div className="flex flex-wrap items-center gap-3 text-sm">
               <span className={`h-2 w-2 rounded-full ${statusDot[model.status]}`} />
               <span className="font-semibold">{model.label}</span>
               <span className="text-muted">The Pool</span>
               {model.capabilities.includes('vision') && (
-                <span className="rounded bg-gain/10 px-1.5 py-0.5 text-[11px] font-medium text-gain">
+                <span className="rounded bg-gain/10 px-1.5 py-0.5 text-xs font-medium text-gain">
                   image input
                 </span>
               )}
@@ -659,7 +659,7 @@ export default function Chat() {
             </div>
           )}
           {mode === 'byok' && selectedKey && (
-            <div className="flex flex-wrap items-center gap-3 text-[13px] border-gain/30">
+            <div className="flex flex-wrap items-center gap-3 text-sm border-gain/30">
               <span className={`h-2 w-2 rounded-full ${statusDot[selectedKey.status]}`} />
               <span className="font-semibold">{selectedKey.label}</span>
               <span className="text-gain font-medium">Your Key (free)</span>
@@ -680,18 +680,18 @@ export default function Chat() {
         >
           {messages.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-4 text-center text-muted px-4">
-              <p className="text-[13px] max-w-md leading-relaxed">
+              <p className="text-sm max-w-md leading-relaxed">
                 A community-owned arena for indie AI models.{' '}
                 {mode === 'pool'
                   ? 'Spend earned credits (1 cr = 1 token) on models in The Pool.'
                   : 'Bring your own key — chat free, unmetered.'}
               </p>
-              <p className="text-[13px] max-w-md">
+              <p className="text-sm max-w-md">
                 Ask {mode === 'pool' ? (model?.label ?? 'a model') : (selectedKey?.label ?? 'your key')} anything.
               </p>
               <div className="flex flex-wrap justify-center gap-2 mt-4 max-w-md">
                 {['Explain quantum entanglement simply', 'Write a Python quicksort', 'Summarize this in 3 bullets', 'Debug this code'].map((p) => (
-                  <button key={p} type="button" onClick={() => setInput(p)} className="rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] text-muted hover:text-content hover:bg-surface-2 transition-colors">{p}</button>
+                  <button key={p} type="button" onClick={() => setInput(p)} className="rounded-full border border-line bg-surface px-3 py-1.5 text-xs text-muted hover:text-content hover:bg-surface-2 transition-colors">{p}</button>
                 ))}
               </div>
               {mode === 'byok' && !selectedKey && (
@@ -699,7 +699,7 @@ export default function Chat() {
                   <Button variant="primary" onClick={() => navigate('/keys')}>Add a key to start</Button>
                 </div>
               )}
-              <p className="num text-[11px] max-w-md mt-4">
+              <p className="num text-xs max-w-md mt-4">
                 {mode === 'pool'
                   ? 'Billing uses provider-reported token counts; flat rate applies only when usage is unreported or a stream is stopped early.'
                   : 'Free — no balance check, no metering.'}
@@ -711,12 +711,12 @@ export default function Chat() {
                 <div key={m.id} className={m.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
                   <div className="flex flex-col gap-1 max-w-[85%]">
                     {m.role === 'assistant' && (
-                      <p className="text-[12px] font-semibold text-accent ml-1">
+                      <p className="text-xs font-semibold text-accent ml-1">
                         {m.model ?? (mode === 'pool' ? (model?.label ?? 'assistant') : (selectedKey?.label ?? 'your key'))}
                       </p>
                     )}
                     <div
-                      className={`inline-block max-w-full whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-[13px] ${
+                      className={`inline-block max-w-full whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm ${
                         m.role === 'user' ? 'bg-accent/15 rounded-tr-sm' : 'bg-surface-2 rounded-tl-sm'
                       }`}
                     >
@@ -736,7 +736,7 @@ export default function Chat() {
                       {m.error && <span className="text-loss">{m.error}</span>}
                     </div>
                     {m.cost && (
-                      <p className="num text-[11px] text-muted ml-1">
+                      <p className="num text-xs text-muted ml-1">
                         {m.cost.credits == null
                           ? 'billing pending — no charge recorded'
                           : `${m.cost.credits.toLocaleString('en-US')} cr`}
@@ -772,12 +772,12 @@ export default function Chat() {
         {/* Banner */}
         {banner && (
           <div className={`flex flex-wrap items-center gap-2 px-4 py-2 border-t border-line ${banner.kind === 'err' ? 'text-loss' : 'text-warn'} bg-surface/50 flex-shrink-0`}>
-            <span className="flex-1 text-[13px]">{banner.text}</span>
+            <span className="flex-1 text-sm">{banner.text}</span>
             {banner.action && (
               <Link to={banner.action.to} className="text-accent hover:underline">{banner.action.label}</Link>
             )}
             {!busy && retryAvailable && (
-              <button onClick={() => void send(undefined, lastInputRef.current)} className="text-accent hover:underline text-[13px]">
+              <button onClick={() => void send(undefined, lastInputRef.current)} className="text-accent hover:underline text-sm">
                 Retry
               </button>
             )}
@@ -789,7 +789,7 @@ export default function Chat() {
 
         {/* Low balance warning */}
         {mode === 'pool' && user.balance_credits < 100_000 && (
-          <div className="flex flex-wrap items-center gap-2 px-4 py-2 border-t border-line text-warn text-[13px] bg-surface/50 flex-shrink-0">
+          <div className="flex flex-wrap items-center gap-2 px-4 py-2 border-t border-line text-warn text-sm bg-surface/50 flex-shrink-0">
             <span>Low balance: <Credits value={user.balance_credits} /> cr — your streak check-in gives +50,000 cr.</span>
             <Link to="/earn" className="text-accent hover:underline">Earn more</Link>
           </div>
@@ -810,14 +810,14 @@ export default function Chat() {
                     type="button"
                     onClick={() => removeAttachment(index)}
                     disabled={busy}
-                    className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-line bg-surface text-[11px] text-muted hover:text-content disabled:opacity-40"
+                    className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-line bg-surface text-xs text-muted hover:text-content disabled:opacity-40"
                     aria-label={`Remove attachment ${index + 1}`}
                   >
                     ✕
                   </button>
                 </div>
               ))}
-              <span className="num text-[11px] text-muted">
+              <span className="num text-xs text-muted">
                 {attachments.length}/{MAX_ATTACHMENTS}
               </span>
             </div>
@@ -826,7 +826,7 @@ export default function Chat() {
             <label className="sr-only" htmlFor="chat-input">Message</label>
             <textarea
               id="chat-input"
-              className="input min-h-[48px] max-h-[200px] flex-1 resize-none text-[16px] sm:text-[13px]"
+              className="input min-h-[48px] max-h-[200px] flex-1 resize-none text-[16px] sm:text-sm"
               rows={1}
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -876,14 +876,14 @@ export default function Chat() {
             ) : (
               <>
                 {mode === 'pool' && (
-                  <span className="num text-[12px] text-muted">{user.balance_credits.toLocaleString('en-US')} cr</span>
+                  <span className="num text-xs text-muted">{user.balance_credits.toLocaleString('en-US')} cr</span>
                 )}
                 <Button type="submit" disabled={!canSend} title={canSend ? 'Send (Enter)' : sendBlockReason}>Send</Button>
               </>
             )}
           </div>
         </form>
-        <p className="num text-[11px] text-muted px-4 pb-4 flex-shrink-0">
+        <p className="num text-xs text-muted px-4 pb-4 flex-shrink-0">
           {mode === 'pool' ? (
             <>spendable: <Credits value={user.balance_credits} /> cr · Enter sends, Shift+Enter for a new line · Esc stops</>
           ) : (

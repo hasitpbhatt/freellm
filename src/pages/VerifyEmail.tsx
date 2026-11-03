@@ -34,7 +34,7 @@ export default function VerifyEmail() {
       <h1 className="text-lg font-semibold">
         {status === 'working' ? 'Verifying…' : status === 'ok' ? 'Verified' : 'Verification failed'}
       </h1>
-      <p className="mt-2 text-[13px] text-muted" role="status">
+      <p className="mt-2 text-sm text-muted" role="status">
         {status === 'working'
           ? 'Checking your link — this takes a few seconds.'
           : status === 'ok'
@@ -42,7 +42,7 @@ export default function VerifyEmail() {
             : message}
       </p>
       {status === 'error' && (
-        <p className="mt-2 text-[13px] text-muted">
+        <p className="mt-2 text-sm text-muted">
           Links expire after 24 hours and work only for the signed-in Google account they were sent to.{' '}
           <Link to="/earn" className="text-accent hover:underline">Get a fresh link on the Earn page →</Link>
         </p>

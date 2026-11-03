@@ -42,16 +42,16 @@ export default function Login() {
       <Card className="p-6">
         <h1 className="text-lg font-semibold">Sign in</h1>
         {referred && (
-          <p className="mt-2 rounded-lg border border-accent/40 bg-accent/10 px-3 py-2 text-[13px] text-accent">
+          <p className="mt-2 rounded-lg border border-accent/40 bg-accent/10 px-3 py-2 text-sm text-accent">
             Referred by a friend — they earn 500,000 cr when you qualify (7-day streak or 200k Pool tokens). You get 50,000 cr on signup + milestones along the way.
           </p>
         )}
-        <p className="mt-1 text-[13px] text-muted">
+        <p className="mt-1 text-sm text-muted">
           One click with Google — new here? The same button creates your account. No passwords.
         </p>
         <div className="mt-5 flex flex-col gap-3">
           {oauthError && (
-            <p role="alert" className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-[13px] text-warn">
+            <p role="alert" className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
               Google sign-in failed: {oauthError}. Try again.
             </p>
           )}

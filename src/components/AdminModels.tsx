@@ -68,26 +68,26 @@ export default function AdminModels() {
   if (error) {
     return (
       <div className="mx-auto max-w-md py-12 text-center">
-        <p className="text-[13px] text-loss" role="alert">{error}</p>
+        <p className="text-sm text-loss" role="alert">{error}</p>
         <Button onClick={() => void load()} className="mt-4">
           Retry
         </Button>
       </div>
     )
   }
-  if (models === null) return <p className="py-12 text-center text-[13px] text-muted">Loading…</p>
+  if (models === null) return <p className="py-12 text-center text-sm text-muted">Loading…</p>
 
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">Model catalog</h1>
-          <p className="mt-1 text-[13px] text-muted">
+          <p className="mt-1 text-sm text-muted">
             Aliases group multiple upstream configs. A request to an alias multiplexes across its configs
             using the routing strategy. latency_weighted prefers the lowest average latency and explores
             round-robin ~15% of the time.
           </p>
-          {cleanupMsg ? <p className="mt-1 text-[13px] text-muted">{cleanupMsg}</p> : null}
+          {cleanupMsg ? <p className="mt-1 text-sm text-muted">{cleanupMsg}</p> : null}
         </div>
         <Button variant="secondary" size="sm" onClick={cleanup} disabled={cleaning}>{cleaning ? 'Cleaning…' : 'Cleanup broken/empty aliases'}</Button>
       </div>
@@ -95,7 +95,7 @@ export default function AdminModels() {
       <NewAliasForm onCreated={load} />
 
       {models.length === 0 && (
-        <Card className="p-8 text-center text-[13px] text-muted">
+        <Card className="p-8 text-center text-sm text-muted">
           No aliases yet. Create one above, then add provider configs to it.
         </Card>
       )}
@@ -220,19 +220,19 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
         <span className={`h-2 w-2 rounded-full ${statusDot[provider.status]}`} aria-hidden="true" />
         <span className="sr-only">{provider.status}</span>
         <div className="flex min-w-[240px] flex-1 flex-col">
-          <span className="text-[13px] font-medium">{provider.label}</span>
-          <span className="num text-[12px] text-muted">
+          <span className="text-sm font-medium">{provider.label}</span>
+          <span className="num text-xs text-muted">
             {provider.base_url} · {provider.upstream_model}
           </span>
         </div>
-        <span className="num text-[12px] text-muted">{provider.key_masked}</span>
+        <span className="num text-xs text-muted">{provider.key_masked}</span>
         {provider.avg_latency_ms != null && (
-          <span className="num text-[12px] text-muted" title="Rolling average stream latency — latency_weighted routing prefers the lowest">
+          <span className="num text-xs text-muted" title="Rolling average stream latency — latency_weighted routing prefers the lowest">
             {provider.avg_latency_ms}ms avg
           </span>
         )}
         {provider.cooldown_base_ms != null && (
-          <span className="num text-[12px] text-muted" title="How long this provider waits before retry after a failure (doubles per consecutive failure)">
+          <span className="num text-xs text-muted" title="How long this provider waits before retry after a failure (doubles per consecutive failure)">
             {formatCooldown(provider.cooldown_base_ms)}
           </span>
         )}
@@ -268,13 +268,13 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
           />
         )}
         {test && (
-          <p className={`w-full text-[12px] ${test.ok ? 'text-gain' : 'text-loss'}`}>
+          <p className={`w-full text-xs ${test.ok ? 'text-gain' : 'text-loss'}`}>
             {test.ok ? `OK via ${test.mode === 'models' ? 'model list probe' : test.mode === 'chat' ? 'chat probe' : test.mode}${test.viaProxy ? ' (via proxy)' : ''}` : 'Failed'} · {test.latencyMs ?? '—'}ms
             {test.error ? ` — ${test.error}` : ''}
           </p>
         )}
         {provider.last_error && (
-          <p className="w-full text-[12px] text-muted">Last error: {provider.last_error}</p>
+          <p className="w-full text-xs text-muted">Last error: {provider.last_error}</p>
         )}
       </div>
     )
@@ -312,12 +312,12 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
 
   const renderMetrics = () => {
     if (metrics === null && metricsError) {
-      return <p className="px-4 py-3 text-[12px] text-loss">{metricsError}</p>
+      return <p className="px-4 py-3 text-xs text-loss">{metricsError}</p>
     }
     if (metrics === null) return null
     return (
       <div className="px-4 py-3 border-t border-line bg-surface-2">
-        <div className="grid grid-cols-4 gap-4 text-[12px] mb-3">
+        <div className="grid grid-cols-4 gap-4 text-xs mb-3">
           <div>
             <span className="block font-medium text-muted">Requests</span>
             <span className="num text-gain">{metrics.totalRequests.toLocaleString('en-US')}</span>
@@ -344,7 +344,7 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
             color="var(--accent)"
           />
           {dailyMetrics?.length === 0 && (
-            <span className="text-[11px] text-muted">No usage in the last 14 days</span>
+            <span className="text-xs text-muted">No usage in the last 14 days</span>
           )}
         </div>
       </div>
@@ -356,31 +356,31 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
       <div className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-3">
         <span className={`h-2 w-2 rounded-full ${model.active ? 'bg-gain' : 'bg-muted'}`} aria-hidden="true" />
         <span className="sr-only">{model.active ? 'Active' : 'Inactive'} alias. </span>
-        <h2 className="text-[15px] font-semibold">{model.label}</h2>
-        <code className="num rounded bg-surface-2 px-1.5 py-0.5 text-[12px] text-muted">{model.slug}</code>
-        <span className="num rounded bg-surface-2 px-1.5 py-0.5 text-[12px] text-muted">
+        <h2 className="text-base font-semibold">{model.label}</h2>
+        <code className="num rounded bg-surface-2 px-1.5 py-0.5 text-xs text-muted">{model.slug}</code>
+        <span className="num rounded bg-surface-2 px-1.5 py-0.5 text-xs text-muted">
           {model.routing.replaceAll('_', ' ')}
         </span>
-        <span className={`num rounded px-1.5 py-0.5 text-[12px] ${model.access_tier === 'free' ? 'bg-surface-2 text-muted' : 'bg-accent/10 text-accent'}`}>
+        <span className={`num rounded px-1.5 py-0.5 text-xs ${model.access_tier === 'free' ? 'bg-surface-2 text-muted' : 'bg-accent/10 text-accent'}`}>
           {model.access_tier === 'free' ? 'free' : `🔒 ${model.access_tier}`}
         </span>
         {model.scoped_only === 1 && (
-          <span className="num rounded bg-accent/10 px-1.5 py-0.5 text-[12px] text-accent" title="Spends this alias's scoped credits only — global balance cannot buy in">
+          <span className="num rounded bg-accent/10 px-1.5 py-0.5 text-xs text-accent" title="Spends this alias's scoped credits only — global balance cannot buy in">
             scoped only
           </span>
         )}
-        <span className="num text-[12px] text-muted">flat {model.flat_rate_credits.toLocaleString('en-US')} cr</span>
+        <span className="num text-xs text-muted">flat {model.flat_rate_credits.toLocaleString('en-US')} cr</span>
         {model.capabilities.map((tag) => (
-          <span key={tag} className="rounded bg-accent/10 px-1.5 py-0.5 text-[11px] text-accent">
+          <span key={tag} className="rounded bg-accent/10 px-1.5 py-0.5 text-xs text-accent">
             {tag}
           </span>
         ))}
-        <span className="ml-auto text-[12px] text-muted">
+        <span className="ml-auto text-xs text-muted">
           {model.providers.length} config{model.providers.length === 1 ? '' : 's'}
         </span>
       </div>
 
-      {model.description && <p className="px-4 pt-3 text-[13px] text-muted">{model.description}</p>}
+      {model.description && <p className="px-4 pt-3 text-sm text-muted">{model.description}</p>}
 
       <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
         <Button variant="secondary" size="sm" onClick={() => setEditingAlias((open) => !open)}>
@@ -395,11 +395,11 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
         >
           {busy(`delete-alias:${model.id}`) ? 'Deleting…' : 'Delete alias'}
         </Button>
-        <span className="num ml-auto text-[12px] text-muted">
+        <span className="num ml-auto text-xs text-muted">
           context {model.context_window?.toLocaleString('en-US') ?? '—'} · max out {model.max_output_tokens.toLocaleString('en-US')}
         </span>
       </div>
-      {actionError && <p role="alert" className="px-4 pt-2 text-[12px] text-loss">{actionError}</p>}
+      {actionError && <p role="alert" className="px-4 pt-2 text-xs text-loss">{actionError}</p>}
       {editingAlias && (
         <EditAliasForm
           model={model}
@@ -416,7 +416,7 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
       <div className="flex flex-col divide-y divide-line">
         {model.providers.map((provider) => renderProviderRow(provider))}
         {model.providers.length === 0 && (
-          <p className="px-4 py-4 text-[13px] text-muted">No provider configs yet — add one below.</p>
+          <p className="px-4 py-4 text-sm text-muted">No provider configs yet — add one below.</p>
         )}
       </div>
 
@@ -549,22 +549,22 @@ function EditAliasForm({
           <option value="enterprise">enterprise — locked</option>
         </select>
       </Field>
-      <p className="text-[12px] text-muted sm:col-span-2">
+      <p className="text-xs text-muted sm:col-span-2">
         Access tier gates <em>who</em> may call; scoped-only gates <em>what pays</em> (scoped promo
         credits only — combine both to lock premium capacity like luna).
       </p>
-      <label className="flex items-center gap-2 text-[13px]">
+      <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={scopedOnly} onChange={(e) => setScopedOnly(e.target.checked)} />
         Scoped-only payment (global credits can't buy this alias)
       </label>
       <Field label="Sort order">
         <input className="input" value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} inputMode="numeric" />
       </Field>
-      <label className="flex items-center gap-2 text-[13px]">
+      <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
         Active in The Pool
       </label>
-      {error && <p className="text-[13px] text-loss sm:col-span-2">{error}</p>}
+      {error && <p className="text-sm text-loss sm:col-span-2">{error}</p>}
       <div className="flex gap-2 sm:col-span-2">
         <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save alias'}</Button>
         <Button type="button" variant="ghost" onClick={onDone}>Cancel</Button>
@@ -620,10 +620,10 @@ function EditProviderForm({
 
   return (
     <form className="grid w-full gap-3 rounded-lg border border-line bg-surface-2 p-4 sm:grid-cols-2" onSubmit={submit}>
-      <p className="text-[13px] font-medium sm:col-span-2">
+      <p className="text-sm font-medium sm:col-span-2">
         Config: {provider.label} → {provider.upstream_model}
       </p>
-      <p className="num text-[12px] text-muted sm:col-span-2">
+      <p className="num text-xs text-muted sm:col-span-2">
         {provider.base_url} · {provider.key_masked ?? (provider.key_count === 0 ? 'no keys' : `${provider.key_count} keys`)} — endpoint and keys live on the shared provider; edit them on the Upstream providers tab.
       </p>
       <Field label="Upstream model (must be registered for this provider)">
@@ -632,11 +632,11 @@ function EditProviderForm({
       <Field label="Priority (failover order, lower first — ignored by other routing modes)">
         <input className="input num" value={priority} onChange={(e) => setPriority(e.target.value)} inputMode="numeric" />
       </Field>
-      <label className="flex items-center gap-2 text-[13px]">
+      <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
         Active config
       </label>
-      {error && <p className="text-[13px] text-loss sm:col-span-2">{error}</p>}
+      {error && <p className="text-sm text-loss sm:col-span-2">{error}</p>}
       <div className="flex gap-2 sm:col-span-2">
         <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save config'}</Button>
         <Button type="button" variant="ghost" onClick={onDone}>Cancel</Button>
@@ -728,7 +728,7 @@ function NewAliasForm({ onCreated }: { onCreated: () => void }) {
         <Button onClick={() => { setCreatedMsg(''); setOpen(true) }} className="self-start">
           + New model alias
         </Button>
-        {createdMsg && <p role="status" className="text-[13px] text-gain">{createdMsg}</p>}
+        {createdMsg && <p role="status" className="text-sm text-gain">{createdMsg}</p>}
       </div>
     )
   }
@@ -772,11 +772,11 @@ function NewAliasForm({ onCreated }: { onCreated: () => void }) {
             <option value="enterprise">enterprise — locked</option>
           </select>
         </Field>
-        <label className="flex items-center gap-2 text-[13px]">
+        <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={scopedOnly} onChange={(e) => setScopedOnly(e.target.checked)} />
           Scoped-only payment (global credits can't buy this alias)
         </label>
-        {error && <p className="text-[13px] text-loss sm:col-span-2">{error}</p>}
+        {error && <p className="text-sm text-loss sm:col-span-2">{error}</p>}
         <div className="flex gap-2 sm:col-span-2">
           <Button type="submit" disabled={busy}>{busy ? 'Creating…' : 'Create alias'}</Button>
           <Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
@@ -924,12 +924,12 @@ function AddProviderForm({
           <input className="input num" value={priority} onChange={(e) => setPriority(e.target.value)} inputMode="numeric" />
         </Field>
         {providers.length === 0 && loaded && (
-          <p className="text-[13px] text-muted sm:col-span-2">
+          <p className="text-sm text-muted sm:col-span-2">
             No upstream providers exist yet — <Link to="/admin?tab=providers" className="text-accent hover:underline">create one on the Upstream providers tab</Link> first,
             then map it here. One provider can serve any number of aliases with different upstream models.
           </p>
         )}
-        {error && <p className="text-[13px] text-loss sm:col-span-2">{error}</p>}
+        {error && <p className="text-sm text-loss sm:col-span-2">{error}</p>}
         <div className="flex gap-2 sm:col-span-2">
           <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Add config'}</Button>
           <Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
@@ -942,7 +942,7 @@ function AddProviderForm({
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="flex flex-col gap-1.5">
-      <span className="text-[12px] font-medium uppercase tracking-wide text-muted">{label}</span>
+      <span className="text-xs font-medium uppercase tracking-wide text-muted">{label}</span>
       {children}
     </label>
   )

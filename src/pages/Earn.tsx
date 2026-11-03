@@ -187,13 +187,13 @@ export default function Earn() {
     setExpandedTile(expanded ? tileId : null)
   }
 
-  if (loading) return <p className="py-12 text-center text-[13px] text-muted">Loading…</p>
+  if (loading) return <p className="py-12 text-center text-sm text-muted">Loading…</p>
 
   if (!user) {
     return (
       <Card className="mx-auto max-w-md p-8 text-center">
         <h1 className="text-lg font-semibold">Earn credits</h1>
-        <p className="mt-2 text-[13px] text-muted">
+        <p className="mt-2 text-sm text-muted">
           Credits spend 1:1 on tokens in The Pool. Sign in to check in daily, invite friends, and
           redeem promo codes.
         </p>
@@ -214,7 +214,7 @@ export default function Earn() {
 
   // Arcade tile content
   const arcadeTileContent = state && gamesStatus ? (
-    <div className="flex flex-col gap-3 text-[12px]">
+    <div className="flex flex-col gap-3 text-xs">
       <div className="flex items-center justify-between">
         <span className="text-muted">Typing</span>
         <span className="num text-content">
@@ -224,7 +224,7 @@ export default function Earn() {
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
         <div className="h-full bg-accent" style={{ width: `${(arcadeStats.typingPlaysUsed / (gamesStatus.games.typing?.plays_cap ?? 3)) * 100}%` }} />
       </div>
-      <p className="text-[11px] text-muted">80 WPM: 10k | 50 WPM: 5k | Any: 2.5k (3×/day)</p>
+      <p className="text-xs text-muted">80 WPM: 10k | 50 WPM: 5k | Any: 2.5k (3×/day)</p>
       <div className="flex items-center justify-between">
         <span className="text-muted">Memory</span>
         <span className="num text-content">
@@ -234,23 +234,23 @@ export default function Earn() {
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
         <div className="h-full bg-accent" style={{ width: `${(arcadeStats.memoryPlaysUsed / (gamesStatus.games.memory?.plays_cap ?? 2)) * 100}%` }} />
       </div>
-      <p className="text-[11px] text-muted">≤8 moves: 12k | ≤12 moves: 8k | Any: 4k (2×/day)</p>
-      <p className="text-[11px] text-muted">
+      <p className="text-xs text-muted">≤8 moves: 12k | ≤12 moves: 8k | Any: 4k (2×/day)</p>
+      <p className="text-xs text-muted">
         Clear bonus: +{gamesStatus.clear.reward.toLocaleString()} cr · {gamesStatus.clear.done ? 'Claimed' : gamesStatus.clear.ready ? 'Ready to claim' : `${gamesStatus.clear.needs.length} game${gamesStatus.clear.needs.length !== 1 ? 's' : ''} left`}
       </p>
       {gamesStatus.level.pending && (
-        <p className="text-[11px] text-gain">Level {gamesStatus.level.pending.level} bonus: +{gamesStatus.level.pending.reward.toLocaleString()} cr — claim in Arcade</p>
+        <p className="text-xs text-gain">Level {gamesStatus.level.pending.level} bonus: +{gamesStatus.level.pending.reward.toLocaleString()} cr — claim in Arcade</p>
       )}
       {gamesStatus.level.next_xp !== null && (
         <div className="space-y-1.5 pt-2 border-t border-line">
-          <div className="flex items-center justify-between text-[11px]">
+          <div className="flex items-center justify-between text-xs">
             <span className="text-muted">Level {gamesStatus.level.level} progress</span>
             <span className="num text-content">{gamesStatus.level.xp.toLocaleString()} / {gamesStatus.level.next_xp.toLocaleString()} XP</span>
           </div>
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
             <div className="h-full bg-accent" style={{ width: `${(gamesStatus.level.xp / gamesStatus.level.next_xp) * 100}%` }} />
           </div>
-          <p className="text-[10px] text-gain">
+          <p className="text-2xs text-gain">
             Next level ({gamesStatus.level.level + 1}): +{(gamesStatus.level.level + 1) * 3000} cr bonus
           </p>
         </div>
@@ -260,10 +260,10 @@ export default function Earn() {
 
   // Referral tile content
   const referralTileContent = state ? (
-    <div className="flex flex-col gap-3 text-[12px]">
+    <div className="flex flex-col gap-3 text-xs">
       <div className="flex items-center gap-2">
         <label className="sr-only" htmlFor="invite-link-tile">Your invite link</label>
-        <code id="invite-link-tile" className="num min-w-0 flex-1 break-all rounded-lg border border-line bg-surface-2 px-2 py-1.5 text-[11px]">
+        <code id="invite-link-tile" className="num min-w-0 flex-1 break-all rounded-lg border border-line bg-surface-2 px-2 py-1.5 text-xs">
           {state.referral.link}
         </code>
         <Button size="sm" variant="secondary" onClick={async (e) => {
@@ -292,14 +292,14 @@ export default function Earn() {
       </p>
       <InviteComposer link={state.referral.link} />
       {state.referral.rows.length === 0 ? (
-        <div className="space-y-2 text-[11px] text-muted">
+        <div className="space-y-2 text-xs text-muted">
           <p>Friends qualify at <strong>7-day streak</strong> or <strong>200k Pool tokens</strong> used.</p>
           <p className="text-accent">Share your link above → they get 50k on signup, you both earn 500k when they qualify.</p>
         </div>
       ) : (
         <div className="flex flex-col gap-2 max-h-40 overflow-auto">
           {state.referral.rows.slice(0, 3).map((row, index) => (
-            <div key={`${row.username}-${index}`} className="flex flex-wrap items-center gap-2 py-1.5 text-[11px]">
+            <div key={`${row.username}-${index}`} className="flex flex-wrap items-center gap-2 py-1.5 text-xs">
               <span className="font-medium">{row.username}</span>
               {row.status === 'paid' ? (
                 <span className="num text-gain"><span aria-hidden="true">✓</span> Paid</span>
@@ -323,11 +323,11 @@ export default function Earn() {
 
   // Tasks tile content
   const tasksTileContent = state ? (
-    <div className="flex flex-col gap-2 text-[12px] max-h-60 overflow-auto">
+    <div className="flex flex-col gap-2 text-xs max-h-60 overflow-auto">
       {state.tasks.length === 0 ? (
         <div className="space-y-1 text-muted">
           <p>All caught up! New tasks appear when we launch features.</p>
-          <p className="text-[11px]"><a href="https://x.com/freellm" target="_blank" rel="noopener" className="text-accent hover:underline">Follow @freellm</a> for updates.</p>
+          <p className="text-xs"><a href="https://x.com/freellm" target="_blank" rel="noopener" className="text-accent hover:underline">Follow @freellm</a> for updates.</p>
         </div>
       ) : (
         [...state.tasks].sort((a, b) => Number(a.completed) - Number(b.completed)).map((task) => (
@@ -335,10 +335,10 @@ export default function Earn() {
             <span className={task.completed ? 'text-gain' : 'text-muted'} aria-hidden="true">
               {task.completed ? '✅' : '○'}
             </span>
-            <span className={`text-[13px] ${task.completed ? 'line-through text-muted' : 'text-content'}`}>
+            <span className={`text-sm ${task.completed ? 'line-through text-muted' : 'text-content'}`}>
               {task.title}
             </span>
-            <span className="num ml-auto shrink-0 text-[12px]">{task.completed ? 'Done' : `+${task.reward.toLocaleString()}`}</span>
+            <span className="num ml-auto shrink-0 text-xs">{task.completed ? 'Done' : `+${task.reward.toLocaleString()}`}</span>
             {!task.completed && (
               <Button size="sm" variant={openedTask === task.id ? 'primary' : 'secondary'} onClick={(e) => {
                 e.stopPropagation()
@@ -393,14 +393,14 @@ export default function Earn() {
       <div className="flex flex-col gap-4">
         <div>
           <h1 className="text-xl font-semibold">Earn credits</h1>
-          <p className="mt-1 text-[13px] text-muted">
+          <p className="mt-1 text-sm text-muted">
             Credits spend 1:1 on tokens in The Pool. Your own key is always free.
           </p>
-          <p className="mt-1 text-[12px] text-accent">{creditsToMessages(50000)} per daily check-in</p>
+          <p className="mt-1 text-xs text-accent">{creditsToMessages(50000)} per daily check-in</p>
         </div>
 
       {banner && (
-        <p role={banner.kind === 'err' ? 'alert' : 'status'} className={`flex flex-wrap items-center gap-2 text-[13px] ${banner.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
+        <p role={banner.kind === 'err' ? 'alert' : 'status'} className={`flex flex-wrap items-center gap-2 text-sm ${banner.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
           <span className="flex-1">{banner.kind === 'ok' ? '✓ ' : '⚠ '}{banner.text}</span>
           <button onClick={() => setBanner(null)} className="min-h-[44px] px-2 text-muted hover:text-content" aria-label="Dismiss message">
             Dismiss
@@ -413,8 +413,8 @@ export default function Earn() {
         <Card className="border-warn/40 p-4">
           <div className="flex flex-wrap items-start gap-3">
             <div className="flex-1 min-w-0">
-              <p className="text-[13px] text-warn font-medium">Verify {user.email} to unlock earning</p>
-              <ul className="mt-2 space-y-1 text-[12px] text-muted">
+              <p className="text-sm text-warn font-medium">Verify {user.email} to unlock earning</p>
+              <ul className="mt-2 space-y-1 text-xs text-muted">
                 <li>✅ Daily check-in: +50,000 cr/day (streak bonuses at day 7/30)</li>
                 <li>✅ Arcade games: up to 61,000 cr/day for skill</li>
                 <li>✅ Referrals: +500,000 cr per qualified friend</li>
@@ -436,7 +436,7 @@ export default function Earn() {
             </Button>
           </div>
           {verifyLink && (
-            <p className="mt-2 text-[12px] text-muted">
+            <p className="mt-2 text-xs text-muted">
               dev link: <a href={verifyLink} className="text-accent hover:underline">{verifyLink}</a>
             </p>
           )}
@@ -466,11 +466,11 @@ export default function Earn() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
             <div className="flex-1">
               <h3 className="font-semibold text-cyan">Redeem a promo code</h3>
-              <p className="text-[13px] text-muted">Boost your balance before checking in — codes from admins or friends.</p>
+              <p className="text-sm text-muted">Boost your balance before checking in — codes from admins or friends.</p>
             </div>
             <form className="flex flex-col gap-2 sm:flex-row sm:items-end w-full sm:w-auto" onSubmit={redeem}>
               <label className="flex flex-1 flex-col gap-1.5">
-                <span className="text-[12px] font-medium uppercase tracking-wide text-muted">Code — letters and dashes</span>
+                <span className="text-xs font-medium uppercase tracking-wide text-muted">Code — letters and dashes</span>
                 <input
                   className="input num"
                   value={code}
@@ -484,7 +484,7 @@ export default function Earn() {
               </Button>
             </form>
             {redeemStatus && (
-              <p role={redeemStatus.kind === 'err' ? 'alert' : 'status'} className={`text-[13px] ${redeemStatus.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
+              <p role={redeemStatus.kind === 'err' ? 'alert' : 'status'} className={`text-sm ${redeemStatus.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
                 {redeemStatus.message}
               </p>
             )}
@@ -650,15 +650,15 @@ export default function Earn() {
       <details id="promo-section" className="card group">
         <summary className="flex items-center justify-between p-4 cursor-pointer list-none">
           <span className="font-medium">More</span>
-          <span className="text-[12px] text-muted">Promo · Redemptions · Rules</span>
+          <span className="text-xs text-muted">Promo · Redemptions · Rules</span>
         </summary>
         <div className="px-4 pb-4 pt-2 border-t border-line animate-slide-down space-y-6">
           {/* Promo redemption */}
           <div>
-            <h3 className="text-[13px] font-semibold tracking-wide text-content uppercase mb-3">Redeem a promo code</h3>
+            <h3 className="text-sm font-semibold tracking-wide text-content uppercase mb-3">Redeem a promo code</h3>
             <form className="flex flex-col gap-3 sm:flex-row sm:items-end" onSubmit={redeem}>
               <label className="flex flex-1 flex-col gap-1.5">
-                <span className="text-[12px] font-medium uppercase tracking-wide text-muted">Code — from an admin or friend, letters and dashes</span>
+                <span className="text-xs font-medium uppercase tracking-wide text-muted">Code — from an admin or friend, letters and dashes</span>
                 <input
                   className="input num"
                   value={code}
@@ -672,7 +672,7 @@ export default function Earn() {
               </Button>
             </form>
             {redeemStatus && (
-              <p role={redeemStatus.kind === 'err' ? 'alert' : 'status'} className={`pt-2 text-[13px] ${redeemStatus.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
+              <p role={redeemStatus.kind === 'err' ? 'alert' : 'status'} className={`pt-2 text-sm ${redeemStatus.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
                 {redeemStatus.message}
               </p>
             )}
@@ -680,17 +680,17 @@ export default function Earn() {
 
           {/* My redemptions */}
           <div>
-            <h3 className="text-[13px] font-semibold tracking-wide text-content uppercase mb-3">Your redemptions</h3>
+            <h3 className="text-sm font-semibold tracking-wide text-content uppercase mb-3">Your redemptions</h3>
             {redemptions.length === 0 ? (
-              <p className="p-4 text-[13px] text-muted">None yet — redeemed promo codes will show here with their date.</p>
+              <p className="p-4 text-sm text-muted">None yet — redeemed promo codes will show here with their date.</p>
             ) : (
               <div className="flex flex-col divide-y divide-line">
                 {redemptions.map((r, index) => (
                   <div key={`${r.code}-${index}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5">
-                    <code className="num min-w-0 break-all text-[12px] text-muted">{r.code}</code>
-                    <span className="num ml-auto shrink-0 text-[13px] text-gain">+{r.credits.toLocaleString('en-US')}</span>
-                    {r.model_label && <span className="min-w-0 truncate text-[12px] text-muted">{r.model_label} only</span>}
-                    <span className="num shrink-0 text-[12px] text-muted" title={new Date(r.created_at).toLocaleString()}>
+                    <code className="num min-w-0 break-all text-xs text-muted">{r.code}</code>
+                    <span className="num ml-auto shrink-0 text-sm text-gain">+{r.credits.toLocaleString('en-US')}</span>
+                    {r.model_label && <span className="min-w-0 truncate text-xs text-muted">{r.model_label} only</span>}
+                    <span className="num shrink-0 text-xs text-muted" title={new Date(r.created_at).toLocaleString()}>
                       {new Date(r.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
                     </span>
                   </div>
@@ -700,7 +700,7 @@ export default function Earn() {
           </div>
 
           {/* Rules reference */}
-          <div className="text-[12px] text-muted space-y-2">
+          <div className="text-xs text-muted space-y-2">
             <p><strong>Check-in:</strong> +50,000 base · day 7 +500,000 · day 30 +2,000,000</p>
             <p><strong>Arcade:</strong> Typing 3×/day (80/50/0 WPM tiers) · Memory 2×/day (≤8/≤12/any moves)</p>
             <p><strong>Clear bonus:</strong> +7,000 cr for finishing both games · once daily</p>

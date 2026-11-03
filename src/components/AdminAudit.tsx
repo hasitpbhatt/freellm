@@ -35,17 +35,17 @@ export default function AdminAudit() {
     void load()
   }, [load])
 
-  if (error) return <p className="text-[13px] text-loss">{error}</p>
-  if (logs === null) return <p className="py-8 text-center text-[13px] text-muted" role="status">Loading audit log…</p>
+  if (error) return <p className="text-sm text-loss">{error}</p>
+  if (logs === null) return <p className="py-8 text-center text-sm text-muted" role="status">Loading audit log…</p>
 
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h2 className="text-[15px] font-semibold text-content">Audit log</h2>
-        <p className="mt-1 text-[13px] text-muted">Recent admin actions.</p>
+        <h2 className="text-base font-semibold text-content">Audit log</h2>
+        <p className="mt-1 text-sm text-muted">Recent admin actions.</p>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[800px] text-left text-[13px]">
+        <table className="w-full min-w-[800px] text-left text-sm">
           <thead>
             <tr className="border-b border-line text-muted">
               <th className="px-3 py-2 font-medium">Time</th>
@@ -65,7 +65,7 @@ export default function AdminAudit() {
                 <td className="px-3 py-2 text-content">{l.action}</td>
                 <td className="px-3 py-2 text-muted">{l.actor_id || '—'}</td>
                 <td className="px-3 py-2 text-muted">{l.target_type ? `${l.target_type}:${l.target_id || ''}` : '—'}</td>
-                <td className="px-3 py-2 font-mono text-[11px] text-muted">{l.metadata_json ? l.metadata_json.slice(0, 120) : '—'}</td>
+                <td className="px-3 py-2 font-mono text-xs text-muted">{l.metadata_json ? l.metadata_json.slice(0, 120) : '—'}</td>
               </tr>
             ))}
           </tbody>

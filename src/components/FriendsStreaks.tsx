@@ -63,7 +63,7 @@ export default function FriendsStreaks() {
           <span aria-hidden="true">👥</span>
           Friends' Streaks
         </h3>
-        <span className="text-[11px] text-muted">Your streak: {data.your_streak} 🔥</span>
+        <span className="text-xs text-muted">Your streak: {data.your_streak} 🔥</span>
       </div>
 
       <div className="space-y-2" role="list" aria-label="Friends' streaks">
@@ -82,7 +82,7 @@ export default function FriendsStreaks() {
               {friend.avatar_url ? (
                 <img src={friend.avatar_url} alt="" className="w-7 h-7 rounded-full" />
               ) : (
-                <div className="w-7 h-7 rounded-full bg-surface-3 flex items-center justify-center text-[12px]" aria-hidden="true">
+                <div className="w-7 h-7 rounded-full bg-surface-3 flex items-center justify-center text-xs" aria-hidden="true">
                   {friend.username[0]?.toUpperCase() ?? '?'}
                 </div>
               )}
@@ -98,9 +98,9 @@ export default function FriendsStreaks() {
               <span className={`num font-bold ${friend.streak > 0 ? 'text-gain' : 'text-muted'}`}>
                 {friend.streak > 0 ? friend.streak : '—'}
               </span>
-              <span className="text-[11px] text-muted">🔥</span>
+              <span className="text-xs text-muted">🔥</span>
               {friend.last_checkin && (
-                <span className="text-[10px] text-muted">
+                <span className="text-2xs text-muted">
                   {new Date(friend.last_checkin).toLocaleDateString()}
                 </span>
               )}
@@ -109,7 +109,7 @@ export default function FriendsStreaks() {
         ))}
       </div>
 
-      <p className="text-center text-[11px] text-muted">
+      <p className="text-center text-xs text-muted">
         Cheer on your friends! Their streak progress helps you both earn referral rewards.
       </p>
     </Card>

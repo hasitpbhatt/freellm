@@ -100,7 +100,7 @@ export default function EarnOnboarding({ onComplete, onSkip }: { onComplete: () 
               {step.id === 'referral' && '👥'}
             </div>
             <h3 className="text-xl font-semibold">{step.title}</h3>
-            <p className="text-[13px] text-muted">{step.description}</p>
+            <p className="text-sm text-muted">{step.description}</p>
           </div>
 
           <div className="flex flex-col gap-3">
@@ -118,7 +118,7 @@ export default function EarnOnboarding({ onComplete, onSkip }: { onComplete: () 
             )}
           </div>
 
-          <p className="text-center text-[11px] text-muted">
+          <p className="text-center text-xs text-muted">
             {stepIndex + 1} of {steps.length} • <button onClick={handleSkip} className="text-accent hover:underline">Skip</button>
           </p>
         </div>

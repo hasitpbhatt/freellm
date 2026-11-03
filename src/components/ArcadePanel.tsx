@@ -108,7 +108,7 @@ export default function ArcadePanel({ onSessionStats }: ArcadePanelProps) {
       {level?.pending && (
         <Card className="border-gain/30 bg-gain/5">
           <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center p-4">
-            <p className="text-[13px] text-gain">Level {level.pending.level} earned — claim it.</p>
+            <p className="text-sm text-gain">Level {level.pending.level} earned — claim it.</p>
             <Button disabled={claimingLevel} onClick={() => void claimLevel(level.pending!.level)} className="w-full sm:w-auto">
               {claimingLevel ? 'Claiming…' : `Claim +${level.pending.reward} cr`}
             </Button>
@@ -120,7 +120,7 @@ export default function ArcadePanel({ onSessionStats }: ArcadePanelProps) {
       {clear?.ready && !clear.done && (
         <Card className="border-gain/30 bg-gain/5">
           <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center p-4">
-            <p className="text-[13px] text-gain">All games finished today — claim the clear bonus.</p>
+            <p className="text-sm text-gain">All games finished today — claim the clear bonus.</p>
             <Button disabled={claiming} onClick={() => void claimClear()} className="w-full sm:w-auto">
               {claiming ? 'Claiming…' : `Claim +${clear.reward} cr`}
             </Button>
@@ -130,7 +130,7 @@ export default function ArcadePanel({ onSessionStats }: ArcadePanelProps) {
 
       {/* Message toast */}
       {message && (
-        <p role={message.kind === 'err' ? 'alert' : 'status'} className={`text-[13px] ${message.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
+        <p role={message.kind === 'err' ? 'alert' : 'status'} className={`text-sm ${message.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
           {message.text}
         </p>
       )}

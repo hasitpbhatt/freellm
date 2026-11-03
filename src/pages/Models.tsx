@@ -47,7 +47,7 @@ export default function Models() {
   if (error) {
     return (
       <div className="mx-auto max-w-md py-12 text-center">
-        <p className="text-[13px] text-loss" role="alert">{error}</p>
+        <p className="text-sm text-loss" role="alert">{error}</p>
         <button onClick={load} className="btn-secondary mt-4">
           Retry
         </button>
@@ -70,7 +70,7 @@ export default function Models() {
     <div className="flex flex-col gap-6">
       <div>
         <h1 className="text-xl font-semibold">The Pool</h1>
-        <p className="mt-1 text-[13px] text-muted">
+        <p className="mt-1 text-sm text-muted">
           Community-funded models. Chat costs credits — 1 credit = 1 token, billed from the
           provider's reported usage (flat rate only when usage is unreported). 🔒 badges need a
           higher tier; scoped-only models spend their own promo credits, never global balance.
@@ -90,7 +90,7 @@ export default function Models() {
             <button
               type="button"
               onClick={() => setSearch('')}
-              className="absolute left-2 top-1/2 -translate-y-1/2 text-[11px] text-muted hover:text-content"
+              className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted hover:text-content"
               aria-label="Clear search"
             >
               ✕
@@ -109,29 +109,29 @@ export default function Models() {
           <Card key={model.slug} className="flex flex-col gap-2 p-4">
             <div className="flex items-center gap-2">
               <span className={`h-2 w-2 shrink-0 rounded-full ${statusDot[model.status]}`} aria-hidden="true" />
-              <h2 className="min-w-0 flex-1 truncate text-[15px] font-semibold" title={model.label}>{model.label}</h2>
+              <h2 className="min-w-0 flex-1 truncate text-base font-semibold" title={model.label}>{model.label}</h2>
               {model.access_tier !== 'free' && (
-                <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[11px] font-medium text-accent" title={`Requires ${model.access_tier} tier`}>
+                <span className="rounded bg-accent/10 px-1.5 py-0.5 text-xs font-medium text-accent" title={`Requires ${model.access_tier} tier`}>
                   <span aria-hidden="true">🔒</span> {model.access_tier}
                   <span className="sr-only">(requires {model.access_tier} tier)</span>
                 </span>
               )}
               {model.scoped_only === 1 && (
-                <span className="rounded bg-warn/10 px-1.5 py-0.5 text-[11px] font-medium text-warn" title="Spends this model's scoped promo credits only — global balance cannot buy in">
+                <span className="rounded bg-warn/10 px-1.5 py-0.5 text-xs font-medium text-warn" title="Spends this model's scoped promo credits only — global balance cannot buy in">
                   scoped only
                 </span>
               )}
-              <span className="ml-auto text-[12px] capitalize text-muted">{model.status}</span>
+              <span className="ml-auto text-xs capitalize text-muted">{model.status}</span>
             </div>
-            {model.description && <p className="text-[13px] text-muted">{model.description}</p>}
+            {model.description && <p className="text-sm text-muted">{model.description}</p>}
             <div className="flex flex-wrap gap-1">
               {model.capabilities.map((tag) => (
-                <span key={tag} className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted">
+                <span key={tag} className="rounded bg-surface-2 px-1.5 py-0.5 text-xs text-muted">
                   {tag}
                 </span>
               ))}
             </div>
-            <dl className="num mt-1 grid grid-cols-1 gap-y-1 text-[12px] text-muted min-[380px]:grid-cols-2">
+            <dl className="num mt-1 grid grid-cols-1 gap-y-1 text-xs text-muted min-[380px]:grid-cols-2">
               <dt>Billing</dt>
               <dd className="text-left text-content min-[380px]:text-right">
                 Usage-based · 1 cr = 1 token
@@ -149,11 +149,11 @@ export default function Models() {
               <dt>Max output (tokens)</dt>
               <dd className="text-left text-content min-[380px]:text-right">{model.max_output_tokens.toLocaleString('en-US')}</dd>
             </dl>
-            <p className="num min-w-0 truncate text-[12px] text-muted" title={`Slug: ${model.slug}`}>
+            <p className="num min-w-0 truncate text-xs text-muted" title={`Slug: ${model.slug}`}>
               slug: <span className="text-accent">{model.slug}</span>
             </p>
             {isLocked(model) ? (
-              <p className="mt-2 text-[12px] text-muted">
+              <p className="mt-2 text-xs text-muted">
                 Requires {model.access_tier} tier — upgrade not available yet.
               </p>
             ) : (

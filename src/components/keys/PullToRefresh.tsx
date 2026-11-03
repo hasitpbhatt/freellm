@@ -75,7 +75,7 @@ export function PullToRefresh({ onRefresh, children }: PullToRefreshProps) {
         style={{ height: refreshing ? THRESHOLD : pull }}
         aria-hidden={pull === 0 && !refreshing}
       >
-        <div className="flex items-center gap-2 pt-2 text-[12px] text-muted">
+        <div className="flex items-center gap-2 pt-2 text-xs text-muted">
           {refreshing ? (
             <>
               <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-line border-t-accent" />

@@ -4,7 +4,7 @@ export default function Placeholder({ title, milestone }: { title: string; miles
   return (
     <Card>
       <CardHeader title={title} />
-      <div className="p-6 text-[13px] text-muted">
+      <div className="p-6 text-sm text-muted">
         Wireframed and specced. Implementation lands in <span className="text-content">{milestone}</span>.
       </div>
     </Card>

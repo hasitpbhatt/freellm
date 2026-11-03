@@ -27,7 +27,7 @@ import {
   validateCapabilities,
 } from '../lib/validate'
 import type { Bindings, ModelProviderRow, ModelRow, UpstreamKeyRow, UpstreamProviderRow, Variables } from '../lib/types'
-import { createProxy, deleteProxy, listProxies, revealProxyPassword, testProxy, updateProxy } from '../lib/proxy'
+import { createProxy, deleteProxy, listProxies, pickProxy, revealProxyPassword, testProxy, updateProxy } from '../lib/proxy'
 import { readModelMetrics } from '../lib/metering'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()

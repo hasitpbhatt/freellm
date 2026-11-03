@@ -65,12 +65,12 @@ export default function EarnTile({
                 <h3 className="font-semibold text-content truncate">{title}</h3>
                 <StatusBadge status={status}>{statusLabels[status]}</StatusBadge>
               </div>
-              <p className="num text-[12px] text-muted mt-0.5">{subtitle}</p>
+              <p className="num text-xs text-muted mt-0.5">{subtitle}</p>
             </div>
           </div>
 
           <div className="flex items-center justify-between pt-2 border-t border-line">
-            <span className="num text-[13px] text-gain">{reward}</span>
+            <span className="num text-sm text-gain">{reward}</span>
             <Button size="sm" variant="secondary" className="shrink-0" onClick={(e) => { e.stopPropagation(); onAction(); }}>
               {actionLabel}
             </Button>

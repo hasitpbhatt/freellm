@@ -146,13 +146,13 @@ export default function MemoryGame() {
       <CardHeader
         title="Memory match"
         action={
-          <span className="num text-[12px] text-muted" role="status">
+          <span className="num text-xs text-muted" role="status">
             {playsLeft === null ? '…' : `${playsLeft}/2 paid plays left today`}
           </span>
         }
       />
       <div className="flex flex-col gap-3 p-4">
-        <p className="text-[13px] text-muted">
+        <p className="text-sm text-muted">
           Six pairs, dealt fresh. Fewest pair-attempts pays best: 8 or fewer pays 12,000 cr, 12 or fewer
           pays 8,000 cr, any clear pays 4,000 cr. A perfect board is 6.
         </p>
@@ -185,7 +185,7 @@ export default function MemoryGame() {
                 )
               })}
             </div>
-            <p className="num text-[12px] text-muted" role="status">
+            <p className="num text-xs text-muted" role="status">
               pair-attempts {moves} · {matched.length}/{CARDS} cards matched
               {moves >= MAX_MOVES ? ' — attempt limit reached, start a fresh board' : ''}
             </p>
@@ -193,7 +193,7 @@ export default function MemoryGame() {
         )}
         {phase.name === 'done' && (
           <div className="flex flex-col items-start gap-2">
-            <p role="status" className={`text-[13px] ${phase.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
+            <p role="status" className={`text-sm ${phase.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
               {phase.text}
             </p>
             <Button variant="secondary" onClick={() => void start()}>

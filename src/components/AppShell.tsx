@@ -20,7 +20,7 @@ export default function AppShell() {
 
   return (
     <div className="min-h-screen bg-bg">
-      <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-2 focus:z-20 focus:rounded-md focus:bg-surface-2 focus:px-3 focus:py-1.5 focus:text-[13px]">
+      <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-2 focus:z-20 focus:rounded-md focus:bg-surface-2 focus:px-3 focus:py-1.5 focus:text-sm">
         Skip to content
       </a>
       <header className="sticky top-0 z-30 border-b border-line bg-bg/90 backdrop-blur">
@@ -29,7 +29,7 @@ export default function AppShell() {
             <span className="text-accent" aria-hidden="true">◈</span> freellm
           </Link>
           {/* Desktop: horizontal top nav. Mobile: the hamburger + bottom tabs below. */}
-          <nav aria-label="Primary" className="-mx-1 hidden max-w-full flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap px-1 text-[13px] [scrollbar-width:thin] md:flex">
+          <nav aria-label="Primary" className="-mx-1 hidden max-w-full flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap px-1 text-sm [scrollbar-width:thin] md:flex">
             {navItems.map((item) => (
               <NavLink
                 key={item.to}
@@ -62,21 +62,21 @@ export default function AppShell() {
           </nav>
           <div className="ml-auto flex min-h-[44px] items-center gap-3">
             {loading ? (
-              <span className="text-[13px] text-muted" role="status">Checking sign-in…</span>
+              <span className="text-sm text-muted" role="status">Checking sign-in…</span>
             ) : user ? (
               <>
                 <Link
                   to="/earn"
                   title="Credit balance — earn more on the Earn page"
-                  className="flex min-h-[44px] items-center gap-1.5 text-[13px] hover:text-content"
+                  className="flex min-h-[44px] items-center gap-1.5 text-sm hover:text-content"
                 >
                   <span className="text-accent" aria-hidden="true">◇</span>
                   <Credits value={user.balance_credits} /> <span className="hidden text-muted sm:inline">credits</span>
                 </Link>
-                <span className="hidden text-[13px] text-muted lg:inline">{user.username}</span>
+                <span className="hidden text-sm text-muted lg:inline">{user.username}</span>
                 <button
                   onClick={() => void logout()}
-                  className="hidden min-h-[44px] px-1 text-[13px] text-muted hover:text-content md:block"
+                  className="hidden min-h-[44px] px-1 text-sm text-muted hover:text-content md:block"
                 >
                   Sign out
                 </button>

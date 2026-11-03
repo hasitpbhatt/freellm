@@ -61,20 +61,20 @@ export default function AdminPromos() {
   if (error) {
     return (
       <div className="mx-auto max-w-md py-12 text-center">
-        <p className="text-[13px] text-loss" role="alert">{error}</p>
+        <p className="text-sm text-loss" role="alert">{error}</p>
         <Button onClick={() => void load()} className="mt-4">
           Retry
         </Button>
       </div>
     )
   }
-  if (promos === null) return <p className="py-12 text-center text-[13px] text-muted">Loading…</p>
+  if (promos === null) return <p className="py-12 text-center text-sm text-muted">Loading…</p>
 
   return (
     <div className="flex flex-col gap-6">
       <div>
         <h1 className="text-xl font-semibold">Promo codes</h1>
-        <p className="mt-1 text-[13px] text-muted">
+        <p className="mt-1 text-sm text-muted">
           Codes grant tokens on redemption — globally, or scoped to one alias. Limits, expiry, and a
           minimum account age keep them from being farmed.
         </p>
@@ -83,7 +83,7 @@ export default function AdminPromos() {
       <NewPromoForm models={models} onCreated={load} />
 
       {promos.length === 0 && (
-        <Card className="p-8 text-center text-[13px] text-muted">No promo codes yet.</Card>
+        <Card className="p-8 text-center text-sm text-muted">No promo codes yet.</Card>
       )}
 
       {promos.map((promo) => (
@@ -91,34 +91,34 @@ export default function AdminPromos() {
           <div className="flex flex-wrap items-center gap-3 px-4 py-3">
             <span className={`h-2 w-2 rounded-full ${promo.active ? 'bg-gain' : 'bg-muted'}`} aria-hidden="true" />
             <span className="sr-only">{promo.active ? 'Active' : 'Inactive'}: </span>
-            <code className="num rounded bg-surface-2 px-2 py-1 text-[13px] font-semibold">{promo.code}</code>
+            <code className="num rounded bg-surface-2 px-2 py-1 text-sm font-semibold">{promo.code}</code>
             <button
               onClick={() => { void navigator.clipboard.writeText(promo.code).catch(() => {}) }}
-              className="text-[11px] text-muted hover:text-content"
+              className="text-xs text-muted hover:text-content"
               aria-label={`Copy promo code ${promo.code}`}
               title="Copy code"
             >
               Copy
             </button>
-            <span className="num text-[13px]">+{promo.credits.toLocaleString('en-US')} cr</span>
+            <span className="num text-sm">+{promo.credits.toLocaleString('en-US')} cr</span>
             {promo.model_label ? (
-              <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[11px] text-accent">{promo.model_label} only</span>
+              <span className="rounded bg-accent/10 px-1.5 py-0.5 text-xs text-accent">{promo.model_label} only</span>
             ) : (
-              <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted">any model</span>
+              <span className="rounded bg-surface-2 px-1.5 py-0.5 text-xs text-muted">any model</span>
             )}
-            <span className="num text-[12px] text-muted" title="Redeemed / max · per-user limit">
+            <span className="num text-xs text-muted" title="Redeemed / max · per-user limit">
               {promo.redemption_count}
               {promo.max_redemptions != null ? `/${promo.max_redemptions}` : ' (unlimited)'} redeemed · {promo.per_user_limit}/user
             </span>
             {promo.min_account_age_hours > 0 && (
-              <span className="num text-[12px] text-muted">accounts older than {promo.min_account_age_hours}h only</span>
+              <span className="num text-xs text-muted">accounts older than {promo.min_account_age_hours}h only</span>
             )}
             {promo.expires_at ? (
-              <span className="num text-[12px] text-muted" title={new Date(promo.expires_at).toLocaleString()}>
+              <span className="num text-xs text-muted" title={new Date(promo.expires_at).toLocaleString()}>
                 {promo.starts_at ? `${new Date(promo.starts_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })} → ` : ''}expires {new Date(promo.expires_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
               </span>
             ) : (
-              <span className="num text-[12px] text-muted">never expires</span>
+              <span className="num text-xs text-muted">never expires</span>
             )}
             <div className="ml-auto flex gap-2">
               <Button
@@ -158,7 +158,7 @@ export default function AdminPromos() {
               </Button>
             </div>
           </div>
-          {promo.description && <p className="px-4 pb-3 text-[13px] text-muted">{promo.description}</p>}
+          {promo.description && <p className="px-4 pb-3 text-sm text-muted">{promo.description}</p>}
           {expanded === promo.id && <RedemptionList promoId={promo.id} />}
         </Card>
       ))}
@@ -184,15 +184,15 @@ function RedemptionList({ promoId }: { promoId: string }) {
 
   return (
     <div className="border-t border-line">
-      {redemptions === null && !error && <p className="px-4 py-3 text-[12px] text-muted">Loading…</p>}
+      {redemptions === null && !error && <p className="px-4 py-3 text-xs text-muted">Loading…</p>}
       {error && (
-        <p className="flex items-center gap-2 px-4 py-3 text-[12px] text-loss">
+        <p className="flex items-center gap-2 px-4 py-3 text-xs text-loss">
           Couldn't load redemptions. <button onClick={load} className="text-accent hover:underline">Retry</button>
         </p>
       )}
-      {redemptions?.length === 0 && <p className="px-4 py-3 text-[12px] text-muted">No redemptions yet.</p>}
+      {redemptions?.length === 0 && <p className="px-4 py-3 text-xs text-muted">No redemptions yet.</p>}
       {redemptions && redemptions.length > 0 && (
-        <div className="flex items-center gap-3 border-b border-line px-4 py-1.5 text-[11px] uppercase tracking-wide text-muted">
+        <div className="flex items-center gap-3 border-b border-line px-4 py-1.5 text-xs uppercase tracking-wide text-muted">
           <span>User</span>
           <span>Email</span>
           <span className="ml-auto">Granted</span>
@@ -202,11 +202,11 @@ function RedemptionList({ promoId }: { promoId: string }) {
       )}
       {redemptions?.map((r, index) => (
         <div key={`${r.username}-${index}`} className="flex items-center gap-3 border-b border-line px-4 py-2 last:border-0">
-          <span className="text-[12px] text-content">{r.username}</span>
-          <span className="num text-[12px] text-muted">{r.email}</span>
-          <span className="num ml-auto text-[12px] text-gain">+{r.credits.toLocaleString('en-US')}</span>
-          {r.model_label && <span className="text-[12px] text-muted">{r.model_label} only</span>}
-          <span className="num text-[12px] text-muted" title={new Date(r.created_at).toLocaleString()}>
+          <span className="text-xs text-content">{r.username}</span>
+          <span className="num text-xs text-muted">{r.email}</span>
+          <span className="num ml-auto text-xs text-gain">+{r.credits.toLocaleString('en-US')}</span>
+          {r.model_label && <span className="text-xs text-muted">{r.model_label} only</span>}
+          <span className="num text-xs text-muted" title={new Date(r.created_at).toLocaleString()}>
             {new Date(r.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
           </span>
         </div>
@@ -303,7 +303,7 @@ function NewPromoForm({ models, onCreated }: { models: ModelAlias[]; onCreated: 
         <Button onClick={() => { setCreatedMsg(''); setOpen(true) }} className="self-start">
           + New promo code
         </Button>
-        {createdMsg && <p role="status" className="text-[13px] text-gain">{createdMsg}</p>}
+        {createdMsg && <p role="status" className="text-sm text-gain">{createdMsg}</p>}
       </div>
     )
   }
@@ -351,7 +351,7 @@ function NewPromoForm({ models, onCreated }: { models: ModelAlias[]; onCreated: 
         <Field label="Description">
           <input className="input" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Launch week giveaway" />
         </Field>
-        {error && <p className="text-[13px] text-loss sm:col-span-2">{error}</p>}
+        {error && <p className="text-sm text-loss sm:col-span-2">{error}</p>}
         <div className="flex gap-2 sm:col-span-2">
           <Button type="submit" disabled={busy}>{busy ? 'Creating…' : 'Create code'}</Button>
           <Button type="button" variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
@@ -364,7 +364,7 @@ function NewPromoForm({ models, onCreated }: { models: ModelAlias[]; onCreated: 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="flex flex-col gap-1.5">
-      <span className="text-[12px] font-medium uppercase tracking-wide text-muted">{label}</span>
+      <span className="text-xs font-medium uppercase tracking-wide text-muted">{label}</span>
       {children}
     </label>
   );

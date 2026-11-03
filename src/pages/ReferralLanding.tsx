@@ -77,7 +77,7 @@ export default function ReferralLanding() {
                 )}
                 <div className="text-left">
                   <p className="font-medium">@{referrer.username} invited you</p>
-                  <p className="text-[12px] text-muted">{referrer.qualified_count} friends already joined</p>
+                  <p className="text-xs text-muted">{referrer.qualified_count} friends already joined</p>
                 </div>
               </div>
             </div>

@@ -80,14 +80,14 @@ export function OAuthProviders({
 
   return (
     <div className="space-y-3">
-      <p className="text-[13px] text-muted">
+      <p className="text-sm text-muted">
         One click per account — endpoint, model, and tokens fill in automatically. Add more for multi-account use.
       </p>
       {!loaded ? (
-        <p className="text-[13px] text-muted">Loading providers…</p>
+        <p className="text-sm text-muted">Loading providers…</p>
       ) : providers.length === 0 ? (
         <div className="text-center py-4">
-          <p className="text-[13px] text-muted mb-2">
+          <p className="text-sm text-muted mb-2">
             Account connect is unavailable right now
           </p>
           <button
@@ -97,7 +97,7 @@ export function OAuthProviders({
           >
             Retry
           </button>
-          <p className="mt-2 text-[13px] text-muted">or add an API key manually below.</p>
+          <p className="mt-2 text-sm text-muted">or add an API key manually below.</p>
         </div>
       ) : (
         <>
@@ -125,13 +125,13 @@ export function OAuthProviders({
             ))}
           </div>
           {providers.some((p) => !p.chatReady) && (
-            <p className="text-[12px] text-muted" role="status">
+            <p className="text-xs text-muted" role="status">
               {providers.filter((p) => !p.chatReady).map((p) => p.name).join(', ')}: connect stores the
               credential, but chat support is still pending — reconnect later, nothing to fix on your end.
             </p>
           )}
           {error && (
-            <div className="rounded-lg border border-loss/40 bg-loss/10 p-3 text-[13px] text-loss" role="alert">
+            <div className="rounded-lg border border-loss/40 bg-loss/10 p-3 text-sm text-loss" role="alert">
               {error}
             </div>
           )}
@@ -140,8 +140,8 @@ export function OAuthProviders({
       {deviceInfo && (
         <div className="rounded-lg border border-accent/40 bg-accent/10 p-4 space-y-3 animate-slide-down" role="dialog" aria-label="Device authorization">
           <div className="flex items-center justify-between gap-2">
-            <p className="text-[13px] font-medium">Step 1 — enter this code at {deviceInfo.providerName}</p>
-            <span className="num rounded-full bg-accent/20 px-2 py-0.5 text-[10px] font-medium text-accent">1 / 2</span>
+            <p className="text-sm font-medium">Step 1 — enter this code at {deviceInfo.providerName}</p>
+            <span className="num rounded-full bg-accent/20 px-2 py-0.5 text-2xs font-medium text-accent">1 / 2</span>
           </div>
           {/* Large, grouped, selectable and copyable — readable across a room and
               friendly to one-handed use. */}
@@ -160,8 +160,8 @@ export function OAuthProviders({
             </Button>
           </div>
           <div>
-            <p className="text-[13px] font-medium">Step 2 — approve on the opened page</p>
-            <p className="text-[12px] text-muted">
+            <p className="text-sm font-medium">Step 2 — approve on the opened page</p>
+            <p className="text-xs text-muted">
               The verification page opened in a new tab. Approve there and the key appears below automatically —
               keep this page open.
             </p>
@@ -171,20 +171,20 @@ export function OAuthProviders({
               href={deviceInfo.verificationUri}
               target="_blank"
               rel="noreferrer"
-              className="text-[13px] text-accent hover:underline min-h-[44px] flex items-center justify-center rounded-lg border border-accent/40 px-4"
+              className="text-sm text-accent hover:underline min-h-[44px] flex items-center justify-center rounded-lg border border-accent/40 px-4"
             >
               Open verification page again →
             </a>
             <button
               type="button"
               onClick={() => { haptic(); onCancelDevice(deviceInfo.providerId) }}
-              className="text-[12px] text-muted hover:text-content min-h-[44px] px-3"
+              className="text-xs text-muted hover:text-content min-h-[44px] px-3"
             >
               Cancel
             </button>
           </div>
           {/* Polling status — the loop keeps running server-side, so say so. */}
-          <p className="flex items-center gap-2 text-[12px] text-muted" role="status">
+          <p className="flex items-center gap-2 text-xs text-muted" role="status">
             <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-accent" aria-hidden="true" />
             Waiting for approval — checks every {pollingProviders[deviceInfo.providerId]?.interval ?? 5}s, up to 10 minutes.
           </p>
