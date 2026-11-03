@@ -85,9 +85,9 @@ export default function Dashboard() {
   const hasBalance = user.balance_credits > 0
   const checklist = [
     { done: earn?.verified ?? false, label: 'Verify your email', detail: 'Unlocks earning', to: '/earn' },
-    { done: hasCheckedIn, label: 'Check in today', detail: '+50,000 cr', to: '/earn' },
-    { done: hasBalance, label: 'Earn your first credits', detail: 'Check-in, tasks, referrals', to: '/earn' },
-    { done: (earn?.referral.qualified ?? 0) > 0, label: 'Invite a friend', detail: '+500,000 cr when they qualify', to: '/earn' },
+    { done: hasCheckedIn, label: 'Check in today', detail: '+50,000 cr', to: '/earn#today-section' },
+    { done: hasBalance, label: 'Earn your first credits', detail: 'Check-in, tasks, referrals', to: '/earn#arcade-section' },
+    { done: (earn?.referral.qualified ?? 0) > 0, label: 'Invite a friend', detail: '+500,000 cr when they qualify', to: '/earn#referral-section' },
   ]
   const completed = checklist.filter((item) => {
     if (typeof item.done === 'boolean') return item.done
@@ -111,7 +111,7 @@ export default function Dashboard() {
       <div className="flex flex-wrap gap-2">
         <Link to="/chat"><Button size="sm">Start chat</Button></Link>
         <Link to="/keys"><Button size="sm" variant="secondary">Add a key</Button></Link>
-        <Link to="/earn"><Button size="sm" variant="secondary">Earn more credits</Button></Link>
+        <Link to="/earn#arcade-section"><Button size="sm" variant="secondary">Earn more credits</Button></Link>
         <Link to="/models"><Button size="sm" variant="ghost">Browse models</Button></Link>
       </div>
       <div className="grid gap-4 sm:grid-cols-3">
@@ -155,7 +155,7 @@ export default function Dashboard() {
             <span className="text-[13px] text-muted"> paid</span>
           </p>
           <p className="num text-[12px] text-muted">{earn?.referral.pending ?? 0} pending</p>
-          <Link to="/earn" className="mt-2 inline-block text-[13px] text-accent hover:underline">Invite →</Link>
+          <Link to="/earn#referral-section" className="mt-2 inline-block text-[13px] text-accent hover:underline">Invite →</Link>
         </Card>
       </div>
 

@@ -3,6 +3,7 @@
 // (desktop) or when a mouse pointer is used, everything degrades silently.
 
 import { useRef, useState } from 'react'
+import confetti from 'canvas-confetti'
 
 /** Short vibration pulse for a meaningful action (delete, grant, submit). */
 export function haptic(ms = 10): void {
@@ -24,6 +25,40 @@ export function hapticWarning(): void {
       // ignore
     }
   }
+}
+
+/** Confetti burst for check-in celebration. */
+export function confettiBurst(): void {
+  if (typeof document === 'undefined') return
+  const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  if (prefersReduced) return
+
+  const duration = 1500
+  const end = Date.now() + duration
+  const colors = ['#22c55e', '#16a34a', '#86efac', '#bbf7d0'] // green palette
+
+  function frame() {
+    confetti({
+      particleCount: 3,
+      angle: 60,
+      spread: 55,
+      origin: { x: 0 },
+      colors,
+      scalar: 0.8,
+      ticks: 100,
+    })
+    confetti({
+      particleCount: 3,
+      angle: 120,
+      spread: 55,
+      origin: { x: 1 },
+      colors,
+      scalar: 0.8,
+      ticks: 100,
+    })
+    if (Date.now() < end) requestAnimationFrame(frame)
+  }
+  frame()
 }
 
 export interface SwipeHandlers {
@@ -108,4 +143,41 @@ export function useSwipe({ threshold = 72, onSwipeLeft, onSwipeRight }: SwipeOpt
     deltaX,
     swiped,
   }
+}
+
+type RewardKind = 'checkin' | 'game' | 'level' | 'referral'
+
+/**
+ * Returns a function that triggers haptic + visual reward pulse + confetti.
+ * The visual pulse adds a temporary class to <html> for CSS animation.
+ */
+export function useRewardPulse() {
+  return (kind: RewardKind) => {
+    // Haptic
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      try {
+        navigator.vibrate(kind === 'checkin' ? 40 : 20)
+      } catch {
+        // ignore
+      }
+    }
+    // Visual: add class to root for 600ms
+    if (typeof document !== 'undefined') {
+      document.documentElement.classList.add(`reward-${kind}`)
+      setTimeout(() => document.documentElement.classList.remove(`reward-${kind}`), 600)
+    }
+    // Confetti for check-in
+    if (kind === 'checkin') {
+      confettiBurst()
+    }
+  }
+}
+
+/**
+ * Hook providing haptic feedback functions.
+ * Progressive enhancement: degrades silently on unsupported devices.
+ */
+export function useHaptics() {
+  const pulse = useRewardPulse()
+  return { pulse, haptic, hapticWarning }
 }

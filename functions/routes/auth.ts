@@ -103,6 +103,10 @@ app.post('/api/auth/verify-email', async (c) => {
     c.env.DB.prepare('UPDATE freellm_auth_identities SET email_verified = 1 WHERE user_id = ?').bind(row.user_id),
   ])
 
+  // Trigger referral milestone check for signup milestone
+  const { qualifyForReferredUser } = await import('./economy')
+  await qualifyForReferredUser(c.env.DB, row.user_id)
+
   return c.json({ ok: true })
 })
 

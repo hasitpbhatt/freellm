@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, ApiError } from '../lib/api'
-import { Button, Card, CardHeader } from '../components/ui'
+import { Button, Card } from '../components/ui'
 import TypingGame from './TypingGame'
 import MemoryGame from './MemoryGame'
 
@@ -19,11 +19,21 @@ type LevelState = {
   pending: { level: number; reward: number } | null
 }
 
-const GAME_LABELS: Record<string, string> = { typing: 'Typing proficiency', memory: 'Memory match' }
+// Session stats for EarnTile
+export interface ArcadeSessionStats {
+  typingPlaysUsed: number
+  memoryPlaysUsed: number
+  bestWpm: number | null
+  bestMemoryMoves: number | null
+}
+
+interface ArcadePanelProps {
+  onSessionStats?: (stats: ArcadeSessionStats) => void
+}
 
 // The arcade: skill games with bounded payouts, effort-proportional rewards.
 // Typing and memory match — both require real skill, no reflex games.
-export default function ArcadePanel() {
+export default function ArcadePanel({ onSessionStats }: ArcadePanelProps) {
   const [clear, setClear] = useState<ClearState | null>(null)
   const [level, setLevel] = useState<LevelState | null>(null)
   const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
@@ -32,13 +42,32 @@ export default function ArcadePanel() {
 
   const load = useCallback(async () => {
     try {
-      const s = await api.get<{ clear: ClearState; level: LevelState }>('/games/status')
+      const s = await api.get<{
+        clear: ClearState
+        level: LevelState
+        games: Record<string, { plays_left: number; plays_cap: number }>
+        typing_tiers: { min_wpm: number; reward: number }[]
+        memory_tiers: { max_moves: number; reward: number }[]
+      }>('/games/status')
       setClear(s.clear)
       setLevel(s.level)
+
+      // Derive session stats
+      const typingUsed = (s.games.typing?.plays_cap ?? 3) - (s.games.typing?.plays_left ?? 3)
+      const memoryUsed = (s.games.memory?.plays_cap ?? 2) - (s.games.memory?.plays_left ?? 2)
+
+      // Best WPM/moves would need history — for now derive from tiers achieved
+      // (could be enhanced with /api/games/records in Phase 2)
+      onSessionStats?.({
+        typingPlaysUsed: typingUsed,
+        memoryPlaysUsed: memoryUsed,
+        bestWpm: null,
+        bestMemoryMoves: null,
+      })
     } catch {
       // games stay playable; trackers just show unknown
     }
-  }, [])
+  }, [onSessionStats])
 
   useEffect(() => {
     // oxlint-disable-next-line react/set-state-in-effect -- arcade status load on mount
@@ -50,6 +79,7 @@ export default function ArcadePanel() {
     try {
       const data = await api.post<{ reward: number; balance: number }>('/games/clear/claim')
       setMessage({ kind: 'ok', text: `Arcade cleared — +${data.reward} cr. Balance ${data.balance.toLocaleString('en-US')} cr.` })
+      window.dispatchEvent(new CustomEvent('earn-reward', { detail: { kind: 'game' } }))
       await load()
     } catch (err) {
       setMessage({ kind: 'err', text: err instanceof ApiError ? err.message : 'Claim failed.' })
@@ -63,6 +93,7 @@ export default function ArcadePanel() {
     try {
       const data = await api.post<{ level: number; reward: number; balance: number }>('/games/level/claim', { level: lv })
       setMessage({ kind: 'ok', text: `Level ${data.level} reached — +${data.reward} cr. Balance ${data.balance.toLocaleString('en-US')} cr.` })
+      window.dispatchEvent(new CustomEvent('earn-reward', { detail: { kind: 'level' } }))
       await load()
     } catch (err) {
       setMessage({ kind: 'err', text: err instanceof ApiError ? err.message : 'Claim failed.' })
@@ -71,78 +102,41 @@ export default function ArcadePanel() {
     }
   }
 
-  const levelPct = level && level.next_xp !== null
-    ? Math.min(100, Math.round((level.xp / level.next_xp) * 100))
-    : 100
-
   return (
-    <div className="flex flex-col gap-4">
-      <Card>
-        <CardHeader
-          title={`Arcade — level ${level?.level ?? 1}`}
-          action={<span className="num text-[12px] text-muted" role="status">{level ? `${level.xp} XP` : '…'}</span>}
-        />
-        <div className="flex flex-col gap-2 p-4">
-          {level === null ? (
-            <p className="text-[13px] text-muted" role="status">Checking level…</p>
-          ) : level.pending ? (
-            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-              <p className="text-[13px] text-gain">Level {level.pending.level} earned — claim it.</p>
-              <Button disabled={claimingLevel} onClick={() => void claimLevel(level.pending!.level)} className="w-full sm:w-auto">
-                {claimingLevel ? 'Claiming…' : `Claim +${level.pending.reward} cr`}
-              </Button>
-            </div>
-          ) : level.next_xp !== null ? (
-            <>
-              <div
-                className="h-2.5 w-full overflow-hidden rounded-full bg-surface-2"
-                role="progressbar"
-                aria-valuenow={levelPct}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-label={`Level ${level.level} progress: ${level.xp} of ${level.next_xp} XP to level ${level.level + 1}`}
-              >
-                <div className="h-full bg-accent" style={{ width: `${levelPct}%` }} />
-              </div>
-              <p className="num text-[12px] text-muted" role="status">
-                {levelPct}% · {level.xp}/{level.next_xp} XP to level {level.level + 1} — earn 1 XP per 10 arcade credits
-              </p>
-            </>
-          ) : (
-            <p className="text-[13px] text-gain" role="status">Max level {level.max_level} — arcade master. 🏆</p>
-          )}
-        </div>
-      </Card>
-      <Card>
-        <CardHeader
-          title="Arcade clear bonus"
-          action={<span className="num text-[12px] text-muted">+{clear?.reward ?? 7000} cr · once a day</span>}
-        />
-        <div className="flex flex-col gap-2 p-4">
-          {clear === null ? (
-            <p className="text-[13px] text-muted" role="status">Checking today's progress…</p>
-          ) : clear.done ? (
-            <p className="text-[13px] text-gain" role="status">Cleared today — all games finished. Come back tomorrow.</p>
-          ) : clear.ready ? (
-            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-              <p className="text-[13px] text-gain">All games finished today — claim it.</p>
-              <Button disabled={claiming} onClick={() => void claimClear()} className="w-full sm:w-auto">
-                {claiming ? 'Claiming…' : `Claim +${clear.reward} cr`}
-              </Button>
-            </div>
-          ) : (
-            <p className="text-[13px] text-muted" role="status">
-              Finish {clear.needs.map((g) => GAME_LABELS[g]).join(', ')} today to unlock the +{clear.reward} cr clear bonus.
-            </p>
-          )}
-          {message && (
-            <p role={message.kind === 'err' ? 'alert' : 'status'} className={`text-[13px] ${message.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
-              {message.text}
-            </p>
-          )}
-        </div>
-      </Card>
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+    <div className="flex flex-col gap-4" id="arcade-section">
+      {/* Level claim banner (only shows when pending) */}
+      {level?.pending && (
+        <Card className="border-gain/30 bg-gain/5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center p-4">
+            <p className="text-[13px] text-gain">Level {level.pending.level} earned — claim it.</p>
+            <Button disabled={claimingLevel} onClick={() => void claimLevel(level.pending!.level)} className="w-full sm:w-auto">
+              {claimingLevel ? 'Claiming…' : `Claim +${level.pending.reward} cr`}
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {/* Clear bonus claim banner (only shows when ready) */}
+      {clear?.ready && !clear.done && (
+        <Card className="border-gain/30 bg-gain/5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center p-4">
+            <p className="text-[13px] text-gain">All games finished today — claim the clear bonus.</p>
+            <Button disabled={claiming} onClick={() => void claimClear()} className="w-full sm:w-auto">
+              {claiming ? 'Claiming…' : `Claim +${clear.reward} cr`}
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {/* Message toast */}
+      {message && (
+        <p role={message.kind === 'err' ? 'alert' : 'status'} className={`text-[13px] ${message.kind === 'ok' ? 'text-gain' : 'text-loss'}`}>
+          {message.text}
+        </p>
+      )}
+
+      {/* Game cards */}
+      <div className="grid gap-4 md:grid-cols-2">
         <TypingGame />
         <MemoryGame />
       </div>

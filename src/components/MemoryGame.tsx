@@ -163,7 +163,7 @@ export default function MemoryGame() {
         )}
         {phase.name === 'playing' && (
           <>
-            <div className="grid grid-cols-4 gap-2" role="group" aria-label="Memory board">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2" role="group" aria-label="Memory board">
               {Array.from({ length: CARDS }, (_, i) => i).map((i) => {
                 const shown = matched.includes(i) || flipped.includes(i) ? faces[i] ?? CARD_BACK : CARD_BACK
                 return (

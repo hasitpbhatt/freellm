@@ -21,6 +21,7 @@ import { Hono } from 'hono'
 import { requireAuth } from '../lib/middleware'
 import { newId } from '../lib/crypto'
 import type { Bindings, Variables } from '../lib/types'
+import { updateWeeklyQuestProgress } from './economy'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -66,15 +67,16 @@ const CLEAR_GAMES: GameKind[] = ['typing', 'memory']
 
 // ------------------------------------------------------------------ levels
 // XP is lifetime arcade credits / 10 — derived, never stored, cannot drift.
-// Level-ups pay a one-time bonus (3000 x level); lifetime max 60,000cr/user.
+// Level-ups pay a one-time bonus; lifetime max ~575k/user (with prestige).
+// Prestige: after level 6, reset to level 1 with 1.25× XP multiplier, cosmetic frame.
 
 export const XP_PER_CREDIT = 0.1
-export const ARCADE_LEVELS: { level: number; xp: number }[] = [
-  { level: 2, xp: 6000 },
-  { level: 3, xp: 18000 },
-  { level: 4, xp: 36000 },
-  { level: 5, xp: 60000 },
-  { level: 6, xp: 90000 },
+export const ARCADE_LEVELS: { level: number; xp: number; reward: number }[] = [
+  { level: 2, xp: 6000, reward: 15000 },
+  { level: 3, xp: 18000, reward: 35000 },
+  { level: 4, xp: 36000, reward: 75000 },
+  { level: 5, xp: 60000, reward: 150000 },
+  { level: 6, xp: 90000, reward: 300000 },
 ]
 export const ARCADE_MAX_LEVEL = 6
 
@@ -87,7 +89,8 @@ export function levelForXp(xp: number): number {
 }
 
 export function levelBonus(level: number): number {
-  return 3000 * level
+  const row = ARCADE_LEVELS.find((r) => r.level === level)
+  return row?.reward ?? 3000 * level
 }
 
 async function arcadeXp(db: D1Database, userId: string): Promise<number> {
@@ -589,6 +592,17 @@ app.post('/api/games/:game/claim', requireAuth, async (c) => {
   if (!guard?.success || guard.meta?.changes === 0) {
     const reason = await claimBlockReason(c.env.DB, user.id, 'play', game)
     return c.json({ error: reason.error, message: reason.message }, 409)
+  }
+
+  // Update weekly quest progress
+  if (game === 'typing') {
+    const wpm = Math.round(round.detail!.length / 5 / (seconds / 60))
+    await updateWeeklyQuestProgress(c.env.DB, user.id, 'typing_wpm', wpm)
+  } else if (game === 'memory') {
+    const moves = memoryMovesFromFlips(round.flips ?? 0)
+    if (moves !== null) {
+      await updateWeeklyQuestProgress(c.env.DB, user.id, 'memory_moves', moves)
+    }
   }
 
   const balance = await c.env.DB.prepare('SELECT balance_credits FROM freellm_users WHERE id = ?')

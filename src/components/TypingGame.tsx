@@ -25,6 +25,7 @@ export default function TypingGame() {
   const [typed, setTyped] = useState('')
   const [phase, setPhase] = useState<Phase>({ name: 'idle' })
   const claimed = useRef(false)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const { refresh } = useAuth()
 
   const load = async () => {
@@ -110,9 +111,13 @@ export default function TypingGame() {
             <label className="sr-only" htmlFor="typing-input">Retype the phrase exactly</label>
             <textarea
               id="typing-input"
-              className="input min-h-[80px] font-mono text-[16px] sm:text-[13px]"
+              ref={textareaRef}
+              className="input min-h-[120px] font-mono text-[16px] sm:text-[13px]"
               value={typed}
               onChange={(e) => onType(e.target.value)}
+              onFocus={() => {
+                setTimeout(() => textareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 300)
+              }}
               placeholder="Type it here…"
               autoComplete="off"
               autoCorrect="off"

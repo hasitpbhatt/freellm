@@ -147,3 +147,56 @@
     bottom: calc(4.5rem + env(safe-area-inset-bottom));
   }
 }
+
+/* Earn page — reward pulse animations */
+@media (prefers-reduced-motion: no-preference) {
+  .reward-checkin .today-card__earned { animation: pulse-gain 0.6s ease-out; }
+  .reward-game .arcade-card { animation: pulse-gain 0.6s ease-out; }
+  .reward-level .today-card__level { animation: pulse-gain 0.6s ease-out; }
+  .reward-referral .squad-tile { animation: pulse-gain 0.6s ease-out; }
+}
+
+@keyframes pulse-gain {
+  0% { box-shadow: 0 0 0 0 var(--green); }
+  50% { box-shadow: 0 0 0 8px var(--green); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* Earn tile grid — single column on mobile */
+@media (max-width: 640px) {
+  .earn-tile-grid {
+    grid-template-columns: 1fr;
+  }
+  .today-card__cta {
+    font-size: 0.8125rem; /* text-[13px] */
+  }
+}
+
+/* TodayCard streak ring animation */
+.today-card svg circle:nth-of-type(2) {
+  transition: stroke-dashoffset 800ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .today-card svg circle:nth-of-type(2) {
+    transition: none !important;
+  }
+}
+
+/* Onboarding highlight animation */
+.onboard-highlight {
+  animation: onboard-pulse 2s ease-out;
+}
+
+@keyframes onboard-pulse {
+  0% { box-shadow: 0 0 0 0 var(--accent); }
+  50% { box-shadow: 0 0 0 6px var(--accent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* Earn tile grid — re-weighted by value */
+@media (min-width: 1024px) {
+  .earn-tile-grid {
+    grid-template-columns: 2fr 1fr 1fr;
+  }
+}

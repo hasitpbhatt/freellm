@@ -664,6 +664,13 @@ async function chatWithConnection(
       latencyMs: Date.now() - startedAt,
       free: true,
     })
+    // Log health event: chat failure (network error)
+    const failEventId = newId()
+    const failTimestamp = Date.now()
+    await c.env.DB.prepare(
+      `INSERT INTO freellm_key_health_events (id, connection_id, user_id, event_type, error_code, error_message, latency_ms, request_model, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(failEventId, conn.id, user.id, 'chat_failure', 'network_error', err instanceof Error ? err.message : 'network error', failTimestamp - startedAt, upstreamModel, failTimestamp).run()
     return c.json(
       openAiBody('server_error', `${conn.label} is unreachable: ${err instanceof Error ? err.message : 'network error'}`, 'upstream_failed'),
       502,
@@ -680,6 +687,13 @@ async function chatWithConnection(
       latencyMs: Date.now() - startedAt,
       free: true,
     })
+    // Log health event: chat failure (upstream error)
+    const failEventId = newId()
+    const failTimestamp = Date.now()
+    await c.env.DB.prepare(
+      `INSERT INTO freellm_key_health_events (id, connection_id, user_id, event_type, error_code, error_message, latency_ms, request_model, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(failEventId, conn.id, user.id, 'chat_failure', `http_${upstream.status}`, errText, failTimestamp - startedAt, upstreamModel, failTimestamp).run()
     return c.json(
       openAiBody('server_error', `${conn.label} returned ${upstream.status}: ${errText}`, 'upstream_failed'),
       502,
@@ -745,10 +759,24 @@ async function chatWithConnection(
       }
     } catch (err) {
       await settle('failed', null, err instanceof Error ? err.message : 'upstream response failed')
+      // Log health event: chat failure (parse error)
+      const failEventId = newId()
+      const failTimestamp = Date.now()
+      await c.env.DB.prepare(
+        `INSERT INTO freellm_key_health_events (id, connection_id, user_id, event_type, error_code, error_message, latency_ms, request_model, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(failEventId, conn.id, user.id, 'chat_failure', 'parse_error', err instanceof Error ? err.message : 'upstream response failed', failTimestamp - startedAt, upstreamModel, failTimestamp).run()
       return c.json(openAiBody('server_error', 'The upstream response failed — no charge was made.', 'upstream_failed'), 502)
     }
     if (!isBillableCompletion(content)) {
       await settle('failed', null, EMPTY_COMPLETION_REASON)
+      // Log health event: chat failure (empty completion)
+      const failEventId = newId()
+      const failTimestamp = Date.now()
+      await c.env.DB.prepare(
+        `INSERT INTO freellm_key_health_events (id, connection_id, user_id, event_type, error_code, error_message, latency_ms, request_model, request_tokens, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(failEventId, conn.id, user.id, 'chat_failure', 'empty_completion', EMPTY_COMPLETION_REASON, failTimestamp - startedAt, upstreamModel, usage?.total ?? 0, failTimestamp).run()
       return c.json(
         openAiBody(
           'server_error',
@@ -759,6 +787,13 @@ async function chatWithConnection(
       )
     }
     const result = await settle('completed', usage)
+    // Log health event: chat success
+    const successEventId = newId()
+    const successTimestamp = Date.now()
+    await c.env.DB.prepare(
+      `INSERT INTO freellm_key_health_events (id, connection_id, user_id, event_type, latency_ms, request_model, request_tokens, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(successEventId, conn.id, user.id, 'chat_success', successTimestamp - startedAt, upstreamModel, usage?.total ?? 0, successTimestamp).run()
     return c.json({
       id: completionId,
       object: 'chat.completion',
@@ -848,8 +883,26 @@ async function chatWithConnection(
       if (settled) return
       settled = true
       try {
-        if (sawContent) await settle('completed', usage)
-        else await settle('failed', null, EMPTY_COMPLETION_REASON)
+        const latencyMs = Date.now() - startedAt
+        if (sawContent) {
+          await settle('completed', usage)
+          // Log health event: chat success (streaming)
+          const successEventId = newId()
+          const successTimestamp = Date.now()
+          await c.env.DB.prepare(
+            `INSERT INTO freellm_key_health_events (id, connection_id, user_id, event_type, latency_ms, request_model, request_tokens, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).bind(successEventId, conn.id, user.id, 'chat_success', latencyMs, upstreamModel, usage?.total ?? 0, successTimestamp).run()
+        } else {
+          await settle('failed', null, EMPTY_COMPLETION_REASON)
+          // Log health event: chat failure (empty completion)
+          const failEventId = newId()
+          const failTimestamp = Date.now()
+          await c.env.DB.prepare(
+            `INSERT INTO freellm_key_health_events (id, connection_id, user_id, event_type, error_code, error_message, latency_ms, request_model, request_tokens, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).bind(failEventId, conn.id, user.id, 'chat_failure', 'empty_completion', EMPTY_COMPLETION_REASON, failTimestamp - startedAt, upstreamModel, usage?.total ?? 0, failTimestamp).run()
+        }
       } catch (err) {
         console.error('[v1:connection] settle failed in flush', completionId, err)
       }
@@ -858,7 +911,20 @@ async function chatWithConnection(
     cancel() {
       if (settled) return
       settled = true
-      void settle('aborted', usage, 'client disconnected')
+      void (async () => {
+        try {
+          await settle('aborted', usage, 'client disconnected')
+          // Log health event: chat failure (aborted)
+          const failEventId = newId()
+          const failTimestamp = Date.now()
+          await c.env.DB.prepare(
+            `INSERT INTO freellm_key_health_events (id, connection_id, user_id, event_type, error_code, error_message, latency_ms, request_model, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).bind(failEventId, conn.id, user.id, 'chat_failure', 'client_disconnected', 'Client disconnected', failTimestamp - startedAt, upstreamModel, failTimestamp).run()
+        } catch (err) {
+          console.error('[v1:connection] settle failed in cancel', completionId, err)
+        }
+      })()
     },
   })
 

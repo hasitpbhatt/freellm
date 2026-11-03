@@ -310,6 +310,24 @@ app.post('/api/keys/:id/test', async (c) => {
     )
     .run()
 
+  // Log health event
+  const eventId = newId()
+  await c.env.DB.prepare(
+    `INSERT INTO freellm_key_health_events (id, connection_id, user_id, event_type, error_code, error_message, latency_ms, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      eventId,
+      id,
+      user.id,
+      ping.ok ? 'test_success' : 'test_failure',
+      ping.ok ? null : (ping.error?.includes('401') ? 'auth_failed' : ping.error?.includes('429') ? 'rate_limited' : ping.error?.includes('timeout') ? 'timeout' : 'unknown'),
+      ping.ok ? null : ping.error,
+      ping.latencyMs,
+      timestamp,
+    )
+    .run()
+
   return c.json({ test: ping })
 })
 

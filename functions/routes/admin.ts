@@ -1493,6 +1493,138 @@ app.delete('/api/admin/email-blocks/:id', async (c) => {
   return c.json({ ok: true })
 })
 
+// =====================================================================
+// Key health: failure tracking for BYOK keys
+// =====================================================================
+
+app.get('/api/admin/keys/health', async (c) => {
+  const { searchParams } = new URL(c.req.url)
+  const limit = Math.min(parseInt(searchParams.get('limit') ?? '100', 10), 500)
+  const offset = Math.max(parseInt(searchParams.get('offset') ?? '0', 10), 0)
+  const connectionId = searchParams.get('connection_id') ?? ''
+  const eventType = searchParams.get('event_type') ?? ''
+  const userId = searchParams.get('user_id') ?? ''
+  const since = searchParams.get('since') ? parseInt(searchParams.get('since')!, 10) : 0
+
+  let where = 'WHERE 1=1'
+  const binds: unknown[] = []
+  if (connectionId) { where += ' AND connection_id = ?'; binds.push(connectionId) }
+  if (eventType) { where += ' AND event_type = ?'; binds.push(eventType) }
+  if (userId) { where += ' AND user_id = ?'; binds.push(userId) }
+  if (since) { where += ' AND created_at >= ?'; binds.push(since) }
+
+  // Summary stats
+  const summary = await c.env.DB.prepare(
+    `SELECT
+       COUNT(*) AS total_events,
+       SUM(CASE WHEN event_type IN ('test_success', 'chat_success', 'oauth_refresh_success') THEN 1 ELSE 0 END) AS successes,
+       SUM(CASE WHEN event_type IN ('test_failure', 'chat_failure', 'oauth_refresh_failure') THEN 1 ELSE 0 END) AS failures,
+       COUNT(DISTINCT connection_id) AS unique_keys,
+       COUNT(DISTINCT user_id) AS unique_users
+     FROM freellm_key_health_events ${where}`,
+  ).bind(...binds).first<{ total_events: number; successes: number; failures: number; unique_keys: number; unique_users: number }>()
+
+  // Per-key aggregate
+  const keyStats = await c.env.DB.prepare(
+    `SELECT
+       connection_id,
+       SUM(CASE WHEN event_type IN ('test_success', 'chat_success', 'oauth_refresh_success') THEN 1 ELSE 0 END) AS successes,
+       SUM(CASE WHEN event_type IN ('test_failure', 'chat_failure', 'oauth_refresh_failure') THEN 1 ELSE 0 END) AS failures,
+       AVG(CASE WHEN latency_ms IS NOT NULL THEN latency_ms END) AS avg_latency_ms,
+       MAX(created_at) AS last_event_at
+     FROM freellm_key_health_events ${where}
+     GROUP BY connection_id
+     ORDER BY failures DESC, last_event_at DESC
+     LIMIT ? OFFSET ?`,
+  ).bind(...binds, limit, offset).all<{
+    connection_id: string
+    successes: number
+    failures: number
+    avg_latency_ms: number | null
+    last_event_at: number
+  }>()
+
+  // Fetch key labels for display
+  const keyLabels = new Map<string, { label: string; owner_email: string }>()
+  if (keyStats.results.length > 0) {
+    const ids = keyStats.results.map(r => r.connection_id)
+    const placeholders = ids.map(() => '?').join(',')
+    const rows = await c.env.DB.prepare(
+      `SELECT c.id, c.label, u.email FROM freellm_connections c JOIN freellm_users u ON u.id = c.owner_id WHERE c.id IN (${placeholders})`,
+    ).bind(...ids).all<{ id: string; label: string; email: string }>()
+    for (const r of rows.results) keyLabels.set(r.id, { label: r.label, owner_email: r.email })
+  }
+
+  // Recent events (for detail view)
+  const recent = await c.env.DB.prepare(
+    `SELECT id, connection_id, user_id, event_type, error_code, error_message, latency_ms, request_model, request_tokens, created_at
+     FROM freellm_key_health_events ${where}
+     ORDER BY created_at DESC LIMIT 200`,
+  ).bind(...binds).all<{
+    id: string
+    connection_id: string
+    user_id: string
+    event_type: string
+    error_code: string | null
+    error_message: string | null
+    latency_ms: number | null
+    request_model: string | null
+    request_tokens: number | null
+    created_at: number
+  }>()
+
+  return c.json({
+    summary,
+    keys: keyStats.results.map(k => ({
+      ...k,
+      label: keyLabels.get(k.connection_id)?.label ?? 'unknown',
+      owner_email: keyLabels.get(k.connection_id)?.owner_email ?? 'unknown',
+      failure_rate: k.successes + k.failures > 0 ? k.failures / (k.successes + k.failures) : 0,
+    })),
+    recent: recent.results,
+  })
+})
+
+// Detail view for a single key
+app.get('/api/admin/keys/health/:connectionId', async (c) => {
+  const connectionId = c.req.param('connectionId')
+  const { searchParams } = new URL(c.req.url)
+  const limit = Math.min(parseInt(searchParams.get('limit') ?? '100', 10), 500)
+
+  const events = await c.env.DB.prepare(
+    `SELECT id, event_type, error_code, error_message, latency_ms, request_model, request_tokens, created_at
+     FROM freellm_key_health_events
+     WHERE connection_id = ?
+     ORDER BY created_at DESC LIMIT ?`,
+  ).bind(connectionId, limit).all<{
+    id: string
+    event_type: string
+    error_code: string | null
+    error_message: string | null
+    latency_ms: number | null
+    request_model: string | null
+    request_tokens: number | null
+    created_at: number
+  }>()
+
+  const key = await c.env.DB.prepare(
+    `SELECT c.*, u.username, u.email FROM freellm_connections c JOIN freellm_users u ON u.id = c.owner_id WHERE c.id = ?`,
+  ).bind(connectionId).first()
+
+  const totals = await c.env.DB.prepare(
+    `SELECT
+       SUM(CASE WHEN event_type IN ('test_success', 'chat_success', 'oauth_refresh_success') THEN 1 ELSE 0 END) AS successes,
+       SUM(CASE WHEN event_type IN ('test_failure', 'chat_failure', 'oauth_refresh_failure') THEN 1 ELSE 0 END) AS failures
+     FROM freellm_key_health_events WHERE connection_id = ?`,
+  ).bind(connectionId).first<{ successes: number; failures: number }>()
+
+  return c.json({
+    key,
+    totals,
+    events: events.results,
+  })
+})
+
 export default app
 
 // ---------------------------------------------------------- proxies (global pool)

@@ -20,6 +20,8 @@ import type { Bindings, Variables, ConnectionRow } from '../lib/types'
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
+const now = () => Date.now()
+
 // PKCE helpers
 function generateCodeVerifier(): string {
   const array = new Uint8Array(32)
@@ -709,6 +711,13 @@ app.post('/api/keys/:id/refresh', requireAuth, async (c) => {
 
     if (!response.ok) {
       const error = await response.text()
+      // Log health event: refresh failure
+      const failEventId = newId()
+      const failTimestamp = now()
+      await c.env.DB.prepare(
+        `INSERT INTO freellm_key_health_events (id, connection_id, user_id, event_type, error_code, error_message, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(failEventId, id, user.id, 'oauth_refresh_failure', 'refresh_failed', error, failTimestamp).run()
       return c.json({ error: 'refresh_failed', message: `Token refresh failed: ${error}` }, 502)
     }
 
@@ -736,6 +745,13 @@ app.post('/api/keys/:id/refresh', requireAuth, async (c) => {
            status = 'live', last_checked_at = ?, last_error = NULL, updated_at = ?
        WHERE id = ?`,
     ).bind(keyCiphertext, keyIv, newRefreshCiphertext, newRefreshIv, expiresAt, refreshedAt, refreshedAt, id).run()
+
+    // Log health event: refresh success
+    const successEventId = newId()
+    await c.env.DB.prepare(
+      `INSERT INTO freellm_key_health_events (id, connection_id, user_id, event_type, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).bind(successEventId, id, user.id, 'oauth_refresh_success', refreshedAt).run()
 
     return c.json({
       ok: true,

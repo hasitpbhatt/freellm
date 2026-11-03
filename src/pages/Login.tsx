@@ -43,7 +43,7 @@ export default function Login() {
         <h1 className="text-lg font-semibold">Sign in</h1>
         {referred && (
           <p className="mt-2 rounded-lg border border-accent/40 bg-accent/10 px-3 py-2 text-[13px] text-accent">
-            Referred by a friend — you both earn 500,000 cr once you're active.
+            Referred by a friend — they earn 500,000 cr when you qualify (7-day streak or 200k Pool tokens). You get 50,000 cr on signup + milestones along the way.
           </p>
         )}
         <p className="mt-1 text-[13px] text-muted">

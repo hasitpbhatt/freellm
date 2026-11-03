@@ -1,4 +1,5 @@
 import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from 'react'
+import { createContext, useContext } from 'react'
 import { formatCredits, formatExact } from '../lib/format'
 
 type ButtonVariant = 'primary' | 'secondary' | 'ghost'
@@ -126,4 +127,94 @@ export function Credits({
   }
   const text = exact ? formatExact(value) : formatCredits(value)
   return <span className={`num ${tones[tone]} ${className}`}>{text}</span>
+}
+
+export function StatusBadge({
+  status,
+  children,
+}: {
+  status: 'ready' | 'partial' | 'done' | 'locked'
+  children: ReactNode
+}) {
+  const colors = {
+    ready: 'text-gain',
+    partial: 'text-warn',
+    done: 'text-muted',
+    locked: 'text-line',
+  }
+  return (
+    <span className={`flex items-center gap-1.5 text-[11px] font-medium ${colors[status]}`}>
+      <span className="w-2 h-2 rounded-full bg-current" aria-hidden="true" />
+      {children}
+    </span>
+  )
+}
+
+export interface TabsProps {
+  value: string
+  onValueChange: (value: string) => void
+  className?: string
+  children: ReactNode
+}
+
+export interface TabsListProps {
+  className?: string
+  children: ReactNode
+}
+
+export interface TabsTriggerProps {
+  value: string
+  className?: string
+  children: ReactNode
+  disabled?: boolean
+}
+
+export interface TabsContentProps {
+  value: string
+  className?: string
+  children: ReactNode
+}
+
+export function Tabs({ value, onValueChange, className = '', children }: TabsProps) {
+  // Provide context for child components
+  const ctx = { value, onValueChange }
+  return (
+    <TabsContext.Provider value={ctx}>
+      <div className={className}>{children}</div>
+    </TabsContext.Provider>
+  )
+}
+
+const TabsContext = createContext<{ value: string; onValueChange: (value: string) => void } | null>(null)
+
+export function TabsList({ className = '', children }: TabsListProps) {
+  return <div className={className} role="tablist">{children}</div>
+}
+
+export function TabsTrigger({ value, className = '', children, disabled }: TabsTriggerProps) {
+  const ctx = useContext(TabsContext)
+  const handleClick = () => {
+    if (!disabled && ctx) {
+      ctx.onValueChange(value)
+    }
+  }
+  const isActive = ctx?.value === value
+  return (
+    <button
+      role="tab"
+      aria-selected={isActive}
+      aria-disabled={disabled}
+      className={`flex-1 px-3 py-2 text-sm font-medium rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-accent ${disabled ? 'opacity-50 pointer-events-none' : ''} ${isActive ? 'bg-accent text-accent-fg' : ''} ${className}`}
+      onClick={handleClick}
+    >
+      {children}
+    </button>
+  )
+}
+
+export function TabsContent({ value, className = '', children }: TabsContentProps) {
+  const ctx = useContext(TabsContext)
+  const isActive = ctx?.value === value
+  if (!isActive) return null
+  return <div className={className} role="tabpanel">{children}</div>
 }
