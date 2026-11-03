@@ -1149,6 +1149,45 @@ app.post('/api/admin/models/:id/providers/:providerId/test', async (c) => {
   })
 })
 
+// Test model provider via proxy (uses an available proxy from the pool)
+app.post('/api/admin/models/:id/providers/:providerId/test-via-proxy', async (c) => {
+  const modelId = c.req.param('id')
+  const providerId = c.req.param('providerId')
+  const provider = await c.env.DB.prepare(
+    `SELECT mp.*, up.base_url, up.status AS up_status, up.consecutive_failures, up.cooldown_base_ms
+     FROM freellm_model_providers mp
+     JOIN freellm_upstream_providers up ON up.id = mp.upstream_provider_id
+     WHERE mp.id = ? AND mp.model_id = ?`
+  ).bind(providerId, modelId).first<{
+    upstream_provider_id: string
+    base_url: string
+    upstream_model: string
+    up_status: string
+    consecutive_failures: number
+    cooldown_base_ms: number | null
+  }>()
+
+  if (!provider) return c.json({ error: 'not_found', message: 'Provider config not found.' }, 404)
+
+  const encryptionKey = await requireEncryptionKey(c.env)
+  const keys = await loadKeysByProvider(c.env, [provider.upstream_provider_id])
+  const key = probeKey(keys.get(provider.upstream_provider_id) ?? [])
+  if (!key) return c.json({ error: 'no_keys', message: 'This provider has no usable keys.' }, 409)
+
+  const apiKey = await decryptSecret(key.api_key_ciphertext, key.api_key_iv, encryptionKey)
+
+  // Pick an available proxy
+  const proxy = await pickProxy(c.env.DB)
+  if (!proxy) return c.json({ error: 'no_proxy', message: 'No available proxy in pool.' }, 409)
+
+  const result = await pingProvider(provider.base_url, provider.upstream_model, apiKey, proxy)
+
+  return c.json({
+    test: result,
+    proxy: { id: proxy.id, label: proxy.label, url: proxy.url },
+  })
+})
+
 // Reveal model provider key (reveals the upstream provider's pool keys)
 app.post('/api/admin/models/:id/providers/:providerId/reveal', async (c) => {
   const admin = c.get('user')

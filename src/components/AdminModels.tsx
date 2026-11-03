@@ -5,7 +5,7 @@ import { Button, Card } from '../components/ui'
 import { Sparkline } from './Sparkline'
 import type { ModelAlias, ModelProvider, UpstreamModel, UpstreamProvider } from '../lib/types'
 
-type TestResult = { ok: boolean; status: string; latencyMs: number | null; error?: string; mode: string }
+type TestResult = { ok: boolean; status: string; latencyMs: number | null; error?: string; mode: string; viaProxy?: boolean }
 
 /** Human retry cooldown: null = global 30m default, 0 = retry immediately. */
 function formatCooldown(ms: number | null): string {
@@ -140,6 +140,31 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
     }
   }
 
+  async function testProviderViaProxy(providerId: string) {
+    setBusyKey(`test-proxy:${providerId}`)
+    try {
+      const data = await api.post<{ test: TestResult; proxy: { id: string; label: string; url: string } }>(
+        `/admin/models/${model.id}/providers/${providerId}/test-via-proxy`
+      )
+      setTestResults((prev) => ({ ...prev, [providerId]: { ...data.test, viaProxy: true } }))
+      onChanged()
+    } catch (err) {
+      setTestResults((prev) => ({
+        ...prev,
+        [providerId]: {
+          ok: false,
+          status: 'down',
+          latencyMs: null,
+          error: err instanceof ApiError ? err.message : 'Proxy test failed',
+          mode: '-',
+          viaProxy: true,
+        },
+      }))
+    } finally {
+      setBusyKey(null)
+    }
+  }
+
   async function deleteAlias() {
     const labels = model.providers.map((p) => p.label).join(', ') || 'none'
     if (
@@ -213,7 +238,7 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
             {formatCooldown(provider.cooldown_base_ms)}
           </span>
         )}
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <Button
             variant="secondary"
             onClick={() => setEditingProviderId(editingProviderId === provider.id ? null : provider.id)}
@@ -222,6 +247,9 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
           </Button>
           <Button variant="secondary" onClick={() => testProvider(provider.id)} disabled={busyKey !== null}>
             {busy(`test:${provider.id}`) ? 'Testing…' : 'Test'}
+          </Button>
+          <Button variant="secondary" onClick={() => testProviderViaProxy(provider.id)} disabled={busyKey !== null}>
+            {busy(`test-proxy:${provider.id}`) ? 'Testing…' : 'Test via proxy'}
           </Button>
           <Button variant="ghost" onClick={() => toggleProvider(provider)} disabled={busyKey !== null}>
             {busy(`toggle:${provider.id}`) ? 'Saving…' : provider.active === 0 ? 'Enable' : 'Disable'}
@@ -243,7 +271,7 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
         )}
         {test && (
           <p className={`w-full text-[12px] ${test.ok ? 'text-gain' : 'text-loss'}`}>
-            {test.ok ? `OK via ${test.mode === 'models' ? 'model list probe' : test.mode === 'chat' ? 'chat probe' : test.mode}` : 'Failed'} · {test.latencyMs ?? '—'}ms
+            {test.ok ? `OK via ${test.mode === 'models' ? 'model list probe' : test.mode === 'chat' ? 'chat probe' : test.mode}${test.viaProxy ? ' (via proxy)' : ''}` : 'Failed'} · {test.latencyMs ?? '—'}ms
             {test.error ? ` — ${test.error}` : ''}
           </p>
         )}
