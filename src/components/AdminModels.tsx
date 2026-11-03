@@ -123,7 +123,6 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
     try {
       const data = await api.post<{ test: TestResult }>(`/admin/models/${model.id}/providers/${providerId}/test`)
       setTestResults((prev) => ({ ...prev, [providerId]: data.test }))
-      onChanged()
     } catch (err) {
       setTestResults((prev) => ({
         ...prev,
@@ -147,7 +146,6 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
         `/admin/models/${model.id}/providers/${providerId}/test-via-proxy`
       )
       setTestResults((prev) => ({ ...prev, [providerId]: { ...data.test, viaProxy: true } }))
-      onChanged()
     } catch (err) {
       setTestResults((prev) => ({
         ...prev,
