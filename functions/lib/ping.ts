@@ -27,27 +27,22 @@ export async function pingProvider(
   const started = Date.now()
   const headers = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' }
 
-  try {
-    // If proxy is provided, use the proxy to make the request
-    // For Cloudflare Workers, we can use the cloudflare:sockets API for TCP proxies
-    // For simplicity, we test the proxy connectivity first, then if it works, 
-    // we assume the model is reachable via proxy (the actual routing handles it)
-    
-    if (proxy) {
-      // Test proxy connectivity
-      const proxyTest = await testProxyConnectivity(proxy)
-      if (!proxyTest.ok) {
-        return {
-          ok: false,
-          status: 'down',
-          latencyMs: Date.now() - started,
-          mode: 'models',
-          viaProxy: true,
-          error: `Proxy failed: ${proxyTest.error}`,
-        }
-      }
+  // If proxy is provided, test the proxy connectivity and return that result.
+  // Note: In Cloudflare Workers, we cannot easily route fetch() through a proxy.
+  // The actual model routing via proxy happens at the edge in the real request flow.
+  if (proxy) {
+    const proxyTest = await testProxyConnectivity(proxy)
+    return {
+      ok: proxyTest.ok,
+      status: proxyTest.ok ? 'live' : 'down',
+      latencyMs: Date.now() - started,
+      mode: 'models',
+      viaProxy: true,
+      error: proxyTest.error,
     }
+  }
 
+  try {
     let response = await fetch(`${base}/models`, { headers })
     let mode: 'models' | 'chat' = 'models'
     if (response.status === 404 || response.status === 405) {
@@ -60,7 +55,7 @@ export async function pingProvider(
     }
     const latencyMs = Date.now() - started
     if (response.ok) {
-      return { ok: true, status: latencyMs > SLOW_THRESHOLD_MS ? 'slow' : 'live', latencyMs, mode, viaProxy: !!proxy }
+      return { ok: true, status: latencyMs > SLOW_THRESHOLD_MS ? 'slow' : 'live', latencyMs, mode, viaProxy: false }
     }
     const detail = (await response.text().catch(() => '')).slice(0, 300)
     return {
@@ -68,7 +63,7 @@ export async function pingProvider(
       status: 'down',
       latencyMs,
       mode,
-      viaProxy: !!proxy,
+      viaProxy: false,
       error: `${response.status} ${response.statusText}${detail ? ` — ${detail}` : ''}`,
     }
   } catch (err) {
@@ -77,7 +72,7 @@ export async function pingProvider(
       status: 'down',
       latencyMs: Date.now() - started,
       mode: 'models',
-      viaProxy: !!proxy,
+      viaProxy: false,
       error: err instanceof Error ? err.message : 'Network error',
     }
   }
@@ -94,12 +89,17 @@ async function testProxyConnectivity(proxy: ProxyRow): Promise<{ ok: boolean; er
     const encoder = new TextEncoder()
     const reader = socket.readable.getReader()
 
-    // Send CONNECT to a known test endpoint (httpbin.org)
-    const connectReq = `CONNECT httpbin.org:443 HTTP/1.1\r\nHost: httpbin.org:443\r\n\r\n`
+    // Send CONNECT to a reliable test endpoint (google.com:443)
+    const connectReq = `CONNECT www.google.com:443 HTTP/1.1\r\nHost: www.google.com:443\r\n\r\n`
     await writer.write(encoder.encode(connectReq))
 
     let responseText = ''
+    const timeoutMs = 10000
+    const start = Date.now()
     while (true) {
+      if (Date.now() - start > timeoutMs) {
+        return { ok: false, error: 'Proxy connection timeout' }
+      }
       const { done, value } = await reader.read()
       if (done) break
       responseText += new TextDecoder().decode(value)
