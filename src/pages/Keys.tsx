@@ -66,6 +66,7 @@ export default function Keys() {
   // persisted is used for "New" badge
   const [expandedIds, setExpandedIds] = useState<string[]>(() => loadPersisted().expandedIds ?? [])
   const [testingId, setTestingId] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
   const [oauthPolling, setOauthPolling] = useState<Record<string, { state: string; interval: number } | null>>({})
   const [deviceInfo, setDeviceInfo] = useState<{ providerId: string; providerName: string; userCode: string; verificationUri: string } | null>(null)
   const pollStateRef = useRef<Record<string, string>>({})
@@ -134,16 +135,23 @@ export default function Keys() {
   }
 
   const handleDelete = async (key: ByokKey) => {
-    if (!confirm(`Delete key "${key.label}"? Chats using it will need another key. This cannot be undone.`)) return
-    try {
-      await api.del(`/keys/${key.id}`)
-      setKeys((prev) => prev.filter((k) => k.id !== key.id))
-      setExpandedIds((prev) => prev.filter((e) => e !== key.id))
-      setBanner({ kind: 'ok', text: `Key "${key.label}" deleted.` })
-    } catch (err: unknown) {
-      const msg = err instanceof ApiError ? err.message : err instanceof Response ? await err.text() : String(err)
-      setBanner({ kind: 'err', text: `Delete failed: ${msg}` })
+    if (deletingId === key.id) {
+      // Second click — actually delete
+      setDeletingId(null)
+      try {
+        await api.del(`/keys/${key.id}`)
+        setKeys((prev) => prev.filter((k) => k.id !== key.id))
+        setExpandedIds((prev) => prev.filter((e) => e !== key.id))
+        setBanner({ kind: 'ok', text: `Key "${key.label}" deleted.` })
+      } catch (err: unknown) {
+        const msg = err instanceof ApiError ? err.message : err instanceof Response ? await err.text() : String(err)
+        setBanner({ kind: 'err', text: `Delete failed: ${msg}` })
+      }
+      return
     }
+    // First click — show inline confirmation
+    setDeletingId(key.id)
+    setTimeout(() => setDeletingId(null), 3000)
   }
 
   const handleRefresh = async (id: string) => {
@@ -180,8 +188,8 @@ export default function Keys() {
           userCode: res.userCode ?? res.deviceCode ?? '',
           verificationUri: res.verificationUriComplete ?? res.verificationUri ?? res.authUrl,
         })
-        window.open(res.verificationUriComplete ?? res.verificationUri ?? res.authUrl, '_blank', 'noopener')
-        setBanner({ kind: 'ok', text: `${providerName}: enter the code on the opened page, then wait — the key appears below automatically.` })
+        window.location.assign(res.verificationUriComplete ?? res.verificationUri ?? res.authUrl)
+        setBanner({ kind: 'ok', text: `${providerName}: open the link above, enter the code, then wait — the key appears below automatically.` })
         pollOAuthToken(providerId, res.state, res.interval || 5)
       } else if (res.authUrl) {
         window.location.assign(res.authUrl)
@@ -374,6 +382,7 @@ export default function Keys() {
                       isTesting={testingId === k.id}
                       isAdding={isAdding}
                       isNew={isNew}
+                      deletingId={deletingId}
                     />
                   )
                 })}

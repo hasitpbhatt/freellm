@@ -14,6 +14,7 @@ interface KeyCardProps {
   isTesting: boolean
   isAdding: boolean
   isNew: boolean
+  deletingId: string | null
 }
 
 const statusDot: Record<string, string> = {
@@ -54,6 +55,7 @@ export function KeyCard({
   isTesting,
   isAdding,
   isNew,
+  deletingId,
 }: KeyCardProps) {
   // Touch-only swipe gestures. Swipe left = delete, swipe right = use in chat.
   // The rows reveal the action label under the finger while dragging, then
@@ -189,14 +191,25 @@ export function KeyCard({
             >
               Use in chat
             </Link>
-            <Button
-              variant="secondary"
-              size="sm"
-              className="text-loss hover:bg-loss/10 min-h-[44px] min-w-[44px] flex-1 sm:flex-initial"
-              onClick={() => { hapticWarning(); onDelete() }}
-            >
-              Delete
-            </Button>
+            {deletingId === keyData.id ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                className="text-loss hover:bg-loss/20 min-h-[44px] min-w-[44px] flex-1 sm:flex-initial animate-pulse"
+                onClick={() => { hapticWarning(); onDelete() }}
+              >
+                Delete again?
+              </Button>
+            ) : (
+              <Button
+                variant="secondary"
+                size="sm"
+                className="text-loss hover:bg-loss/10 min-h-[44px] min-w-[44px] flex-1 sm:flex-initial"
+                onClick={() => { hapticWarning(); onDelete() }}
+              >
+                Delete
+              </Button>
+            )}
           </div>
         </div>
         {isExpanded && (

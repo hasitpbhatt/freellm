@@ -398,6 +398,27 @@ app.get('/api/admin/models/:slug/metrics', async (c) => {
   return c.json({ slug, ...metrics })
 })
 
+// GET /api/admin/models/:slug/metrics/daily — daily usage time series for one model
+// (aggregate across all users, last 14 days). Powers the sparkline graph.
+app.get('/api/admin/models/:slug/metrics/daily', async (c) => {
+  const slug = c.req.param('slug')
+  const rows = await c.env.DB.prepare(
+    `SELECT date(created_at / 1000, 'unixepoch') AS day,
+            SUM(credits_charged) AS credits,
+            COUNT(*) AS requests
+     FROM freellm_usage_events
+     WHERE model = ? AND status != 'failed' AND created_at > ?
+     GROUP BY day ORDER BY day`,
+  )
+    .bind(slug, Date.now() - 14 * 86_400_000)
+    .all<{ day: string; credits: number; requests: number }>()
+
+  return c.json({
+    slug,
+    daily: rows.results.map((r) => ({ day: r.day, value: r.credits })),
+  })
+})
+
 // ------------------------------------------------ delete alias
 
 app.delete('/api/admin/models/:id', async (c) => {
@@ -1339,6 +1360,27 @@ app.get('/api/admin/users', async (c) => {
       earned: number
     }>()
   return c.json({ users: rows.results })
+})
+
+// GET /api/admin/users/:id/usage-daily — daily usage time series for one user
+// (last 14 days). Powers the sparkline graph on the users board.
+app.get('/api/admin/users/:id/usage-daily', async (c) => {
+  const id = c.req.param('id')
+  const rows = await c.env.DB.prepare(
+    `SELECT date(created_at / 1000, 'unixepoch') AS day,
+            SUM(credits_charged) AS credits,
+            COUNT(*) AS requests
+     FROM freellm_usage_events
+     WHERE user_id = ? AND status != 'failed' AND created_at > ?
+     GROUP BY day ORDER BY day`,
+  )
+    .bind(id, Date.now() - 14 * 86_400_000)
+    .all<{ day: string; credits: number; requests: number }>()
+
+  return c.json({
+    user_id: id,
+    daily: rows.results.map((r) => ({ day: r.day, value: r.credits })),
+  })
 })
 
 app.patch('/api/admin/users/:id', async (c) => {

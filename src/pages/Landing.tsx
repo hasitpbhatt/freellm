@@ -41,7 +41,7 @@ export default function Landing() {
           <div className="grid md:grid-cols-2 gap-8">
             {/* Door 1: BYOK Vault */}
             <Link to="/keys" className="block group">
-              <Card className="h-full hover:scale-[1.02] transition-all duration-200 border-2 border-accent/40 bg-surface group-hover:border-accent/60">
+              <Card className="h-full overflow-hidden hover:scale-[1.02] transition-all duration-200 border-2 border-accent/40 bg-surface group-hover:border-accent/60">
                 <div className="flex items-center justify-between border-b border-line px-6 py-4">
                   <h2 className="text-[13px] font-semibold tracking-wide text-accent uppercase">
                     Door 1: BYOK Vault
@@ -86,7 +86,7 @@ export default function Landing() {
 
             {/* Door 2: Model Marketplace */}
             <Link to="/models" className="block group">
-              <Card className="h-full hover:scale-[1.02] transition-all duration-200 border-2 border-gain/40 bg-surface group-hover:border-gain/60">
+              <Card className="h-full overflow-hidden hover:scale-[1.02] transition-all duration-200 border-2 border-gain/40 bg-surface group-hover:border-gain/60">
                 <div className="flex items-center justify-between border-b border-line px-6 py-4">
                   <h2 className="text-[13px] font-semibold tracking-wide text-gain uppercase">
                     Door 2: Model Marketplace

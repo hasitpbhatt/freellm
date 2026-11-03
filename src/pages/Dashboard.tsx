@@ -133,17 +133,19 @@ export default function Dashboard() {
           <p className="text-[12px] text-muted">days checked in</p>
           {hasCheckedIn ? (
             <p className="mt-2 text-[13px] text-muted">Checked in today <span aria-hidden="true">✓</span></p>
-          ) : (
+          ) : earn && !earn.verified ? (
             <>
-              <Button className="mt-2" variant="secondary" disabled={checkingIn || !earn?.verified} onClick={() => void checkIn()}>
-                {checkingIn ? 'Checking in…' : 'Check in'}
+              <Button className="mt-2" variant="secondary" disabled onClick={() => void checkIn()}>
+                Check in
               </Button>
-              {earn && !earn.verified && (
-                <p className="mt-1 text-[12px] text-muted">
-                  Verify your email on the <Link to="/earn" className="text-accent hover:underline">Earn page</Link> first.
-                </p>
-              )}
+              <p className="mt-1 text-[12px] text-muted">
+                Verify your email first — <Link to="/earn" className="text-accent hover:underline">get a verification link on the Earn page →</Link>
+              </p>
             </>
+          ) : (
+            <Button className="mt-2" variant="secondary" disabled={checkingIn} onClick={() => void checkIn()}>
+              {checkingIn ? 'Checking in…' : 'Check in +50k'}
+            </Button>
           )}
         </Card>
 
@@ -172,7 +174,7 @@ export default function Dashboard() {
                 <span className="text-[12px] text-muted">{item.detail}</span>
               </div>
               {!item.done && (
-                <Link to={item.to} className="ml-auto btn-secondary btn-sm min-w-[64px]" aria-label={`${item.label} — open Earn page`}>
+                <Link to={item.to} className="ml-auto btn-secondary btn-sm min-w-[64px] px-3 py-1.5 text-[12px] font-medium rounded-md border border-line bg-surface hover:bg-surface-2 text-content transition-colors" aria-label={`${item.label} — open ${item.label.toLowerCase()} page`}>
                   Go
                 </Link>
               )}

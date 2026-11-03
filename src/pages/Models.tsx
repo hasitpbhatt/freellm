@@ -84,7 +84,19 @@ export default function Models() {
       )}
 
       <div className="flex flex-wrap gap-2">
-        <input className="input min-w-[180px] flex-1" placeholder="Search models..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        <div className="relative flex-1 min-w-[180px]">
+          <input className="input pl-8" placeholder="Search models…" value={search} onChange={(e) => setSearch(e.target.value)} />
+          {search && (
+            <button
+              type="button"
+              onClick={() => setSearch('')}
+              className="absolute left-2 top-1/2 -translate-y-1/2 text-[11px] text-muted hover:text-content"
+              aria-label="Clear search"
+            >
+              ✕
+            </button>
+          )}
+        </div>
         <select className="input" value={sort} onChange={(e) => setSort(e.target.value as any)}>
           <option value="status">Sort: status</option>
           <option value="label">Sort: name</option>

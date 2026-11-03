@@ -80,7 +80,7 @@ export default function Usage() {
       </div>
 
       {/* Summary */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <Card className="p-4">
           <p className="text-[12px] uppercase tracking-wide text-muted">Spent</p>
           <p className="num mt-1 text-xl font-semibold">

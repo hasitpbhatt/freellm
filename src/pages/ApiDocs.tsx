@@ -39,15 +39,15 @@ function CodeBlock({ code, lang, label }: { code: string; lang?: string; label?:
           }
         }}
       >
-        <span aria-live="polite">{copied ? 'copied' : copyFailed ? 'copy failed — select manually' : `copy${lang ? ` ${lang}` : ''}`}</span>
+        <span aria-live="polite">{copied ? 'copied' : copyFailed ? 'copy failed — select manually' : `Copy${lang ? ` ${lang} code` : ''}`}</span>
       </button>
     </div>
   )
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children, id }: { title: string; children: React.ReactNode; id?: string }) {
   return (
-    <Card>
+    <Card id={id}>
       <CardHeader title={title} />
       <div className="flex flex-col gap-3 p-4 text-[13px] leading-relaxed">{children}</div>
     </Card>
@@ -152,9 +152,22 @@ export default function ApiDocs() {
         </p>
       )}
 
+      {/* Page contents */}
+      <nav className="p-4 rounded-lg border border-line bg-surface-2/50 text-[12px]">
+        <p className="font-medium text-content mb-2">On this page</p>
+        <ol className="list-decimal list-inside space-y-1 text-muted">
+          <li><a href="#step-1-key" className="text-accent hover:underline">1 · Create an API key</a></li>
+          <li><a href="#step-2-js" className="text-accent hover:underline">2 · Call it — OpenAI SDK (JavaScript)</a></li>
+          <li><a href="#step-3-python" className="text-accent hover:underline">3 · Call it — Python</a></li>
+          <li><a href="#step-4-curl" className="text-accent hover:underline">4 · Call it — curl</a></li>
+          <li><a href="#step-5-endpoints" className="text-accent hover:underline">5 · Endpoints reference</a></li>
+          <li><a href="#step-6-billing" className="text-accent hover:underline">6 · Billing and errors</a></li>
+        </ol>
+      </nav>
+
       {/* Step 1 — a key */}
       {user ? (
-        <Card>
+        <Card id="step-1-key">
           <CardHeader title="1 · Create an API key" action={<span className="num text-[12px] text-muted">fl_… · Bearer</span>} />
           <div className="flex flex-col gap-4 p-4">
             <p className="text-[13px] text-muted">
@@ -221,7 +234,7 @@ export default function ApiDocs() {
       )}
 
       {/* Step 2 — use it */}
-      <Section title="2 · call it — OpenAI SDK">
+      <Section id="step-2-js" title="2 · call it — OpenAI SDK">
         <p className="text-muted">
           Any OpenAI-compatible client works. Point it at this deployment's gateway with your{' '}
           <code className="num">fl_…</code> key as the Bearer token:
@@ -252,7 +265,7 @@ for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.
         />
       </Section>
 
-      <Section title="Available models — slugs for the model field">
+      <Section id="step-2-models" title="Available models — slugs for the model field">
         {models.length === 0 ? (
           <p className="text-muted">Loading the pool catalog…</p>
         ) : (
@@ -290,7 +303,7 @@ for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.
         </p>
       </Section>
 
-      <Section title="3 · call it — Python">
+      <Section id="step-3-python" title="3 · call it — Python">
         <p className="text-muted">
           Same gateway, official SDK <code className="num">pip install openai</code> (v1+):
         </p>
@@ -320,7 +333,7 @@ for chunk in stream:
         />
       </Section>
 
-      <Section title="4 · call it — curl">
+      <Section id="step-4-curl" title="4 · call it — curl">
         <CodeBlock
           lang="bash"
           label="List models"
@@ -379,7 +392,7 @@ curl -s ${BASE_URL}/chat/completions \\
       </Section>
 
       {/* Reference */}
-      <Section title="5 · endpoints">
+      <Section id="step-5-endpoints" title="5 · endpoints">
         <p className="text-muted">
           Gateway base URL is <code className="num">{BASE_URL}</code> for the <code className="num">/v1/*</code>{' '}
           OpenAI-compatible surface. The <code className="num">/api/*</code> native surface lives at the same
@@ -421,7 +434,7 @@ curl -s ${BASE_URL}/chat/completions \\
       </Section>
 
       {/* Billing + errors */}
-      <Section title="6 · billing and errors">
+      <Section id="step-6-billing" title="6 · billing and errors">
         <p className="text-muted">
           Every pool completion is charged in credits equal to the tokens the provider reported. When a
           provider reports no usage, the model's flat rate applies (shown per model in{' '}

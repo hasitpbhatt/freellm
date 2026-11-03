@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { api, ApiError } from '../lib/api'
 import { Button, Card } from '../components/ui'
+import { Sparkline } from './Sparkline'
 import type { ModelAlias, ModelProvider, UpstreamModel, UpstreamProvider } from '../lib/types'
 
 type TestResult = { ok: boolean; status: string; latencyMs: number | null; error?: string; mode: string }
@@ -113,6 +114,7 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null)
   const [actionError, setActionError] = useState('')
   const [metrics, setMetrics] = useState<{ totalRequests: number; totalInputTokens: number; totalOutputTokens: number; totalTokens: number } | null>(null)
+  const [dailyMetrics, setDailyMetrics] = useState<{ day: string; value: number }[] | null>(null)
   const [metricsError, setMetricsError] = useState('')
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({})
 
@@ -264,6 +266,19 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
         if (!cancelled) setMetricsError(e instanceof ApiError ? e.message : 'Failed to load model metrics.')
       }
     })()
+
+    // Daily usage time series for the sparkline graph.
+    void (async () => {
+      try {
+        const data = await api.get<{ slug: string; daily: { day: string; value: number }[] }>(
+          `/admin/models/${model.slug}/metrics/daily`,
+        )
+        if (!cancelled) setDailyMetrics(data.daily)
+      } catch {
+        // Daily metrics are advisory — the aggregate metrics still show.
+      }
+    })()
+
     return () => {
       cancelled = true
     }
@@ -275,22 +290,36 @@ function AliasCard({ model, onChanged }: { model: ModelAlias; onChanged: () => v
     }
     if (metrics === null) return null
     return (
-      <div className="grid grid-cols-4 gap-4 px-4 py-3 text-[12px] border-t border-line bg-surface-2">
-        <div>
-          <span className="block font-medium text-muted">Requests</span>
-          <span className="num text-gain">{metrics.totalRequests.toLocaleString('en-US')}</span>
+      <div className="px-4 py-3 border-t border-line bg-surface-2">
+        <div className="grid grid-cols-4 gap-4 text-[12px] mb-3">
+          <div>
+            <span className="block font-medium text-muted">Requests</span>
+            <span className="num text-gain">{metrics.totalRequests.toLocaleString('en-US')}</span>
+          </div>
+          <div>
+            <span className="block font-medium text-muted">Input tokens</span>
+            <span className="num text-primary">{metrics.totalInputTokens.toLocaleString('en-US')}</span>
+          </div>
+          <div>
+            <span className="block font-medium text-muted">Output tokens</span>
+            <span className="num text-primary">{metrics.totalOutputTokens.toLocaleString('en-US')}</span>
+          </div>
+          <div>
+            <span className="block font-medium text-muted">Total tokens</span>
+            <span className="num text-accent">{metrics.totalTokens.toLocaleString('en-US')}</span>
+          </div>
         </div>
-        <div>
-          <span className="block font-medium text-muted">Input tokens</span>
-          <span className="num text-primary">{metrics.totalInputTokens.toLocaleString('en-US')}</span>
-        </div>
-        <div>
-          <span className="block font-medium text-muted">Output tokens</span>
-          <span className="num text-primary">{metrics.totalOutputTokens.toLocaleString('en-US')}</span>
-        </div>
-        <div>
-          <span className="block font-medium text-muted">Total tokens</span>
-          <span className="num text-accent">{metrics.totalTokens.toLocaleString('en-US')}</span>
+        <div className="flex items-center gap-4">
+          <Sparkline
+            data={dailyMetrics ?? []}
+            label="Daily credits (14d)"
+            width={200}
+            height={44}
+            color="var(--accent)"
+          />
+          {dailyMetrics?.length === 0 && (
+            <span className="text-[11px] text-muted">No usage in the last 14 days</span>
+          )}
         </div>
       </div>
     )

@@ -492,8 +492,8 @@ export default function Earn() {
         </Card>
       )}
 
-      {/* TILE GRID */}
-      <div className="grid gap-3 earn-tile-grid sm:grid-cols-2 lg:grid-cols-8">
+      {/* TILE GRID — responsive, wraps instead of overflowing */}
+      <div className="grid gap-3 earn-tile-grid sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-4">
         {/* Arcade Tile */}
         <EarnTile
           id="arcade-section"
@@ -521,7 +521,10 @@ export default function Earn() {
           reward={`+${state?.referral.reward.toLocaleString() ?? '500,000'} cr each`}
           actionLabel="View"
           icon="👥"
-          onAction={() => {}}
+          onAction={() => {
+            const el = document.getElementById('referral-section')
+            el?.scrollIntoView({ behavior: 'smooth' })
+          }}
           expanded={expandedTile === 'referral'}
           onExpand={makeTileExpandHandler('referral')}
         >
@@ -537,7 +540,10 @@ export default function Earn() {
           reward={state?.tasks.reduce((sum, t) => sum + (t.completed ? 0 : t.reward), 0).toLocaleString() ? `+${state.tasks.reduce((sum, t) => sum + (t.completed ? 0 : t.reward), 0).toLocaleString()} cr available` : 'No tasks'}
           actionLabel="View"
           icon="📋"
-          onAction={() => {}}
+          onAction={() => {
+            const el = document.getElementById('tasks-section')
+            el?.scrollIntoView({ behavior: 'smooth' })
+          }}
           expanded={expandedTile === 'tasks'}
           onExpand={makeTileExpandHandler('tasks')}
         >
@@ -553,9 +559,12 @@ export default function Earn() {
           reward="Up to 350k cr/week"
           actionLabel="View"
           icon="📋"
-          onAction={() => {}}
-          expanded={false}
-          onExpand={() => {}}
+          onAction={() => {
+            const el = document.getElementById('weekly-quests-section')
+            el?.scrollIntoView({ behavior: 'smooth' })
+          }}
+          expanded={expandedTile === 'weekly-quests'}
+          onExpand={makeTileExpandHandler('weekly-quests')}
         >
           <WeeklyQuests />
         </EarnTile>
@@ -569,9 +578,12 @@ export default function Earn() {
           reward="Bragging rights"
           actionLabel="View"
           icon="🏆"
-          onAction={() => {}}
-          expanded={false}
-          onExpand={() => {}}
+          onAction={() => {
+            const el = document.getElementById('leaderboards-section')
+            el?.scrollIntoView({ behavior: 'smooth' })
+          }}
+          expanded={expandedTile === 'leaderboards'}
+          onExpand={makeTileExpandHandler('leaderboards')}
         >
           <Leaderboards />
         </EarnTile>
@@ -585,9 +597,12 @@ export default function Earn() {
           reward="Up to 300k cr"
           actionLabel="View"
           icon="🏅"
-          onAction={() => {}}
-          expanded={false}
-          onExpand={() => {}}
+          onAction={() => {
+            const el = document.getElementById('badges-section')
+            el?.scrollIntoView({ behavior: 'smooth' })
+          }}
+          expanded={expandedTile === 'badges'}
+          onExpand={makeTileExpandHandler('badges')}
         >
           <Badges />
         </EarnTile>
@@ -601,9 +616,12 @@ export default function Earn() {
           reward="Referral boost"
           actionLabel="View"
           icon="👥"
-          onAction={() => {}}
-          expanded={false}
-          onExpand={() => {}}
+          onAction={() => {
+            const el = document.getElementById('friends-streaks-section')
+            el?.scrollIntoView({ behavior: 'smooth' })
+          }}
+          expanded={expandedTile === 'friends-streaks'}
+          onExpand={makeTileExpandHandler('friends-streaks')}
         >
           <FriendsStreaks />
         </EarnTile>
@@ -617,9 +635,12 @@ export default function Earn() {
           reward="Exclusive cosmetics"
           actionLabel="View"
           icon="🎉"
-          onAction={() => {}}
-          expanded={false}
-          onExpand={() => {}}
+          onAction={() => {
+            const el = document.getElementById('seasonal-events-section')
+            el?.scrollIntoView({ behavior: 'smooth' })
+          }}
+          expanded={expandedTile === 'seasonal-events'}
+          onExpand={makeTileExpandHandler('seasonal-events')}
         >
           <SeasonalEvents />
         </EarnTile>

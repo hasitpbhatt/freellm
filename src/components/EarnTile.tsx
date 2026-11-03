@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react'
+import type { SyntheticEvent } from 'react'
 import { Button, Card, StatusBadge } from './ui'
 
 interface EarnTileProps {
@@ -51,12 +52,12 @@ export default function EarnTile({
   return (
     <Card
       id={id}
-      className={`earn-tile flex flex-col ${isHovered ? 'border-accent/50 -translate-y-0.5 transition-all duration-150' : 'transition-all duration-150'}`}
+      className={`earn-tile flex flex-col ${isHovered ? 'border-accent/50 shadow-md' : ''} transition-all duration-200`}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
-      <details className="flex flex-col h-full" onToggle={handleSummaryToggle}>
-        <summary className="p-4 flex flex-col gap-3 list-none cursor-pointer">
+      <div className="flex flex-col h-full" onClick={handleSummaryToggle} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleSummaryToggle(e as unknown as SyntheticEvent); } }} aria-expanded={isExpanded} aria-label={`Expand ${title}`}>
+        <div className="p-4 flex flex-col gap-3 cursor-pointer">
           <div className="flex items-start gap-3">
             {icon && <span className="shrink-0 text-[22px]" aria-hidden="true">{icon}</span>}
             <div className="flex-1 min-w-0">
@@ -70,18 +71,18 @@ export default function EarnTile({
 
           <div className="flex items-center justify-between pt-2 border-t border-line">
             <span className="num text-[13px] text-gain">{reward}</span>
-            <Button size="sm" variant="secondary" className="shrink-0" onClick={onAction}>
+            <Button size="sm" variant="secondary" className="shrink-0" onClick={(e) => { e.stopPropagation(); onAction(); }}>
               {actionLabel}
             </Button>
           </div>
-        </summary>
+        </div>
 
         {children && isExpanded && (
           <div className="px-4 pb-4 pt-2 border-t border-line animate-slide-down">
             {children}
           </div>
         )}
-      </details>
+      </div>
     </Card>
   )
 }

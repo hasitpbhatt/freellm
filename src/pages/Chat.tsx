@@ -680,25 +680,30 @@ export default function Chat() {
         >
           {messages.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-4 text-center text-muted px-4">
-              <p className="text-[13px] max-w-md">
-                What is freellm.hasit.in? A community-owned arena for indie AI models. Bring your own key and chat free, or spend credits (1 cr = 1 token) on models in The Pool.
+              <p className="text-[13px] max-w-md leading-relaxed">
+                A community-owned arena for indie AI models.{' '}
+                {mode === 'pool'
+                  ? 'Spend earned credits (1 cr = 1 token) on models in The Pool.'
+                  : 'Bring your own key — chat free, unmetered.'}
               </p>
-              <p className="text-[13px]">
+              <p className="text-[13px] max-w-md">
                 Ask {mode === 'pool' ? (model?.label ?? 'a model') : (selectedKey?.label ?? 'your key')} anything.
               </p>
-              <div className="flex flex-wrap justify-center gap-2 mt-2 max-w-md">
-                {['Explain quantum entanglement simply', 'Write a Python quicksort', 'Summarize this in 3 bullets: ', 'Debug this code: '].map((p) => (
-                  <button key={p} type="button" onClick={() => setInput(p)} className="rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] text-muted hover:text-content">{p}</button>
+              <div className="flex flex-wrap justify-center gap-2 mt-4 max-w-md">
+                {['Explain quantum entanglement simply', 'Write a Python quicksort', 'Summarize this in 3 bullets', 'Debug this code'].map((p) => (
+                  <button key={p} type="button" onClick={() => setInput(p)} className="rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] text-muted hover:text-content hover:bg-surface-2 transition-colors">{p}</button>
                 ))}
               </div>
-              <p className="num text-[12px] max-w-md">
-                {mode === 'pool'
-                  ? 'Billing uses the provider\'s reported token counts; the flat rate applies only when usage is unreported or a stream is stopped early.'
-                  : 'Free — no balance check, no metering. Your key, your endpoint, your cost.'}
-              </p>
               {mode === 'byok' && !selectedKey && (
-                <Button variant="primary" onClick={() => navigate('/keys')}>Add a key to start</Button>
+                <div className="mt-4">
+                  <Button variant="primary" onClick={() => navigate('/keys')}>Add a key to start</Button>
+                </div>
               )}
+              <p className="num text-[11px] max-w-md mt-4">
+                {mode === 'pool'
+                  ? 'Billing uses provider-reported token counts; flat rate applies only when usage is unreported or a stream is stopped early.'
+                  : 'Free — no balance check, no metering.'}
+              </p>
             </div>
           ) : (
             <div className="flex flex-col gap-4">
