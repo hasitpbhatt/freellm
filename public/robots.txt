@@ -1,0 +1,25 @@
+# freellm.hasit.in - Community-owned arena for indie AI models
+User-agent: *
+Allow: /
+
+# Sitemap
+Sitemap: https://freellm.hasit.in/sitemap.xml
+
+# Disallow private/admin routes
+Disallow: /admin
+Disallow: /dashboard
+Disallow: /chat
+Disallow: /keys
+Disallow: /earn
+Disallow: /models
+Disallow: /usage
+Disallow: /developers
+Disallow: /verify-email
+Disallow: /login
+Disallow: /api/
+Disallow: /v1/
+
+# Allow public pages
+Allow: /$
+Allow: /providers
+Allow: /r/

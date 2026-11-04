@@ -885,6 +885,107 @@ app.get('/api/usage', requireAuth, async (c) => {
 })
 
 // =====================================================================
+// Usage Export (CSV/JSON)
+// =====================================================================
+
+app.get('/api/usage/export', requireAuth, async (c) => {
+  const user = c.get('user')
+  const format = c.req.query('format') || 'csv'  // csv or json
+  const days = parseInt(c.req.query('days') || '365', 10)  // default 1 year
+
+  const since = now() - days * 86_400_000
+
+  const [events, perModel, daily] = await Promise.all([
+    c.env.DB.prepare(
+      'SELECT model, source, status, input_tokens, output_tokens, total_tokens, credits_charged, latency_ms, created_at, key_mode' +
+      ' FROM freellm_usage_events WHERE user_id = ? AND status != \'failed\' AND created_at > ?' +
+      ' ORDER BY created_at DESC',
+    )
+      .bind(user.id, since)
+      .all<{
+        model: string
+        source: string
+        status: string
+        input_tokens: number | null
+        output_tokens: number | null
+        total_tokens: number | null
+        credits_charged: number
+        latency_ms: number | null
+        created_at: number
+        key_mode: string
+      }>(),
+    c.env.DB.prepare(
+      'SELECT model,' +
+      ' COUNT(*) AS messages,' +
+      ' SUM(credits_charged) AS credits,' +
+      ' SUM(total_tokens) AS tokens,' +
+      ' SUM(input_tokens) AS input_tokens,' +
+      ' SUM(output_tokens) AS output_tokens,' +
+      ' SUM(CASE WHEN source = \'flat_rate\' THEN 1 ELSE 0 END) AS flat_rate_messages' +
+      ' FROM freellm_usage_events WHERE user_id = ? AND status != \'failed\' AND created_at > ?' +
+      ' GROUP BY model ORDER BY credits DESC',
+    )
+      .bind(user.id, since)
+      .all<{
+        model: string
+        messages: number
+        credits: number
+        tokens: number | null
+        input_tokens: number | null
+        output_tokens: number | null
+        flat_rate_messages: number
+      }>(),
+    c.env.DB.prepare(
+      'SELECT date(created_at / 1000, \'unixepoch\') AS day, SUM(credits_charged) AS credits, COUNT(*) AS messages' +
+      ' FROM freellm_usage_events WHERE user_id = ? AND status != \'failed\' AND created_at > ?' +
+      ' GROUP BY day ORDER BY day',
+    )
+      .bind(user.id, since)
+      .all<{ day: string; credits: number; messages: number }>(),
+  ])
+
+  const data = {
+    exported_at: new Date().toISOString(),
+    user_id: user.id,
+    username: user.username,
+    period_days: days,
+    events: events.results,
+    per_model: perModel.results,
+    daily: daily.results,
+  }
+
+  if (format === 'json') {
+    return c.json(data)
+  }
+
+  // CSV format - flatten events
+  const headers = [
+    'date', 'model', 'source', 'status', 'key_mode',
+    'input_tokens', 'output_tokens', 'total_tokens', 'credits_charged', 'latency_ms'
+  ]
+  const rows = events.results.map(e => [
+    new Date(e.created_at).toISOString(),
+    e.model,
+    e.source,
+    e.status,
+    e.key_mode,
+    e.input_tokens ?? '',
+    e.output_tokens ?? '',
+    e.total_tokens ?? '',
+    e.credits_charged,
+    e.latency_ms ?? '',
+  ])
+  const csv = [headers.join(',')].concat(rows.map(r => r.map(v => typeof v === 'string' && v.includes(',') ? '\"' + v + '\"' : v).join(','))).join('\n')
+
+  return new Response(csv, {
+    headers: {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': 'attachment; filename=\"freellm-usage-' + new Date().toISOString().split('T')[0] + '.csv\"'
+    }
+  })
+})
+
+// =====================================================================
 // Ledger
 // =====================================================================
 

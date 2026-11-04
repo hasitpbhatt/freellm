@@ -11,6 +11,7 @@ const navItems = [
   { to: '/keys', label: 'Your Keys' },
   { to: '/earn', label: 'Earn' },
   { to: '/models', label: 'Models' },
+  { to: '/providers', label: 'Providers' },
   { to: '/developers', label: 'API' },
 ]
 
@@ -28,34 +29,29 @@ export default function AppShell() {
           <Link to="/" className="flex min-h-[44px] items-center gap-2 font-semibold">
             <span className="text-accent" aria-hidden="true">◈</span> freellm
           </Link>
-          {/* Desktop: horizontal top nav. Mobile: the hamburger + bottom tabs below. */}
           <nav aria-label="Primary" className="-mx-1 hidden max-w-full flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap px-1 text-sm [scrollbar-width:thin] md:flex">
             {navItems.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}
                 className={({ isActive }) =>
-                  `rounded-md px-2.5 py-2.5 transition-colors ${
-                    isActive ? 'bg-surface-2 text-content' : 'text-muted hover:text-content'
-                  }`
+                  `rounded-md px-2.5 py-2.5 transition-colors ${isActive ? "bg-surface-2 text-content" : "text-muted hover:text-content"}`
                 }
               >
                 {({ isActive }) => (
-                  <span aria-current={isActive ? 'page' : undefined}>{item.label}</span>
+                  <span aria-current={isActive ? "page" : undefined}>{item.label}</span>
                 )}
               </NavLink>
             ))}
-            {user?.role === 'admin' && (
+            {user?.role === "admin" && (
               <NavLink
                 to="/admin"
                 className={({ isActive }) =>
-                  `rounded-md px-2.5 py-2.5 transition-colors ${
-                    isActive ? 'bg-surface-2 text-content' : 'text-muted hover:text-content'
-                  }`
+                  `rounded-md px-2.5 py-2.5 transition-colors ${isActive ? "bg-surface-2 text-content" : "text-muted hover:text-content"}`
                 }
               >
                 {({ isActive }) => (
-                  <span aria-current={isActive ? 'page' : undefined}>Admin</span>
+                  <span aria-current={isActive ? "page" : undefined}>Admin</span>
                 )}
               </NavLink>
             )}
@@ -80,7 +76,6 @@ export default function AppShell() {
                 >
                   Sign out
                 </button>
-                {/* Mobile: hamburger opens the drawer with secondary items + account. */}
                 <button
                   type="button"
                   onClick={() => setMenuOpen(true)}

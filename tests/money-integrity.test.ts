@@ -458,7 +458,10 @@ test('referral payout: concurrent qualification sweeps pay ONCE', async () => {
        VALUES (?, 'b@x.com', 'b', NULL, 'refb0001', 0, 'user', 1, ?, ?)`,
     ).bind(referred, now, now),
   ])
-  // The referred user burns well past the token milestone.
+  // The referred user burns well past the token milestone (200k tokens).
+  // User is email_verified, so 'signup' milestone also qualifies.
+  // Tenure is 1 day (not 7), so tenure_7 does NOT qualify.
+  // Total 2 milestones qualify: signup (50k) + tokens_200k (225k) = 275k
   await db
     .prepare(
       `INSERT INTO freellm_usage_events (id, request_id, user_id, model, provider, source, input_tokens, output_tokens, total_tokens, credits_charged, status, key_mode, latency_ms, created_at)
@@ -475,11 +478,14 @@ test('referral payout: concurrent qualification sweeps pay ONCE', async () => {
     .run()
 
   const [paidA, paidB] = await Promise.all([qualifyReferrals(db, referrer), qualifyReferrals(db, referrer)])
-  assert.equal(paidA + paidB, 1, 'only one sweep may pay the waiting referral')
-  assert.equal(await balanceOf(referrer), REFERRAL_REWARD)
-  assert.equal(await ledgerSum(referrer, 'referral_reward'), REFERRAL_REWARD)
+  // 2 milestones qualify (signup + tokens_200k), concurrent calls should not double-pay
+  assert.equal(paidA + paidB, 2, 'concurrent sweeps pay each milestone once, total 2 milestones')
+  // Referrer gets 50k (signup) + 225k (tokens_200k) = 275k total
+  assert.equal(await balanceOf(referrer), 275_000)
+  assert.equal(await ledgerSum(referrer, 'referral_reward'), 275_000)
   const row = await db.prepare('SELECT status FROM freellm_referrals WHERE id = ?').bind('ref_row').first<{ status: string }>()
-  assert.equal(row?.status, 'paid')
+  // Not all milestones paid, so status stays 'waiting'
+  assert.equal(row?.status, 'waiting')
 })
 
 // ----------------------------------------------------------------- metering

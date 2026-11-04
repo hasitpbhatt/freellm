@@ -1,6 +1,6 @@
-import { Link, Navigate } from 'react-router-dom'
-import { useAuth } from '../lib/useAuth'
-import { Card } from '../components/ui'
+import { Link, Navigate } from "react-router-dom"
+import { useAuth } from "../lib/useAuth"
+import { Card } from "../components/ui"
 
 export default function Landing() {
   const { user, loading } = useAuth()
@@ -32,6 +32,9 @@ export default function Landing() {
           <Link to="/models" className="btn-secondary px-8 py-3 text-sm font-medium">
             Browse The Pool →
           </Link>
+          <Link to="/providers" className="btn-secondary px-8 py-3 text-sm font-medium">
+            Compare Providers →
+          </Link>
         </div>
       </section>
 
@@ -41,7 +44,8 @@ export default function Landing() {
           <div className="grid md:grid-cols-2 gap-8">
             {/* Door 1: BYOK Vault */}
             <Link to="/keys" className="block group">
-              <Card className="h-full overflow-hidden hover:scale-[1.02] transition-all duration-200 border-2 border-accent/40 bg-surface group-hover:border-accent/60">
+              <Card className="h-full overflow-hidden hover:scale-[1.02] transition-all duration-200 border-2 border-accent/40 bg-surface group-hover:border-accent/60">
+
                 <div className="flex items-center justify-between border-b border-line px-6 py-4">
                   <h2 className="text-sm font-semibold tracking-wide text-accent uppercase">
                     Door 1: BYOK Vault
@@ -86,7 +90,8 @@ export default function Landing() {
 
             {/* Door 2: Model Marketplace */}
             <Link to="/models" className="block group">
-              <Card className="h-full overflow-hidden hover:scale-[1.02] transition-all duration-200 border-2 border-gain/40 bg-surface group-hover:border-gain/60">
+              <Card className="h-full overflow-hidden hover:scale-[1.02] transition-all duration-200 border-2 border-gain/40 bg-surface group-hover:border-gain/60">
+
                 <div className="flex items-center justify-between border-b border-line px-6 py-4">
                   <h2 className="text-sm font-semibold tracking-wide text-gain uppercase">
                     Door 2: Model Marketplace
@@ -129,6 +134,42 @@ export default function Landing() {
               </Card>
             </Link>
           </div>
+        </div>
+      </section>
+
+      {/* Door 3: Provider Directory */}
+      <section className="border-t border-line bg-bg">
+        <div className="mx-auto max-w-4xl px-4 py-12">
+          <div className="text-center mb-8">
+            <h2 className="text-2xl font-bold text-content mb-3">Door 3: Provider Directory</h2>
+            <p className="text-muted max-w-lg mx-auto">
+              Not sure which provider to use? Compare 20+ free LLM APIs and local runners side by side.
+            </p>
+          </div>
+          <Link to="/providers" className="block group">
+            <Card className="max-w-2xl mx-auto overflow-hidden hover:scale-[1.02] transition-all duration-200 border-2 border-blue-500/40 bg-surface group-hover:border-blue-500/60">
+              <div className="p-6">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 bg-blue-500/20 rounded-full flex items-center justify-center text-blue-400 text-xl">
+                    📊
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-content">Free LLM Providers & Gateways</h3>
+                    <p className="text-sm text-muted">OpenRouter, Together, Groq, Fireworks, OpenAI, Anthropic, Google, Mistral, Cohere, xAI + local runners</p>
+                  </div>
+                </div>
+                <ul className="space-y-2 text-sm text-muted">
+                  <li className="flex items-center gap-2"><span className="text-green-500">✓</span> Rate limits, free tier models, features compared</li>
+                  <li className="flex items-center gap-2"><span className="text-green-500">✓</span> Gateways, direct providers, local runners categorized</li>
+                  <li className="flex items-center gap-2"><span className="text-green-500">✓</span> Signup bonuses, pricing, best-for tags</li>
+                  <li className="flex items-center gap-2"><span className="text-green-500">✓</span> Affiliate links support freellm</li>
+                </ul>
+                <button className="w-full mt-6 py-3 bg-blue-500 text-white rounded-lg font-medium group-hover:opacity-90 transition-colors">
+                  Compare Providers →
+                </button>
+              </div>
+            </Card>
+          </Link>
         </div>
       </section>
 

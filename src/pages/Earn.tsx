@@ -707,6 +707,7 @@ export default function Earn() {
             <p><strong>Referrals:</strong> +500,000 cr when friend hits 7 days or 200K pool tokens</p>
             <p><strong>Tasks:</strong> One-time rewards for specific actions (e.g., GitHub star)</p>
             <p><strong>All earning requires verified email.</strong></p>
+            <p><strong>Compare providers:</strong> <Link to="/providers" className="text-accent hover:underline">Free LLM Providers & Gateways</Link> — 20+ APIs & local runners compared</p>
           </div>
         </div>
       </details>

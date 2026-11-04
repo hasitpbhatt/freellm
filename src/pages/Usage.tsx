@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { api } from '../lib/api'
-import { useAuth } from '../lib/useAuth'
-import { Card, CardHeader, Credits } from '../components/ui'
+import { useEffect, useState } from "react"
+import { Link } from "react-router-dom"
+import { api } from "../lib/api"
+import { useAuth } from "../lib/useAuth"
+import { Card, CardHeader, Credits } from "../components/ui"
 
 type Usage = {
   totals: { credits_spent: number; messages: number; tokens_reported: number }
@@ -31,17 +31,28 @@ type Usage = {
   }[]
 }
 
+
+function exportUsage(format: "csv" | "json", days: number) {
+  const url = `/api/usage/export?format=${format}&days=${days}`
+  const a = document.createElement("a")
+  a.href = url
+  a.download = `freellm-usage-${new Date().toISOString().split("T")[0]}.${format}`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+}
+
 export default function Usage() {
   const { user, loading } = useAuth()
   const [usage, setUsage] = useState<Usage | null>(null)
-  const [error, setError] = useState('')
+  const [error, setError] = useState("")
 
   useEffect(() => {
     if (!user) return
     api
-      .get<Usage>('/usage')
+      .get<Usage>("/usage")
       .then(setUsage)
-      .catch(() => setError('Could not load usage.'))
+      .catch(() => setError("Could not load usage."))
   }, [user])
 
   if (loading) return <p className="py-12 text-center text-sm text-muted">Loading…</p>
@@ -58,7 +69,17 @@ export default function Usage() {
     return (
       <div className="mx-auto max-w-md py-12 text-center">
         <p className="text-sm text-loss" role="alert">{error}</p>
-        <button onClick={() => { setError(''); setUsage(null); api.get<Usage>('/usage').then(setUsage).catch(() => setError('Could not load usage.')) }} className="btn-secondary mt-4">
+        <button
+          onClick={() => {
+            setError("")
+            setUsage(null)
+            api
+              .get<Usage>("/usage")
+              .then(setUsage)
+              .catch(() => setError("Could not load usage."))
+          }}
+          className="btn-secondary mt-4"
+        >
           Retry
         </button>
       </div>
@@ -70,13 +91,31 @@ export default function Usage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-xl font-semibold">Usage</h1>
-        <p className="mt-1 text-sm text-muted">
-          Every request metered from provider-reported token counts — or the model's flat rate when
-          usage is unreported. Failed requests are never charged; stopped streams bill the flat rate.
-          Balance: <Credits value={usage.balance.total} /> cr.
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">Usage</h1>
+          <p className="mt-1 text-sm text-muted">
+            Every request metered from provider-reported token counts — or the model&apos;s flat rate when
+            usage is unreported. Failed requests are never charged; stopped streams bill the flat rate.
+            Balance: <Credits value={usage.balance.total} /> cr.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => exportUsage("csv", 365)}
+            className="btn-secondary btn-sm"
+            title="Download all usage as CSV"
+          >
+            Export CSV
+          </button>
+          <button
+            onClick={() => exportUsage("json", 365)}
+            className="btn-secondary btn-sm"
+            title="Download all usage as JSON"
+          >
+            Export JSON
+          </button>
+        </div>
       </div>
 
       {/* Summary */}
@@ -93,11 +132,11 @@ export default function Usage() {
           <p className="num mt-1 text-xl font-semibold">
             <Credits value={usage.balance.total} />
           </p>
-          <p className="text-xs text-muted">{usage.balance.scoped > 0 ? <><Credits value={usage.balance.scoped} /> scoped · <Credits value={usage.balance.global} /> global</> : 'all global credits'}</p>
+          <p className="text-xs text-muted">{usage.balance.scoped > 0 ? (<><Credits value={usage.balance.scoped} /> scoped · <Credits value={usage.balance.global} /> global</>) : "all global credits"}</p>
         </Card>
         <Card className="p-4">
           <p className="text-xs uppercase tracking-wide text-muted">Messages</p>
-          <p className="num mt-1 text-xl font-semibold">{usage.totals.messages.toLocaleString('en-US')}</p>
+          <p className="num mt-1 text-xl font-semibold">{usage.totals.messages.toLocaleString("en-US")}</p>
           <p className="text-xs text-muted">pool requests</p>
         </Card>
         <Card className="p-4">
@@ -125,13 +164,13 @@ export default function Usage() {
       {usage.daily.length > 0 && (
         <Card>
           <CardHeader title="Last 14 days" />
-          <div className="flex items-end gap-1 p-4" role="img" aria-label={`Daily credit spend, max ${maxDaily.toLocaleString('en-US')} credits in a day`}>
+          <div className="flex items-end gap-1 p-4" role="img" aria-label={`Daily credit spend, max ${maxDaily.toLocaleString("en-US")} credits in a day`}>
             {usage.daily.map((day) => (
               <div key={day.day} className="flex flex-1 flex-col items-center gap-1">
                 <div
-                  className={`w-full rounded-t ${day.credits === 0 ? 'bg-line' : 'bg-accent/70'}`}
+                  className={`w-full rounded-t ${day.credits === 0 ? "bg-line" : "bg-accent/70"}`}
                   style={{ height: `${Math.max(2, (day.credits / maxDaily) * 80)}px` }}
-                  title={`${day.day}: ${day.credits.toLocaleString('en-US')} cr · ${day.messages} msgs`}
+                  title={`${day.day}: ${day.credits.toLocaleString("en-US")} cr · ${day.messages} msgs`}
                 />
                 <span className="num text-2xs text-muted">{day.day.slice(5)}</span>
               </div>
@@ -151,15 +190,15 @@ export default function Usage() {
                 <span className="num text-xs text-muted">{row.messages} msgs</span>
                 {row.tokens != null ? (
                   <span className="num text-xs text-muted">
-                    <span className="sr-only">input </span>{row.input_tokens?.toLocaleString('en-US') ?? '—'}
-                    <span aria-hidden="true"> in · </span><span className="sr-only">output </span>{row.output_tokens?.toLocaleString('en-US') ?? '—'} out
+                    <span className="sr-only">input </span>{row.input_tokens?.toLocaleString("en-US") ?? "—"}
+                    <span aria-hidden="true"> in · </span><span className="sr-only">output </span>{row.output_tokens?.toLocaleString("en-US") ?? "—"} out
                   </span>
                 ) : (
                   <span className="num text-xs text-muted">tokens unreported</span>
                 )}
                 {row.flat_rate_messages > 0 && (
-                  <span className="text-xs text-muted" title="Requests billed at the model's flat rate because the provider reported no token usage">
-                    {row.flat_rate_messages} flat-rate ({row.flat_rate_messages === row.messages ? 'all' : 'some'})
+                  <span className="text-xs text-muted" title="Requests billed at the model&apos;s flat rate because the provider reported no token usage">
+                    {row.flat_rate_messages} flat-rate ({row.flat_rate_messages === row.messages ? "all" : "some"})
                   </span>
                 )}
                 <span className="num ml-auto text-sm">
@@ -181,19 +220,19 @@ export default function Usage() {
               <span className="text-sm">{event.model}</span>
               <span
                 className={`rounded px-1.5 py-0.5 text-xs ${
-                  event.status === 'completed'
-                    ? 'bg-gain/10 text-gain'
-                    : event.status === 'aborted'
-                      ? 'bg-warn/10 text-warn'
-                      : 'bg-loss/10 text-loss'
+                  event.status === "completed"
+                    ? "bg-gain/10 text-gain"
+                    : event.status === "aborted"
+                      ? "bg-warn/10 text-warn"
+                      : "bg-loss/10 text-loss"
                 }`}
               >
                 {event.status}
               </span>
               {event.total_tokens != null ? (
                 <span className="num text-xs text-muted">
-                  <span className="sr-only">input </span>{event.input_tokens?.toLocaleString('en-US') ?? '—'}
-                  <span aria-hidden="true">→</span><span className="sr-only"> output </span>{event.output_tokens?.toLocaleString('en-US') ?? '—'} tokens
+                  <span className="sr-only">input </span>{event.input_tokens?.toLocaleString("en-US") ?? "—"}
+                  <span aria-hidden="true">→</span><span className="sr-only"> output </span>{event.output_tokens?.toLocaleString("en-US") ?? "—"} tokens
                 </span>
               ) : (
                 <span className="text-xs text-muted">flat rate (usage unreported)</span>
@@ -201,10 +240,10 @@ export default function Usage() {
               {event.latency_ms != null && <span className="num text-xs text-muted" title="Request latency">{event.latency_ms}ms</span>}
               <span className="num ml-auto text-sm" title={event.status}>
                 {event.credits_charged > 0
-                  ? `${event.credits_charged.toLocaleString('en-US')} cr`
-                  : event.status === 'failed'
-                    ? 'no charge (failed)'
-                    : 'free'}
+                  ? `${event.credits_charged.toLocaleString("en-US")} cr`
+                  : event.status === "failed"
+                    ? "no charge (failed)"
+                    : "free"}
               </span>
             </div>
           ))}

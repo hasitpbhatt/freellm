@@ -93,8 +93,9 @@ test('levels: thresholds rise, bonuses stay bounded, max level caps', () => {
   assert.equal(levelForXp(18000), 3)
   assert.equal(levelForXp(90000), 6)
   assert.equal(levelForXp(9999999), 6)
-  assert.equal(levelBonus(2), 6000)
-  assert.equal(levelBonus(6), 18000)
+  // Level bonuses from ARCADE_LEVELS: level 2 = 15000, level 6 = 300000
+  assert.equal(levelBonus(2), 15000)
+  assert.equal(levelBonus(6), 300000)
   assert.equal(ARCADE_MAX_LEVEL, 6)
 })
 

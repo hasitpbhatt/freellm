@@ -260,27 +260,8 @@ export default function AdminUsers() {
     })
   }, [visible, dailyUsage])
 
-  if (error) {
-    return (
-      <div className="mx-auto max-w-md py-12 text-center">
-        <p className="text-sm text-loss" role="alert">{error}</p>
-        <Button onClick={() => void load()} className="mt-4">
-          Retry
-        </Button>
-      </div>
-    )
-  }
-  if (users === null) return <p className="py-12 text-center text-sm text-muted">Loading…</p>
-
-  const totals = users.reduce(
-    (acc, u) => ({ balance: acc.balance + u.balance_credits, earned: acc.earned + u.earned, spent: acc.spent + u.spent }),
-    { balance: 0, earned: 0, spent: 0 },
-  )
-
-  // Find the user for the grant panel
-  const grantUser = users?.find((user) => user.id === grantFor)
-
-  const columns: ColumnDef<BoardUser>[] = useMemo(
+  // --- Memoized derived state (must be before any early returns) ---
+const columns: ColumnDef<BoardUser>[] = useMemo(
     () => [
       {
         key: 'rank',
@@ -394,7 +375,7 @@ export default function AdminUsers() {
     [savingId, grantFor, dailyUsage]
   )
 
-  const tierFilterChips: FilterChip[] = useMemo(
+const tierFilterChips: FilterChip[] = useMemo(
     () =>
       TIER_FILTERS.map((f) => ({
         ...f,
@@ -403,7 +384,7 @@ export default function AdminUsers() {
     [users]
   )
 
-  const verifiedFilterChips: FilterChip[] = useMemo(
+const verifiedFilterChips: FilterChip[] = useMemo(
     () =>
       VERIFIED_FILTERS.map((f) => ({
         ...f,
@@ -411,6 +392,33 @@ export default function AdminUsers() {
       })),
     [users]
   )
+
+
+  if (error) {
+    return (
+      <div className="mx-auto max-w-md py-12 text-center">
+        <p className="text-sm text-loss" role="alert">{error}</p>
+        <Button onClick={() => void load()} className="mt-4">
+          Retry
+        </Button>
+      </div>
+    )
+  }
+  if (users === null) return <p className="py-12 text-center text-sm text-muted">Loading…</p>
+
+  const totals = users.reduce(
+    (acc, u) => ({ balance: acc.balance + u.balance_credits, earned: acc.earned + u.earned, spent: acc.spent + u.spent }),
+    { balance: 0, earned: 0, spent: 0 },
+  )
+
+  // Find the user for the grant panel
+  const grantUser = users?.find((user) => user.id === grantFor)
+
+  
+
+  
+
+  
 
   return (
     <div className="flex flex-col gap-6">
