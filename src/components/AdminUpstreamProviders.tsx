@@ -87,7 +87,6 @@ export default function AdminUpstreamProviders() {
     try {
       const data = await api.post<{ test: TestResult }>(`/admin/upstream-providers/${id}/test`)
       setTestResults((prev) => ({ ...prev, [id]: data.test }))
-      await load()
     } catch (err) {
       setTestResults((prev) => ({
         ...prev,

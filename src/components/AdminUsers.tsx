@@ -9,7 +9,6 @@ import {
   FilterChipBar,
   useConfirm,
   useToast,
-  SparklinePlus,
   type ColumnDef,
   type FilterChip,
 } from './ui'
@@ -81,7 +80,6 @@ export default function AdminUsers() {
   const [grantsLoading, setGrantsLoading] = useState(false)
   const [tierFilters, setTierFilters] = useState<string[]>([])
   const [verifiedFilters, setVerifiedFilters] = useState<string[]>([])
-  const [dailyUsage, setDailyUsage] = useState<Record<string, { day: string; value: number }[]>>({})
 
   const { confirm } = useConfirm()
   const { addToast } = useToast()
@@ -241,25 +239,6 @@ export default function AdminUsers() {
     return [...filtered].sort(by[sort])
   }, [users, query, sort, tierFilters, verifiedFilters])
 
-  // Load daily usage lazily for visible users
-  useEffect(() => {
-    const visibleUserIds = visible.map((u) => u.id)
-    visibleUserIds.forEach((id) => {
-      if (dailyUsage[id] === undefined) {
-        void (async () => {
-          try {
-            const data = await api.get<{ user_id: string; daily: { day: string; value: number }[] }>(
-              `/admin/users/${id}/usage-daily`,
-            )
-            setDailyUsage((prev) => ({ ...prev, [id]: data.daily }))
-          } catch {
-            // Daily usage is advisory
-          }
-        })()
-      }
-    })
-  }, [visible, dailyUsage])
-
   // --- Memoized derived state (must be before any early returns) ---
 const columns: ColumnDef<BoardUser>[] = useMemo(
     () => [
@@ -351,28 +330,8 @@ const columns: ColumnDef<BoardUser>[] = useMemo(
           </Button>
         ),
       },
-      {
-        key: 'sparkline',
-        header: 'Daily (14d)',
-        minWidth: '180px',
-        render: (u) => {
-          const daily = dailyUsage[u.id] ?? []
-          return daily.length > 0 ? (
-            <SparklinePlus
-              data={daily}
-              width={170}
-              height={36}
-              color="var(--accent)"
-              showTooltip={true}
-              tooltipFormatter={(v) => `${v.toLocaleString('en-US')} cr`}
-            />
-          ) : (
-            <span className="text-xs text-muted">Loading…</span>
-          )
-        },
-      },
     ],
-    [savingId, grantFor, dailyUsage]
+    [savingId, grantFor]
   )
 
 const tierFilterChips: FilterChip[] = useMemo(

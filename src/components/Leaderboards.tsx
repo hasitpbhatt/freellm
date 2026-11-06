@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { api } from '../lib/api'
 import { Card } from './ui'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './ui'
@@ -43,13 +43,26 @@ export default function Leaderboards() {
   const [loading, setLoading] = useState(false)
   const [weekStart, setWeekStart] = useState<number | null>(null)
 
+  // Ref cache: holds fetched leaderboard data so switching tabs is instant.
+  // Kept in a ref (not state) to avoid the effect re-triggering on every
+  // write, which would cause a redundant render and a cascading setState.
+  const cacheRef = useRef<Record<LeaderboardType, LeaderboardEntry[]>>({
+    typing: [], memory: [], streak: [], referrals: []
+  })
+
   useEffect(() => {
+    const cached = cacheRef.current[activeTab]
+    if (cached) {
+      setData((prev) => ({ ...prev, [activeTab]: cached }))
+      return
+    }
     let mounted = true
     setLoading(true)
     api.get<LeaderboardResponse>(leaderboardConfig[activeTab].endpoint)
       .then((res) => {
         if (mounted) {
           setData((prev) => ({ ...prev, [activeTab]: res.entries }))
+          cacheRef.current[activeTab] = res.entries
           if (res.week_start) setWeekStart(res.week_start)
         }
       })

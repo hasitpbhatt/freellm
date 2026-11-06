@@ -221,7 +221,12 @@ export function VirtualizedTable<T>({
   }
 
   return (
-    <div className={`relative overflow-auto border border-line rounded-lg ${className}`} style={{ height }}>
+    <div
+      ref={containerRef}
+      onScroll={handleScroll}
+      className={`relative overflow-auto border border-line rounded-lg ${className}`}
+      style={{ height }}
+    >
       <div style={{ height: data.length * rowHeight, position: 'relative' }}>
         {/* Fixed header */}
         <div className="sticky top-0 z-10 bg-surface border-b border-line">
@@ -268,8 +273,7 @@ export function VirtualizedTable<T>({
         </div>
 
         {/* Scrollable body */}
-        <div ref={containerRef} onScroll={handleScroll} style={{ paddingTop: 0 }}>
-          <table className="w-full border-collapse" style={{ transform: `translateY(${offsetY}px)` }}>
+        <table className="w-full border-collapse" style={{ transform: `translateY(${offsetY}px)` }}>
             <tbody>
               {visibleRows.map((row, i) => {
                 const absoluteIndex = startIndex + i
@@ -309,7 +313,6 @@ export function VirtualizedTable<T>({
               })}
             </tbody>
           </table>
-        </div>
       </div>
     </div>
   )
